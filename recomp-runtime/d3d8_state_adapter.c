@@ -6,6 +6,7 @@
 #include "kernel_abi.h"
 #include "stop_report.h"
 
+#include <math.h>
 #include <string.h>
 
 enum {
@@ -103,6 +104,41 @@ static void set_fog_color(void)
     recomp_d3d8_require_device();
     *recomp_memory_u32(D3D_FOG_COLOR) = kernel_arg(1u);
     recomp_runtime.registers.esp += 8u;
+}
+
+static void set_screen_space_offset(void)
+{
+    const uint32_t device = recomp_d3d8_require_device();
+    const uint32_t bits[2] = {kernel_arg(1u), kernel_arg(2u)};
+    float offsets[2];
+    memcpy(offsets, bits, sizeof offsets);
+    for (uint32_t i = 0u; i < 2u; ++i) {
+        if (!isfinite(offsets[i])) recomp_stop(2, "d3d8:screen-space-offset");
+        offsets[i] += 0.53125f; /* SDK raster bias; the draw snapshot exports only the API offset. */
+    }
+    recomp_guest_store(device + 0xef8u, offsets, sizeof offsets);
+    recomp_runtime.registers.esp += 12u;
+}
+
+static void set_scissors(void)
+{
+    const uint32_t device = recomp_d3d8_require_device();
+    const uint32_t count = kernel_arg(1u), exclusive = kernel_arg(2u), source = kernel_arg(3u);
+    /* shortcut: multiple or exclusive regions need a union/complement clip path. */
+    if (count > 1u || (count != 0u && exclusive != 0u))
+        recomp_stop(2, "d3d8:unsupported-scissors:%u:%u", count, exclusive);
+    if (count != 0u) {
+        int32_t rect[4];
+        if (source == 0u) recomp_stop(2, "d3d8:scissor-pointer");
+        recomp_guest_load(rect, source, sizeof rect);
+        if (rect[0] < 0 || rect[1] < 0 || rect[2] < rect[0] || rect[3] < rect[1] ||
+            rect[2] > 32767 || rect[3] > 32767)
+            recomp_stop(2, "d3d8:scissor-rectangle");
+        recomp_guest_store(device + 0x1b80u, rect, sizeof rect);
+    }
+    *recomp_memory_u32(device + 0x1c00u) = count;
+    *recomp_memory_u32(device + 0x1c04u) = exclusive;
+    recomp_runtime.registers.esp += 16u;
 }
 
 static uint32_t light_record(uint32_t device, uint32_t index)
@@ -393,6 +429,8 @@ RecompFunction recomp_d3d8_state_lookup_manual(uint32_t address)
     case 0x003465c0u: return set_fog_color;
     case 0x00345040u: return set_light;
     case 0x00345300u: return light_enable;
+    case 0x003459f0u: return set_scissors;
+    case 0x00345ea0u: return set_screen_space_offset;
     case 0x00346240u: return set_render_state_simple;
     case 0x00346540u: return edge_anti_alias;
     case 0x00346610u: return cull_mode;

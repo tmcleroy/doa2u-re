@@ -120,6 +120,11 @@ typedef struct RecompD3dPresenterDrawCommand {
     /* Guest viewport for transformed draws: X, Y, width, height in target
        pixels, then MinZ, MaxZ. Zero width keeps the whole target. */
     float viewport[6];
+    /* Fixed-function raster displacement in logical guest pixels. */
+    float screen_space_offset[2];
+    /* One allowed rectangle with exclusive right/bottom guest target pixel edges. */
+    bool has_scissor;
+    int32_t scissor[4];
     /* Additional world-view-projection matrices for 1..3 explicit weights. */
     float blend_transforms[3][16];
     uint32_t blend_weight_count;
@@ -169,6 +174,7 @@ typedef struct RecompD3dPresenterDrawCommand {
     bool has_reflection;
     bool reflection_normalize;
     bool reflection_mesh_uv;
+    bool reflection_premultiplied;
     RecompD3dTextureDesc reflection_texture;
     const void *reflection_bytes;
     uint32_t reflection_byte_count;

@@ -163,6 +163,7 @@ static void write_initial_device(void)
     *recomp_memory_u32(DEVICE + DEFAULT_DEPTH) = DEVICE + DEPTH_HEADER;
     *recomp_memory_u32(DEVICE + BUFFER_COUNT) = 2u;
     store(DEVICE + VIEWPORT, &device_state.viewport, sizeof device_state.viewport);
+    *recomp_memory_u32(DEVICE + 0xef8u) = *recomp_memory_u32(DEVICE + 0xefcu) = 0x3f080000u;
     *recomp_memory_u32(DEVICE + 0x954u) = device_state.width;
     *recomp_memory_u32(DEVICE + 0x958u) = device_state.height;
     for (uint32_t i = 0; i < 2u; ++i) {
@@ -354,6 +355,7 @@ static void set_viewport(void)
         device_state.viewport = candidate.viewport;
         store(DEVICE + VIEWPORT, &device_state.viewport, sizeof device_state.viewport);
     }
+    *recomp_memory_u32(DEVICE + 0x1c00u) = *recomp_memory_u32(DEVICE + 0x1c04u) = 0u;
     recomp_runtime.registers.esp = entry + 8u;
 }
 
@@ -386,6 +388,7 @@ static void set_render_target(void)
     }
     device_state.viewport = (RecompD3dViewport){0u, 0u, target.color.width, target.color.height, 0.0f, 1.0f};
     store(DEVICE + VIEWPORT, &device_state.viewport, sizeof device_state.viewport);
+    *recomp_memory_u32(DEVICE + 0x1c00u) = *recomp_memory_u32(DEVICE + 0x1c04u) = 0u;
     recomp_runtime.registers.esp = entry + 12u;
 }
 
@@ -506,6 +509,7 @@ static void reset_device(void)
     *recomp_memory_u32(DEVICE + DEPTH) = DEVICE + DEPTH_HEADER;
     *recomp_memory_u32(DEVICE + DEFAULT_DEPTH) = DEVICE + DEPTH_HEADER;
     store(DEVICE + VIEWPORT, &candidate.viewport, sizeof candidate.viewport);
+    *recomp_memory_u32(DEVICE + 0x1c00u) = *recomp_memory_u32(DEVICE + 0x1c04u) = 0u;
     *recomp_memory_u32(0x35545cu) = request.presentation.full_screen_presentation_interval;
     *recomp_memory_u32(DEVICE + 0x196cu) = request.presentation.multi_sample_type;
     *recomp_memory_u32(DEVICE + 0x1970u) = request.presentation.swap_effect;

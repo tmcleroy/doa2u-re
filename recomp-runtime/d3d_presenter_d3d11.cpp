@@ -189,7 +189,8 @@ void buildDrawShaderSource(
         "        float4 base = guest_texture.Sample(guest_sampler, input.texcoord);\n"
         "        base.a *= diffuse.a;\n"
         "        float4 env = alpha_mask.Sample(guest_sampler, input.reflection_coord);\n"
-        "        shaded = lerp(base, env, env.a) * diffuse;\n"
+        "        shaded = (reflection_flags.w > 0.5f\n"
+        "            ? saturate(env + base * (1.0f - env.a)) : lerp(base, env, env.a)) * diffuse;\n"
         "    } else\n"
         "%s"
         "    if (blend_flags.y == 1.0f) {\n"
@@ -1596,6 +1597,7 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
             ? D3D11_CULL_NONE : D3D11_CULL_BACK;
         rasterizer_desc.FrontCounterClockwise = mode == RECOMP_D3D_CULL_CLOCKWISE;
         rasterizer_desc.DepthClipEnable = TRUE;
+        rasterizer_desc.ScissorEnable = TRUE;
         result = presenter->device->CreateRasterizerState(
             &rasterizer_desc, &presenter->draw_rasterizer_states[mode]);
         if (FAILED(result)) return false;
@@ -2407,15 +2409,20 @@ RecompD3dPresenterError submitDraw(
     RecompD3dPresenter *presenter,
     const RecompD3dPresenterDrawCommand &draw)
 {
+    const bool screen_offset = draw.screen_space_offset[0] != 0.0f || draw.screen_space_offset[1] != 0.0f;
+    // shortcut: programmable offsets are unsupported, add their viewport contract when needed.
     if (draw.vertex_bytes == nullptr || draw.index_bytes == nullptr ||
         draw.vertex_stride == 0u || draw.vertex_count == 0u ||
         draw.index_count == 0u ||
         static_cast<unsigned>(draw.cull_mode) > RECOMP_D3D_CULL_COUNTER_CLOCKWISE ||
+        !std::isfinite(draw.screen_space_offset[0]) || !std::isfinite(draw.screen_space_offset[1]) ||
+        (screen_offset && draw.program_count) ||
         !std::isfinite(draw.mip_lod_bias) ||
         draw.mip_lod_bias < D3D11_MIP_LOD_BIAS_MIN ||
         draw.mip_lod_bias > D3D11_MIP_LOD_BIAS_MAX) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
+    const bool sub_viewport = draw.has_transform && !draw.program_count && draw.viewport[2] > 0.0f;
 
     RecompD3dVertexLayout layout;
     if (!recomp_d3d_fvf_layout(draw.fvf, &layout) ||
@@ -2461,6 +2468,20 @@ RecompD3dPresenterError submitDraw(
         bindTarget(presenter, draw.target, color_view, depth_view);
     if (target_result != RECOMP_D3D_PRESENTER_OK) {
         return target_result;
+    }
+    D3D11_RECT scissor = {0, 0, 32767, 32767};
+    if (draw.has_scissor) {
+        if (draw.scissor[0] < 0 || draw.scissor[1] < 0 ||
+            draw.scissor[2] < draw.scissor[0] || draw.scissor[3] < draw.scissor[1])
+            return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        LONG *edges[] = {&scissor.left, &scissor.top, &scissor.right, &scissor.bottom};
+        for (unsigned i = 0u; i < 4u; ++i) {
+            const double edge = draw.scissor[i] * (i % 2u == 0u ?
+                presenter->target_scale_x : presenter->target_scale_y);
+            if (!std::isfinite(edge) || edge > D3D11_VIEWPORT_BOUNDS_MAX)
+                return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+            *edges[i] = static_cast<LONG>(edge + 0.5);
+        }
     }
     if (draw.has_texture) {
         const RenderTargetEntry *sampled = findRenderTarget(presenter, draw.texture);
@@ -2526,6 +2547,7 @@ RecompD3dPresenterError submitDraw(
     }
     if (draw.has_reflection || draw.program_alpha_mask) {
         if (draw.has_alpha_mask || draw.four_tap_filter || layout.pretransformed ||
+            (draw.has_reflection && draw.program_alpha_mask) ||
             (draw.program_alpha_mask && layout.normal_offset == RECOMP_D3D_FVF_ABSENT) ||
             layout.texcoord_count == 0u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
         RecompD3dPresenterDrawCommand reflection{};
@@ -2545,7 +2567,7 @@ RecompD3dPresenterError submitDraw(
     float draw_constants[140 + 192 * 4 + 340]{};
     std::memcpy(draw_constants, draw.transform, sizeof draw.transform);
     std::memcpy(draw_constants + 16, draw.blend_transforms, sizeof draw.blend_transforms);
-    if (layout.pretransformed || draw.program_count) {
+    if (layout.pretransformed || draw.program_count || screen_offset) {
         D3D11_VIEWPORT viewport{};
         UINT count = 1u;
         presenter->context->RSGetViewports(&count, &viewport);
@@ -2558,16 +2580,31 @@ RecompD3dPresenterError submitDraw(
             viewport.MaxDepth <= viewport.MinDepth) {
             return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
         }
-        /* Undo the bound viewport; legacy pixel centers are integers, while
-           D3D11 centers are half integers. The shader restores clip W from RHW. */
-        std::memset(draw_constants, 0, sizeof draw.transform);
-        draw_constants[0] = 2.0f / viewport.Width;
-        draw_constants[5] = -2.0f / viewport.Height;
-        draw_constants[10] = 1.0f / (viewport.MaxDepth - viewport.MinDepth);
-        draw_constants[12] = -1.0f + (0.5f - viewport.TopLeftX) * draw_constants[0];
-        draw_constants[13] = 1.0f + (0.5f - viewport.TopLeftY) * draw_constants[5];
-        draw_constants[14] = -viewport.MinDepth * draw_constants[10];
-        draw_constants[15] = 1.0f;
+        if (layout.pretransformed || draw.program_count) {
+            /* Undo the bound viewport; legacy pixel centers are integers, while
+               D3D11 centers are half integers. The shader restores clip W from RHW. */
+            std::memset(draw_constants, 0, sizeof draw.transform);
+            draw_constants[0] = 2.0f / viewport.Width;
+            draw_constants[5] = -2.0f / viewport.Height;
+            draw_constants[10] = 1.0f / (viewport.MaxDepth - viewport.MinDepth);
+            draw_constants[12] = -1.0f + (0.5f - viewport.TopLeftX) * draw_constants[0];
+            draw_constants[13] = 1.0f + (0.5f - viewport.TopLeftY) * draw_constants[5];
+            draw_constants[14] = -viewport.MinDepth * draw_constants[10];
+            draw_constants[15] = 1.0f;
+        }
+        if (screen_offset) {
+            const float width = sub_viewport ? draw.viewport[2] : viewport.Width;
+            const float height = sub_viewport ? draw.viewport[3] : viewport.Height;
+            const float dx = 2.0f * draw.screen_space_offset[0] / width;
+            const float dy = -2.0f * draw.screen_space_offset[1] / height;
+            if (width <= 0.0f || height <= 0.0f || !std::isfinite(dx) || !std::isfinite(dy))
+                return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+            // Post-compose every WVP so the displacement survives perspective division and blending.
+            for (unsigned row = 0; row < 64; row += 4) {
+                draw_constants[row] += dx * draw_constants[row + 3];
+                draw_constants[row + 1] += dy * draw_constants[row + 3];
+            }
+        }
     }
     if (draw.program_count) {
         std::memcpy(draw_constants + 140, draw.program_constants, sizeof draw.program_constants);
@@ -2644,6 +2681,7 @@ RecompD3dPresenterError submitDraw(
         std::memcpy(draw_constants + 132, draw.reflection_diffuse, 16u);
         draw_constants[136] = draw.reflection_mesh_uv ? 2.0f : 1.0f;
         draw_constants[137] = draw.reflection_normalize ? 1.0f : 0.0f;
+        draw_constants[139] = draw.reflection_premultiplied ? 1.0f : 0.0f;
     }
 
     UINT index_offset = 0u;
@@ -2682,6 +2720,7 @@ RecompD3dPresenterError submitDraw(
     if (samplers[0] == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     presenter->context->PSSetSamplers(0u, 2u, samplers);
     presenter->context->RSSetState(presenter->draw_rasterizer_states[draw.cull_mode]);
+    presenter->context->RSSetScissorRects(1u, &scissor);
     ID3D11DepthStencilState *depth_state = lookupDepthState(presenter, draw.depth);
     if (depth_state == nullptr) {
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
@@ -2718,7 +2757,6 @@ RecompD3dPresenterError submitDraw(
        viewport (the select-screen portrait) must not reach the full target. */
     D3D11_VIEWPORT whole{};
     UINT viewport_count = 1u;
-    const bool sub_viewport = draw.has_transform && !draw.program_count && draw.viewport[2] > 0.0f;
     if (sub_viewport) {
         presenter->context->RSGetViewports(&viewport_count, &whole);
         const D3D11_VIEWPORT guest = {

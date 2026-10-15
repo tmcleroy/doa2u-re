@@ -113,13 +113,24 @@ normalization, blended world/normal transforms and infinite-view specular.
 Missing vertex colors resolve material sources as the SDK does. Native pixel
 tests cover diffuse/ambient, point range/attenuation, specular, normal transforms
 and alpha. The reflection material binds the sister presenter's two-texture
-alpha blend and final diffuse modulation, with generated reflection coordinates
-or mesh UV0 and matching samplers. Unlit vertex diffuse and lit material diffuse
-retain their respective alpha sources. Blended reflection coordinates, vertex
-color lighting sources, local-view specular, two-sided/spot lighting, other
-combiners (including the premultiplied texture-alpha blend) and
-multiple streams stop explicitly. BGRA8 offscreen color targets and D24S8
-custom depth targets bind through the shared presenter; clears and draws
+straight or premultiplied texture-alpha blend and final diffuse modulation,
+with generated reflection coordinates or mesh UV0 and matching samplers.
+Unlit vertex diffuse and lit material diffuse retain their respective alpha
+sources. Blended reflection coordinates, vertex color lighting sources,
+local-view specular, two-sided/spot lighting, other
+combiners and multiple streams stop explicitly. The premultiplied blend clamps
+its intermediate result before diffuse modulation and post-stage specular.
+Screen-space offsets retain the SDK's biased shadows and snapshot API-relative
+pixel translations. The presenter applies them after projection, including
+blended and XYZRHW draws, without moving viewport clipping. Nonzero offsets on
+programmable vertex draws remain guarded. SetScissors snapshots one allowed
+rectangle in target pixels; the presenter scales its edges independently of
+the draw's screen-space offset. Zero rectangles restores viewport clipping,
+including pretransformed draws. Viewport, target and reset calls clear the
+explicit rectangle as the SDK does. Multiple/exclusive rectangles and negative
+edges remain guarded.
+BGRA8 offscreen color targets and D24S8 custom depth targets bind through the
+shared presenter; clears and draws
 snapshot their storage descriptors. Binding counts retain parent textures,
 and viewport extents follow the target. Front-buffer targets, offscreen sharing
 of main depth, and partial clears remain guarded. Synthetic draw tests establish
@@ -130,8 +141,8 @@ InsertFence returns an even sequence after draining; BlockOnFence drains too.
 These synchronous fences order captured resource use without a console GPU.
 They do not supply render-target readback or hardware timing parity.
 PersistDisplay retains the native displayed image, and same-mode Reset replaces
-the guest surface headers and viewport while preserving non-target state and
-frame count. Reset clears depth/stencil only. Resizing and other display modes
+the guest surface headers, viewport and scissors while preserving other state
+and frame count. Reset clears depth/stencil only. Resizing and other display modes
 need further bindings. The lifter handles WBINVD over coherent host memory;
 there is no separate guest CPU cache or direct GPU consumer of guest bytes.
 

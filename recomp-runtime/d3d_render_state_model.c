@@ -474,13 +474,15 @@ bool recomp_d3d_texture_factor_modulate_selected(
 
 bool recomp_d3d_reflection_material(const uint32_t stages[4][32])
 {
-    static const uint32_t arguments[3][6] = {
+    if (stages == NULL || stages[3][12] != 1u) return false;
+    const uint32_t blend = stages[1][12];
+    if (blend != 14u && blend != 16u) return false;
+    const uint32_t arguments[3][6] = {
         {2u, 2u, 1u, 4u, 2u, 0u},
-        {14u, 2u, 1u, 14u, 2u, 1u},
+        {blend, 2u, 1u, blend, 2u, 1u},
         {4u, 0u, 1u, 4u, 0u, 1u},
     };
     static const uint32_t offsets[] = {12u, 14u, 15u, 16u, 18u, 19u};
-    if (stages == NULL || stages[3][12] != 1u) return false;
     for (uint32_t stage = 0u; stage < 3u; ++stage) {
         for (uint32_t i = 0u; i < 6u; ++i) {
             if (stages[stage][offsets[i]] != arguments[stage][i]) return false;

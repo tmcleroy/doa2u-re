@@ -345,6 +345,9 @@ int main(void)
         *recomp_memory_u32(COLOR_HEADER + 0x18u) == 0x50002u &&
         *recomp_memory_u32(DEPTH_HEADER) == 0xd0002u &&
         *recomp_memory_u32(COLOR_SOURCE) == 0x50001u);
+    passed &= expect("default screen-space raster bias",
+        *recomp_memory_u32(DEVICE + 0xef8u) == 0x3f080000u &&
+        *recomp_memory_u32(DEVICE + 0xefcu) == 0x3f080000u);
     memcpy(&viewport, recomp_memory(DEVICE + 0xee0u, sizeof viewport), sizeof viewport);
     for (uint32_t bank = 0u; bank < 2u; ++bank) {
         const uint8_t *ramp = recomp_memory(DEVICE + 0x1e04u + bank * 0x300u, 0x300u);
@@ -409,7 +412,10 @@ int main(void)
         memcmp(recomp_memory(VIEWPORT_OUTPUT, sizeof viewport), &viewport, sizeof viewport) == 0);
     viewport = (RecompD3dViewport){700u, 460u, UINT32_MAX, UINT32_MAX, 0.0f, 1.0f};
     memcpy(recomp_memory(VIEWPORT_OUTPUT, sizeof viewport), &viewport, sizeof viewport);
+    *recomp_memory_u32(DEVICE + 0x1c00u) = *recomp_memory_u32(DEVICE + 0x1c04u) = 1u;
     passed &= call(0x344e10u, arguments, 1u, NULL);
+    passed &= expect("viewport resets scissors", *recomp_memory_u32(DEVICE + 0x1c00u) == 0u &&
+        *recomp_memory_u32(DEVICE + 0x1c04u) == 0u);
     passed &= expect("viewport setter clamps extent",
         *recomp_memory_u32(DEVICE + 0xee0u) == 700u &&
         *recomp_memory_u32(DEVICE + 0xee8u) == 20u &&
@@ -419,7 +425,9 @@ int main(void)
     arguments[4] = 0x3f800000u; arguments[5] = 0u;
     passed &= call(0x347920u, arguments, 6u, "d3d8:clear-viewport-unbound");
     arguments[0] = COLOR_HEADER; arguments[1] = 0u;
+    *recomp_memory_u32(DEVICE + 0x1c00u) = 1u;
     passed &= call(0x3447d0u, arguments, 2u, NULL);
+    passed &= expect("render target resets scissors", *recomp_memory_u32(DEVICE + 0x1c00u) == 0u);
     passed &= expect("render target removes depth binding and resets viewport",
         *recomp_memory_u32(DEVICE + 0x1a08u) == 0u &&
         *recomp_memory_u32(DEPTH_HEADER) == 0x50002u &&

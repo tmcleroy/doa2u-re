@@ -145,6 +145,40 @@ int main(void)
     CHECK(*recomp_memory_u32(0x355488u) == 0xaabbccddu);
     CHECK(recomp_runtime.registers.esp == STACK + 8u);
 
+    CHECK(invoke(0x345ea0u, 0xbf000000u, 0x3e800000u) == 0x11223344u);
+    CHECK(recomp_runtime.registers.esp == STACK + 12u);
+    float offsets[2];
+    recomp_guest_load(offsets, DEVICE + 0xef8u, sizeof offsets);
+    CHECK(offsets[0] == 0.03125f && offsets[1] == 0.78125f);
+    if (setjmp(stopped) == 0) { invoke(0x345ea0u, 0u, 0x7fc00000u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:screen-space-offset") == 0);
+    CHECK(*recomp_memory_u32(DEVICE + 0xef8u) == 0x3d000000u);
+    CHECK(invoke(0x345ea0u, 0u, 0u) == 0x11223344u);
+    recomp_guest_load(offsets, DEVICE + 0xef8u, sizeof offsets);
+    CHECK(offsets[0] == 0.53125f && offsets[1] == 0.53125f);
+
+    int32_t scissor[4] = {12, 8, 120, 80};
+    recomp_guest_store(INPUT, scissor, sizeof scissor);
+    *recomp_memory_u32(STACK + 12u) = INPUT;
+    CHECK(invoke(0x3459f0u, 1u, 0u) == 0x11223344u);
+    CHECK(recomp_runtime.registers.esp == STACK + 16u);
+    CHECK(*recomp_memory_u32(DEVICE + 0x1c00u) == 1u &&
+        *recomp_memory_u32(DEVICE + 0x1c04u) == 0u);
+    CHECK(memcmp(ram + DEVICE + 0x1b80u, scissor, sizeof scissor) == 0);
+    *recomp_memory_u32(INPUT + 8u) = 1u;
+    if (setjmp(stopped) == 0) { invoke(0x3459f0u, 1u, 0u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:scissor-rectangle") == 0);
+    CHECK(memcmp(ram + DEVICE + 0x1b80u, scissor, sizeof scissor) == 0);
+    if (setjmp(stopped) == 0) { invoke(0x3459f0u, 2u, 0u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:unsupported-scissors:2:0") == 0);
+    if (setjmp(stopped) == 0) { invoke(0x3459f0u, 1u, 1u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:unsupported-scissors:1:1") == 0);
+    *recomp_memory_u32(STACK + 12u) = 0u;
+    if (setjmp(stopped) == 0) { invoke(0x3459f0u, 1u, 0u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:scissor-pointer") == 0);
+    CHECK(invoke(0x3459f0u, 0u, 0u) == 0x11223344u);
+    CHECK(*recomp_memory_u32(DEVICE + 0x1c00u) == 0u);
+
     CHECK(invoke(0x345300u, 3u, 0u) == 0u);
     CHECK(recomp_runtime.registers.esp == STACK + 12u);
     RecompD3dLightRecord light = record(3u);

@@ -379,6 +379,7 @@ static void attach_reflection(uint32_t device, const RecompD3dVertexLayout *layo
     for (uint32_t i = 0u; i < 4u; ++i)
         if (!isfinite(draw->reflection_diffuse[i])) recomp_stop(2, "d3d8:reflection-material");
     draw->reflection_mesh_uv = stages[1][28] == 0u;
+    draw->reflection_premultiplied = stages[1][12] == 16u;
     draw->reflection_normalize = *recomp_memory_u32(0x355498u) != 0u;
     draw->has_reflection = true;
 }
@@ -497,6 +498,20 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     const float rect[6] = {(float)viewport.x, (float)viewport.y, (float)viewport.width,
         (float)viewport.height, viewport.min_z, viewport.max_z};
     memcpy(draw->viewport, rect, sizeof rect);
+    recomp_guest_load(draw->screen_space_offset, device + 0xef8u, sizeof draw->screen_space_offset);
+    for (uint32_t i = 0u; i < 2u; ++i) draw->screen_space_offset[i] -= 0.53125f;
+    const uint32_t scissors = *recomp_memory_u32(device + 0x1c00u);
+    if (scissors > 1u || (scissors != 0u && *recomp_memory_u32(device + 0x1c04u) != 0u))
+        recomp_stop(2, "d3d8:draw-scissors");
+    draw->has_scissor = true;
+    if (scissors != 0u) {
+        recomp_guest_load(draw->scissor, device + 0x1b80u, sizeof draw->scissor);
+    } else {
+        /* SDK count zero clips to the viewport, including pretransformed draws. */
+        const int32_t clip[4] = {(int32_t)viewport.x, (int32_t)viewport.y,
+            (int32_t)(viewport.x + viewport.width), (int32_t)(viewport.y + viewport.height)};
+        memcpy(draw->scissor, clip, sizeof clip);
+    }
     const RecompD3dRenderStateModel *state = recomp_d3d8_state_model();
     if ((state->fill_mode != 0u && state->fill_mode != 0x1b02u) || state->edge_antialias != 0u ||
         state->z_enable == 2u)

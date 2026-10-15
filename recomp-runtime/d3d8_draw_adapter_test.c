@@ -108,6 +108,7 @@ static void initialize(void)
     *recomp_memory_u32(DEVICE + 0xee8u) = 720u;
     *recomp_memory_u32(DEVICE + 0xeecu) = 480u;
     *recomp_memory_u32(DEVICE + 0xef4u) = 0x3f800000u;
+    *recomp_memory_u32(DEVICE + 0xef8u) = *recomp_memory_u32(DEVICE + 0xefcu) = 0x3f080000u;
     for (uint32_t slot = 0u; slot < 10u; ++slot) {
         for (uint32_t i = 0u; i < 4u; ++i)
             *recomp_memory_u32(DEVICE + 0xc60u + slot * 64u + i * 20u) = 0x3f800000u;
@@ -198,15 +199,34 @@ static int draw_tests(void)
     CHECK(submitted.data.draw.vertex_bytes == ram + VERTICES);
     CHECK(captured_indices[0] == 0u && captured_indices[2] == 2u);
     CHECK(!submitted.data.draw.has_transform && submitted.data.draw.viewport[2] == 720.0f);
+    CHECK(submitted.data.draw.screen_space_offset[0] == 0.0f && submitted.data.draw.screen_space_offset[1] == 0.0f);
+    CHECK(submitted.data.draw.has_scissor && submitted.data.draw.scissor[2] == 720 &&
+        submitted.data.draw.scissor[3] == 480);
+    const int32_t scissor[4] = {8, 12, 80, 120};
+    recomp_guest_store(DEVICE + 0x1b80u, scissor, sizeof scissor);
+    *recomp_memory_u32(DEVICE + 0x1c00u) = 1u;
+    *recomp_memory_u32(DEVICE + 0xef8u) = 0x3d000000u;
+    *recomp_memory_u32(DEVICE + 0xefcu) = 0x3f480000u;
     target.offscreen = true;
     target.no_depth = true;
     target.color = texture;
     invoke(0x348240u, 5u, 3u, VERTICES, 28u);
     CHECK(submitted.data.draw.target.offscreen && submitted.data.draw.target.no_depth &&
         submitted.data.draw.target.color.data == texture.data);
+    CHECK(submitted.data.draw.screen_space_offset[0] == -0.5f && submitted.data.draw.screen_space_offset[1] == 0.25f);
+    CHECK(submitted.data.draw.has_scissor &&
+        memcmp(submitted.data.draw.scissor, scissor, sizeof scissor) == 0);
+    *recomp_memory_u32(DEVICE + 0x1c00u) = 0u;
+    *recomp_memory_u32(DEVICE + 0xee0u) = 20u;
+    *recomp_memory_u32(DEVICE + 0xee8u) = 700u;
+    *recomp_memory_u32(DEVICE + 0xef8u) = *recomp_memory_u32(DEVICE + 0xefcu) = 0x3f080000u;
     target = (RecompD3dPresenterTarget){0};
     invoke(0x3483b0u, 6u, 2u, 4u, 0u);
     CHECK(recomp_runtime.registers.esp == STACK + 16u && submits == 3u);
+    CHECK(submitted.data.draw.has_scissor && submitted.data.draw.scissor[0] == 20 &&
+        submitted.data.draw.scissor[2] == 720);
+    *recomp_memory_u32(DEVICE + 0xee0u) = 0u;
+    *recomp_memory_u32(DEVICE + 0xee8u) = 720u;
     CHECK(submitted.data.draw.vertex_bytes == ram + VERTICES + 56u);
     CHECK(submitted.data.draw.triangle_count == 2u);
     const uint16_t indices[3] = {4u, 0u, 2u};
@@ -337,7 +357,8 @@ static int lighting_tests(void)
     *recomp_memory_u32(STAGES + 128u + 28u * 4u) = 0x30000u;
     *recomp_memory_u32(DEVICE + 0xf8cu) = 0x7000u;
     invoke(0x348240u, 5u, 3u, VERTICES, 32u);
-    CHECK(submitted.data.draw.has_reflection && !submitted.data.draw.reflection_mesh_uv);
+    CHECK(submitted.data.draw.has_reflection && !submitted.data.draw.reflection_mesh_uv &&
+        !submitted.data.draw.reflection_premultiplied);
     CHECK(submitted.data.draw.reflection_bytes == ram + texture.data &&
         submitted.data.draw.reflection_byte_count == 64u);
     CHECK(submitted.data.draw.reflection_world_view[12] == 5.0f &&
@@ -345,6 +366,10 @@ static int lighting_tests(void)
         submitted.data.draw.reflection_transform[15] == 1.0f &&
         submitted.data.draw.reflection_diffuse[3] == 0.25f);
     *recomp_memory_u32(STAGES + 128u + 48u) = *recomp_memory_u32(STAGES + 128u + 64u) = 16u;
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected premultiplied stop: %s\n", stop_reason); return 1; }
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    CHECK(submitted.data.draw.has_reflection && submitted.data.draw.reflection_premultiplied);
+    *recomp_memory_u32(STAGES + 128u + 64u) = 14u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
     CHECK(strcmp(stop_reason, "d3d8:draw-texture-stages") == 0);
     *recomp_memory_u32(STAGES + 128u + 48u) = *recomp_memory_u32(STAGES + 128u + 64u) = 14u;

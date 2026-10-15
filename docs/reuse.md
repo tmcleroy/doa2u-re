@@ -112,3 +112,11 @@ The same committed presenter supplies the reflection material; its 5849 binding
 verifies texture1 transforms, generated coordinates and matching samplers.
 Reflection diffuse now selects stream color for unlit colored vertices, while
 the evaluated lighting path retains material alpha and post-stage specular.
+The premultiplied texture-alpha variant extends this same semantic material
+with a per-draw flag. Its Xbox operation ordering is verified separately from
+the PC enum; native pixels check intermediate saturation and alpha behavior.
+The 5849 screen-space offset setter feeds a per-draw pixel translation through
+the same WVP path; SDK raster bias stays in the guest shadow. Native tests
+cover perspective, blended transforms, subviewports and pretransformed draws.
+One allowed scissor rectangle follows the same target scaling; native pixels
+check its edges and restoration without changing geometry or viewport clipping.

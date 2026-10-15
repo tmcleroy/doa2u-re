@@ -247,7 +247,7 @@ static bool testLighting()
         auto clear = clearCommand();
         clear.data.clear.color = 0xff000000u;
         passed &= expect("lighting clear", d3d11_backend_submit(presenter, &clear));
-        for (unsigned i = 0; i < 10 && passed; ++i) {
+        for (unsigned i = 0; i < 14 && passed; ++i) {
             struct Vertex { float x, y, z, nx, ny, nz, u, v; };
             Vertex vertices[] = {
                 {-0.1f, 0.1f, 0.5f, 0, 0, 1, 0, 0}, {0.1f, 0.1f, 0.5f, 0, 0, 1, 1, 0},
@@ -295,7 +295,7 @@ static bool testLighting()
                 light.attenuation[0][1] = 0.5f;
                 light.attenuation[0][3] = i == 2 ? 3.0f : 1.0f;
             }
-            if (i == 4 || i == 8) {
+            if (i == 4 || i == 8 || i == 11) {
                 if (i == 4) {
                     std::memset(light.colors, 0, sizeof light.colors);
                     std::memset(light.ambient, 0, sizeof light.ambient);
@@ -311,16 +311,20 @@ static bool testLighting()
                 light.normal_transforms[0][0] = light.normal_transforms[0][10] = 0;
                 light.normal_transforms[0][2] = 1;
             }
-            const uint32_t base_pixel = i == 9 ? 0xc080e0ffu : 0x800000ffu;
-            const uint32_t environment_pixel = i == 9 ? 0x80ff8000u : 0x40ff0000u;
+            const bool vertex_diffuse = i >= 9 && i != 11;
+            const uint32_t base_pixel = vertex_diffuse ? 0xc080e0ffu : 0x800000ffu;
+            const uint32_t environment_pixel = i == 12 ? 0u : i == 13 ? 0xff804020u
+                : vertex_diffuse ? 0x80ff8000u : 0x40ff0000u;
             if (i >= 8) {
-                draw.transform[12] = i == 9 ? -0.5f : 0;
+                draw.transform[0] = 0.75f;
+                draw.transform[12] = -5.0f / 6.0f + (i - 8) / 3.0f;
                 draw.transform[13] = 0;
                 draw.depth.alpha_test_enable = false;
                 draw.blend.blend_enable = true;
                 draw.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
                 draw.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
                 draw.has_texture = draw.has_reflection = draw.reflection_mesh_uv = true;
+                draw.reflection_premultiplied = i >= 10;
                 draw.texture.data = 0x1000u;
                 draw.texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
                 draw.texture.bits_per_pixel = 32;
@@ -335,7 +339,7 @@ static bool testLighting()
             }
             struct DiffuseVertex { float x, y, z; uint32_t diffuse; float u, v; };
             DiffuseVertex diffuse_vertices[4]{};
-            if (i == 9) {
+            if (vertex_diffuse) {
                 for (unsigned j = 0; j < 4; ++j)
                     diffuse_vertices[j] = {vertices[j].x, vertices[j].y, vertices[j].z,
                         0x8080ffc0u, vertices[j].u, vertices[j].v};
@@ -343,6 +347,12 @@ static bool testLighting()
                 draw.vertex_stride = sizeof(DiffuseVertex);
                 draw.vertex_bytes = diffuse_vertices;
                 light.enabled = false;
+            }
+            if (i == 8) {
+                draw.program_alpha_mask = true;
+                passed &= expect("reflection mask overlap", d3d11_backend_submit(presenter, &command),
+                    RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
+                draw.program_alpha_mask = false;
             }
             passed &= expect("lighting draw", d3d11_backend_submit(presenter, &command));
         }
@@ -352,11 +362,12 @@ static bool testLighting()
         passed &= expect("destroy lighting", d3d11_backend_destroy(&presenter));
         if (FILE *file = std::fopen(path, "rb")) {
             const int expected[][3] = {{102, 77, 108}, {26, 26, 32}, {54, 45, 67}, {6, 13, 26},
-                {108, 89, 77}, {255, 0, 0}, {0, 0, 0}, {102, 77, 108}, {30, 7, 10}, {21, 39, 21}};
-            // Reflection alpha is diffuse.a * lerp(base.a * diffuse.a, env.a, env.a).
-            for (unsigned i = 0; i < 10; ++i) {
+                {108, 89, 77}, {255, 0, 0}, {0, 0, 0}, {102, 77, 108}, {30, 7, 10}, {21, 39, 21},
+                {33, 83, 44}, {46, 10, 48}, {36, 42, 12}, {12, 32, 32}};
+            // SRC_ALPHA over black checks reflection alpha as well as RGB. PM clamps before diffuse.
+            for (unsigned i = 0; i < 14; ++i) {
                 unsigned char bgr[3]{};
-                const unsigned x = i >= 8 ? (i == 9 ? 80 : 160) : 40 + 80 * (i % 4);
+                const unsigned x = i >= 8 ? (160 * (i - 8) + 80) / 3 : 40 + 80 * (i % 4);
                 const unsigned y = i >= 8 ? 120 : 60 + 120 * (i / 4);
                 std::fseek(file, 54 + (239 - y) * 960 + x * 3, SEEK_SET);
                 passed &= std::fread(bgr, 1, 3, file) == 3;
@@ -372,7 +383,147 @@ static bool testLighting()
     }
     _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
     DeleteFileA(path);
-    if (passed) std::puts("PASS native lighting diffuse, ambient, point attenuation/range, specular, alpha, normal transform and reflection");
+    if (passed) std::puts("PASS native lighting, normal and premultiplied reflections, stage saturation and alpha endpoints");
+    return passed;
+}
+
+static bool testScreenSpaceOffsetAndScissor()
+{
+    char folder[MAX_PATH], path[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "off", 0, path)) return false;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", path);
+    RecompD3dPresenter *presenter = nullptr;
+    bool passed = expect("create screen offset", d3d11_backend_create(&config, &presenter));
+    if (passed) {
+        auto clear = clearCommand();
+        clear.data.clear.color = 0xff000000u;
+        passed &= expect("offset clear", d3d11_backend_submit(presenter, &clear));
+        const float offsets[][2] = {{12, 10}, {-12, -10}, {20, -14}, {-20, 14}};
+        const uint16_t indices[] = {0, 1, 2, 3};
+        for (unsigned i = 0; i < 4 && passed; ++i) {
+            RecompD3dPresenterCommand command{RECOMP_D3D_PRESENTER_COMMAND_DRAW};
+            auto &draw = command.data.draw;
+            draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+            draw.index_count = draw.vertex_count = 4;
+            draw.triangle_count = 2;
+            draw.index_bytes = indices;
+            draw.blend.color_write_mask = 15;
+            std::memcpy(draw.screen_space_offset, offsets[i], sizeof offsets[i]);
+            struct ScreenVertex { float x, y, z, rhw; uint32_t diffuse; };
+            ScreenVertex screen[] = {{20, 20, 0.25f, 0.5f, 0xffffffffu}, {28, 20, 0.25f, 0.25f, 0xffffffffu},
+                {20, 28, 0.25f, 0.5f, 0xffffffffu}, {28, 28, 0.25f, 0.25f, 0xffffffffu}};
+            struct BlendVertex { float x, y, z, weights[3]; uint32_t diffuse; };
+            const BlendVertex blended[] = {{-0.5f, 1, 0.5f, {0.1f, 0.2f, 0.3f}, 0xffffffffu},
+                {0.5f, 1, 0.5f, {0.1f, 0.2f, 0.3f}, 0xffffffffu},
+                {-0.5f, -1, 0.5f, {0.1f, 0.2f, 0.3f}, 0xffffffffu},
+                {0.5f, -1, 0.5f, {0.1f, 0.2f, 0.3f}, 0xffffffffu}};
+            struct Vertex { float x, y, z; uint32_t diffuse; };
+            const Vertex vertices[] = {{-0.05f, 0.1f, 0.5f, 0xffffffffu}, {0.05f, 0.1f, 0.5f, 0xffffffffu},
+                {-0.05f, -0.1f, 0.5f, 0xffffffffu}, {0.05f, -0.1f, 0.5f, 0xffffffffu}};
+            if (i < 2) {
+                if (i == 1) for (auto &vertex : screen) vertex.x += 60;
+                draw.fvf = 0x44u;
+                draw.vertex_stride = sizeof(ScreenVertex);
+                draw.vertex_bytes = screen;
+            } else {
+                draw.has_transform = true;
+                if (i == 2) {
+                    draw.fvf = 0x4au;
+                    draw.vertex_stride = sizeof(BlendVertex);
+                    draw.vertex_bytes = blended;
+                    draw.blend_weight_count = 3;
+                    draw.transform[0] = -0.7f;
+                    draw.transform[3] = 1.5f;
+                    draw.transform[5] = 0.1f;
+                    draw.transform[10] = 1;
+                    draw.transform[12] = -1;
+                    draw.transform[15] = 2;
+                    for (auto &transform : draw.blend_transforms)
+                        std::memcpy(transform, draw.transform, sizeof draw.transform);
+                } else {
+                    draw.fvf = 0x42u;
+                    draw.vertex_stride = sizeof(Vertex);
+                    draw.vertex_bytes = vertices;
+                    for (unsigned j = 0; j < 16; j += 5) draw.transform[j] = 1;
+                    const float viewport[] = {160, 80, 160, 120, 0, 1};
+                    std::memcpy(draw.viewport, viewport, sizeof viewport);
+                }
+            }
+            passed &= expect("screen offset draw", d3d11_backend_submit(presenter, &command));
+            if (i == 0) {
+                for (unsigned axis = 0; axis < 2; ++axis) {
+                    for (float invalid : {INFINITY, NAN}) {
+                        draw.screen_space_offset[axis] = invalid;
+                        passed &= expect("nonfinite screen offset", d3d11_backend_submit(presenter, &command),
+                            RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
+                    }
+                    draw.screen_space_offset[axis] = offsets[i][axis];
+                }
+                const float program_vertices[4][8]{};
+                draw.fvf = 0x112u;
+                draw.vertex_stride = sizeof program_vertices[0];
+                draw.vertex_bytes = program_vertices;
+                draw.program_count = 1;
+                draw.program[0][3] = 1; // One synthetic terminating NOP.
+                draw.program_constants[58][0] = draw.program_constants[58][1] = draw.program_constants[58][2] = 1;
+                draw.screen_space_offset[0] = draw.screen_space_offset[1] = 0;
+                passed &= expect("zero program screen offset", d3d11_backend_submit(presenter, &command));
+                draw.screen_space_offset[0] = 0.5f;
+                passed &= expect("unsupported program screen offset", d3d11_backend_submit(presenter, &command),
+                    RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
+            }
+        }
+        struct ScreenVertex { float x, y, z, rhw; uint32_t diffuse; };
+        ScreenVertex vertices[] = {{20, 180, 0.25f, 1, 0xffffffffu}, {148, 180, 0.25f, 1, 0xffffffffu},
+            {20, 236, 0.25f, 1, 0xffffffffu}, {148, 236, 0.25f, 1, 0xffffffffu}};
+        RecompD3dPresenterCommand clipped{RECOMP_D3D_PRESENTER_COMMAND_DRAW};
+        auto &draw = clipped.data.draw;
+        draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+        draw.index_count = draw.vertex_count = 4;
+        draw.triangle_count = 2;
+        draw.fvf = 0x44u;
+        draw.vertex_stride = sizeof(ScreenVertex);
+        draw.vertex_bytes = vertices;
+        draw.index_bytes = indices;
+        draw.blend.color_write_mask = 15;
+        draw.screen_space_offset[0] = 8;
+        draw.screen_space_offset[1] = 4;
+        draw.has_scissor = true;
+        const int32_t scissor[] = {40, 192, 100, 216};
+        std::memcpy(draw.scissor, scissor, sizeof scissor);
+        passed &= expect("scissor draw", d3d11_backend_submit(presenter, &clipped));
+        draw.scissor[2] = 39;
+        passed &= expect("inverted scissor", d3d11_backend_submit(presenter, &clipped),
+            RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
+        draw.scissor[2] = 100;
+        draw.has_scissor = false;
+        for (auto &vertex : vertices) vertex.x += 152;
+        passed &= expect("scissor disabled draw", d3d11_backend_submit(presenter, &clipped));
+        RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
+        present.data.present = {5, 1};
+        passed &= expect("offset present", d3d11_backend_submit(presenter, &present));
+        passed &= expect("destroy offset", d3d11_backend_destroy(&presenter));
+        if (FILE *file = std::fopen(path, "rb")) {
+            // Offset positions move; scissor edges stay absolute and exclude right/bottom.
+            const unsigned pixels[][3] = {{34, 32, 255}, {22, 22, 0}, {70, 12, 255}, {82, 22, 0},
+                {98, 106, 255}, {80, 120, 0}, {106, 106, 0}, {220, 154, 255}, {240, 140, 0},
+                {40, 192, 255}, {99, 215, 255}, {39, 200, 0}, {100, 200, 0}, {60, 191, 0}, {60, 216, 0},
+                {200, 200, 255}, {280, 224, 255}};
+            for (const auto &pixel : pixels) {
+                unsigned char bgr[3]{};
+                std::fseek(file, 54 + (239 - pixel[1]) * 960 + pixel[0] * 3, SEEK_SET);
+                passed &= std::fread(bgr, 1, 3, file) == 3;
+                const bool pixel_ok = bgr[0] == pixel[2] && bgr[1] == pixel[2] && bgr[2] == pixel[2];
+                if (!pixel_ok) std::fprintf(stderr, "FAIL offset/scissor pixel (%u,%u) BGR=%u,%u,%u expected=%u\n",
+                    pixel[0], pixel[1], bgr[0], bgr[1], bgr[2], pixel[2]);
+                passed &= pixel_ok;
+            }
+            std::fclose(file);
+        } else passed = false;
+    }
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
+    DeleteFileA(path);
+    if (passed) std::puts("PASS screen-space offsets, XYZRHW, blended transforms, clip W, subviewport and scissor reset");
     return passed;
 }
 
@@ -408,7 +559,8 @@ static bool testClose(bool idle)
 int main()
 {
     recomp_d3d_presenter_set_immediate_present(false);
-    if (!testTicks() || !testCapturedDraw() || !testMipSampler() || !testLighting() || !testClose(false) || !testClose(true)) return 1;
+    if (!testTicks() || !testCapturedDraw() || !testMipSampler() || !testLighting() ||
+        !testScreenSpaceOffsetAndScissor() || !testClose(false) || !testClose(true)) return 1;
     std::puts("PASS presenter render thread");
     return 0;
 }
