@@ -97,6 +97,10 @@ analysis and build receipts stay in `private/program/`; boot logs stay in
 `private/boot-logs/`. The probe creates `private/play-disc` with hardlinks,
 preserves its saves, and reports a timeout as termination of the probe.
 
+Input uses SDL gamepads or the focused game window's keyboard. Enter sends
+Start; arrows move the D-pad and Z/X send A/B. A bounded intro-skip probe can
+use repeated `--input-start-pulse-at <poll>` arguments (up to four).
+
 ## Layout
 
 | Path | Purpose |

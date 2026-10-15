@@ -97,6 +97,58 @@ static uint32_t color_header(uint32_t index)
     return DEVICE + COLOR_HEADERS + index * sizeof(RecompD3dSurfaceHeader);
 }
 
+static void target_surface(uint32_t surface, bool depth, RecompD3dTextureDesc *desc)
+{
+    if (!recomp_d3d8_resource_describe(surface, desc) || desc->depth != depth ||
+        (!depth && !desc->render_target) || desc->bits_per_pixel != 32u || desc->data == 0u ||
+        desc->width == 0u || desc->height == 0u || desc->width > 16384u || desc->height > 16384u ||
+        (depth ? (desc->format_byte != 0x2eu && desc->format_byte != 0x2au) :
+            (desc->format_byte != 0x12u && desc->format_byte != 0x06u)) ||
+        (desc->linear && desc->pitch < desc->width * 4u)) {
+        recomp_stop(2, "d3d8:target-surface:%08x", surface);
+    }
+    const uint64_t bytes = desc->linear ? (uint64_t)desc->pitch * desc->height :
+        (uint64_t)desc->width * desc->height * 4u;
+    if (bytes > RECOMP_XBOX_RAM_SIZE) recomp_stop(2, "d3d8:target-span");
+    (void)recomp_memory(desc->data, (size_t)bytes);
+}
+
+static void resolve_target(uint32_t color, uint32_t depth, RecompD3dPresenterTarget *target)
+{
+    *target = (RecompD3dPresenterTarget){0};
+    target_surface(color, false, &target->color);
+    RecompD3dTextureDesc main_color, front_color;
+    target_surface(color_header(0u), false, &main_color);
+    target_surface(color_header(1u), false, &front_color);
+    if (target->color.data == front_color.data) recomp_stop(2, "d3d8:target-front-buffer-unbound");
+    target->offscreen = target->color.data != main_color.data;
+    if (!target->offscreen && (target->color.width != main_color.width ||
+        target->color.height != main_color.height || target->color.pitch != main_color.pitch ||
+        target->color.linear != main_color.linear || target->color.format_byte != main_color.format_byte)) {
+        recomp_stop(2, "d3d8:target-alias-unbound");
+    }
+    target->no_depth = depth == 0u;
+    if (depth != 0u) {
+        target_surface(depth, true, &target->depth);
+        if (target->depth.width != target->color.width || target->depth.height != target->color.height)
+            recomp_stop(2, "d3d8:target-depth-size-unbound");
+        RecompD3dTextureDesc main_depth;
+        target_surface(DEVICE + DEPTH_HEADER, true, &main_depth);
+        target->custom_depth = target->depth.data != main_depth.data;
+        /* shortcut: offscreen draws cannot share scaled main depth; bind a separate depth surface. */
+        if (!target->custom_depth && (target->offscreen || target->depth.width != main_depth.width ||
+            target->depth.height != main_depth.height || target->depth.pitch != main_depth.pitch ||
+            target->depth.linear != main_depth.linear || target->depth.format_byte != main_depth.format_byte))
+            recomp_stop(2, "d3d8:target-depth-alias-unbound");
+    }
+}
+
+void recomp_d3d8_target(RecompD3dPresenterTarget *target)
+{
+    recomp_d3d8_require_device();
+    resolve_target(*recomp_memory_u32(DEVICE + TARGET), *recomp_memory_u32(DEVICE + DEPTH), target);
+}
+
 static void write_initial_device(void)
 {
     recomp_d3d8_state_reset();
@@ -249,7 +301,7 @@ static void get_back_buffer(void)
     recomp_d3d8_require_device();
     if (index != 0u && index != UINT32_MAX) recomp_stop(2, "d3d8:back-buffer-index:%u", index);
     const uint32_t address = color_header(index == UINT32_MAX ? 1u : 0u);
-    reference_surface(address, false);
+    recomp_d3d8_resource_add_ref(address);
     recomp_runtime.registers.eax = address;
     recomp_runtime.registers.esp = entry + 8u;
 }
@@ -259,7 +311,7 @@ static void get_depth_surface(void)
     const uint32_t entry = recomp_runtime.registers.esp;
     recomp_d3d8_require_device();
     const uint32_t address = *recomp_memory_u32(DEVICE + DEPTH);
-    if (address != 0u) reference_surface(address, false);
+    if (address != 0u) recomp_d3d8_resource_add_ref(address);
     recomp_runtime.registers.eax = address;
     recomp_runtime.registers.esp = entry + 4u;
 }
@@ -268,7 +320,7 @@ static void get_render_target(void)
 {
     recomp_d3d8_require_device();
     const uint32_t address = *recomp_memory_u32(DEVICE + TARGET);
-    if (address != 0u) reference_surface(address, false);
+    if (address != 0u) recomp_d3d8_resource_add_ref(address);
     recomp_runtime.registers.eax = address;
     recomp_runtime.registers.esp += 4u;
 }
@@ -291,9 +343,15 @@ static void set_viewport(void)
     RecompD3dViewport viewport;
     recomp_d3d8_require_device();
     if (source != 0u) {
+        RecompD3dPresenterTarget target;
+        recomp_d3d8_target(&target);
+        RecompD3dDeviceState candidate = device_state;
+        candidate.width = target.color.width;
+        candidate.height = target.color.height;
         load(&viewport, source, sizeof viewport);
-        const RecompD3dDeviceError error = recomp_d3d_device_set_viewport(&device_state, &viewport);
+        const RecompD3dDeviceError error = recomp_d3d_device_set_viewport(&candidate, &viewport);
         if (error != RECOMP_D3D_DEVICE_OK) recomp_stop(2, "d3d8:viewport:%u", (unsigned)error);
+        device_state.viewport = candidate.viewport;
         store(DEVICE + VIEWPORT, &device_state.viewport, sizeof device_state.viewport);
     }
     recomp_runtime.registers.esp = entry + 8u;
@@ -319,18 +377,14 @@ static void set_render_target(void)
     uint32_t color = argument(entry, 0u), depth = argument(entry, 1u);
     recomp_d3d8_require_device();
     if (color == 0u) color = *recomp_memory_u32(DEVICE + TARGET);
-    /* Offscreen/front-buffer target mapping requires a separate verified seam. */
-    if (color != color_header(0u) || (depth != 0u && depth != DEVICE + DEPTH_HEADER)) {
-        recomp_stop(2, "d3d8:set-render-target-unbound");
+    RecompD3dPresenterTarget target;
+    resolve_target(color, depth, &target);
+    recomp_d3d8_resource_set_render_targets(color, depth);
+    if (depth != 0u) {
+        *recomp_memory_u32(DEVICE + 0x948u) = 0x4b7fffffu;
+        *recomp_memory_u32(DEVICE + 0x94cu) = target.depth.linear ? target.depth.pitch : target.depth.width * 4u;
     }
-    const uint32_t old_depth = *recomp_memory_u32(DEVICE + DEPTH);
-    if (depth != old_depth) {
-        if (old_depth != 0u) *recomp_memory_u32(old_depth) &= ~RECOMP_D3D_SURFACE_BOUND;
-        if (depth != 0u) *recomp_memory_u32(depth) |= RECOMP_D3D_SURFACE_BOUND;
-    }
-    *recomp_memory_u32(DEVICE + TARGET) = color;
-    *recomp_memory_u32(DEVICE + DEPTH) = depth;
-    device_state.viewport = (RecompD3dViewport){0u, 0u, device_state.width, device_state.height, 0.0f, 1.0f};
+    device_state.viewport = (RecompD3dViewport){0u, 0u, target.color.width, target.color.height, 0.0f, 1.0f};
     store(DEVICE + VIEWPORT, &device_state.viewport, sizeof device_state.viewport);
     recomp_runtime.registers.esp = entry + 12u;
 }
@@ -339,24 +393,21 @@ static void clear(void)
 {
     const uint32_t entry = recomp_runtime.registers.esp;
     recomp_d3d8_require_device();
-    const uint32_t depth = *recomp_memory_u32(DEVICE + DEPTH);
-    if (*recomp_memory_u32(DEVICE + TARGET) != color_header(0u) ||
-        (depth != 0u && depth != DEVICE + DEPTH_HEADER)) {
-        recomp_stop(2, "d3d8:clear-target-unbound");
-    }
+    RecompD3dPresenterTarget target;
+    recomp_d3d8_target(&target);
     load(&device_state.viewport, DEVICE + VIEWPORT, sizeof device_state.viewport);
     if (device_state.viewport.x != 0u || device_state.viewport.y != 0u ||
-        device_state.viewport.width != device_state.width || device_state.viewport.height != device_state.height) {
+        device_state.viewport.width != target.color.width || device_state.viewport.height != target.color.height) {
         recomp_stop(2, "d3d8:clear-viewport-unbound");
     }
     RecompD3dFrameResult result = recomp_d3d_frame_clear(&frame_state,
         argument(entry, 0u), argument(entry, 1u), argument(entry, 2u),
         argument(entry, 3u), argument(entry, 4u), argument(entry, 5u));
     if (result.error != RECOMP_D3D_FRAME_OK) recomp_stop(2, "d3d8:clear:%u", (unsigned)result.error);
-    if (depth == 0u) {
+    result.command.data.clear.target = target;
+    if (target.no_depth) {
         result.command.data.clear.clear_depth = false;
         result.command.data.clear.clear_stencil = false;
-        result.command.data.clear.target.no_depth = true;
     }
     recomp_d3d8_submit(&result.command);
     fprintf(stderr, "recomp d3d8: Clear flags=%08" PRIx32 "\n", argument(entry, 2u));
@@ -400,6 +451,23 @@ static void flush(bool wait)
 
 static void kick(void) { flush(false); recomp_runtime.registers.esp += 4u; }
 static void wait_idle(void) { flush(true); recomp_runtime.registers.esp += 4u; }
+
+static void insert_fence(void)
+{
+    /* Complete queued native work before publishing a reusable-resource fence. */
+    flush(true);
+    const uint32_t fence = *recomp_memory_u32(DEVICE + 0x2cu);
+    *recomp_memory_u32(DEVICE + 0x2cu) = fence + 2u;
+    recomp_runtime.registers.eax = fence;
+    recomp_runtime.registers.esp += 4u;
+}
+
+static void block_on_fence(void)
+{
+    /* All returned fences have already completed; draining also orders new work. */
+    flush(true);
+    recomp_runtime.registers.esp += 8u;
+}
 
 static void persist_display(void)
 {
@@ -479,6 +547,8 @@ RecompFunction recomp_d3d8_lookup_manual(uint32_t address)
     case 0x0034a310u: return push_buffer_unbound;
     case 0x00344440u: return kick;
     case 0x00344420u: case 0x0034a370u: return wait_idle;
+    case 0x003445f0u: return insert_fence;
+    case 0x00344430u: return block_on_fence;
     case 0x00345d70u: return persist_display;
     case 0x00344720u: return reset_device;
     /* CRI's no-argument tail aliases bypass generated callee lookup. */

@@ -1,10 +1,13 @@
 #include "d3d_presenter.h"
+#include "d3d_presenter_d3d11_backend.h"
 #include "d3d_draw_model.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <thread>
 
@@ -130,6 +133,109 @@ static bool testCapturedDraw()
     return passed;
 }
 
+static bool testMipSampler()
+{
+    char folder[MAX_PATH], path[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "mip", 0, path)) return false;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", path);
+    RecompD3dPresenter *presenter = nullptr;
+    bool passed = expect("create mip sampler", d3d11_backend_create(&config, &presenter));
+    if (passed) {
+        struct Vertex { float x, y, z, rhw; uint32_t diffuse; float u, v; };
+        Vertex vertices[] = {
+            {20, 20, 0.25f, 1, 0xffffffffu, 0, 0},
+            {84, 20, 0.25f, 1, 0xffffffffu, 16, 0},
+            {20, 84, 0.25f, 1, 0xffffffffu, 0, 16},
+            {84, 84, 0.25f, 1, 0xffffffffu, 16, 16},
+        };
+        uint16_t indices[] = {0, 1, 2, 3};
+        // One solid BC1 block per mip: red 4x4, green 2x2, blue 1x1.
+        const uint32_t mips[] = {0xf800f800u, 0u, 0x07e007e0u, 0u, 0x001f001fu, 0u};
+        auto clear = clearCommand();
+        clear.data.clear.color = 0xff000000u;
+        passed &= expect("mip clear", d3d11_backend_submit(presenter, &clear));
+        RecompD3dPresenterCommand command{};
+        command.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
+        auto &draw = command.data.draw;
+        draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+        draw.index_count = draw.vertex_count = 4;
+        draw.triangle_count = 2;
+        draw.vertex_stride = sizeof(Vertex);
+        draw.fvf = 0x144u;
+        draw.vertex_bytes = vertices;
+        draw.index_bytes = indices;
+        draw.blend.color_write_mask = 15;
+        draw.has_texture = true;
+        draw.texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_DXT1;
+        draw.texture.bits_per_pixel = 4;
+        draw.texture.width = draw.texture.height = 4;
+        draw.texture.mip_levels = 3;
+        draw.texture.data = 0x1000u;
+        draw.texture_bytes = mips;
+        draw.texture_byte_count = sizeof mips;
+        // Texture alpha must survive a zero material alpha and pass the test.
+        draw.material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_SELECT_TEXTURE;
+        draw.depth.alpha_test_enable = true;
+        draw.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER;
+        draw.depth.alpha_ref = 128;
+        // Exceed the cache once, then revisit the four samplers below.
+        for (unsigned i = 0; i < 65 && passed; ++i) {
+            draw.mip_lod_bias = -8.0f + i * 0.25f;
+            passed &= expect("mip cache eviction", d3d11_backend_submit(presenter, &command));
+        }
+        const float biases[] = {0.0f, 1.25f, 1.25f, -2.0f};
+        for (unsigned i = 0; i < 4 && passed; ++i) {
+            draw.point_mip_filter = i == 1 || i == 3;
+            draw.mip_lod_bias = biases[i];
+            passed &= expect("mip draw", d3d11_backend_submit(presenter, &command));
+            for (auto &vertex : vertices) vertex.x += 64.0f;
+        }
+        for (auto &vertex : vertices) {
+            vertex.x -= 256.0f;
+            vertex.y += 64.0f;
+            vertex.diffuse = 0x00ffffffu;
+        }
+        draw.material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_SELECT_VERTEX_DIFFUSE;
+        draw.material_alpha = 1.0f;
+        draw.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER_EQUAL;
+        draw.mip_lod_bias = 0.0f;
+        passed &= expect("vertex alpha discard", d3d11_backend_submit(presenter, &command));
+        for (float bias : {-16.01f, 16.0f, INFINITY, NAN}) {
+            draw.mip_lod_bias = bias;
+            passed &= expect("invalid mip bias", d3d11_backend_submit(presenter, &command),
+                RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
+        }
+        command = {};
+        command.type = RECOMP_D3D_PRESENTER_COMMAND_PRESENT;
+        command.data.present = {5, 1};
+        passed &= expect("mip present", d3d11_backend_submit(presenter, &command));
+        passed &= expect("destroy mip sampler", d3d11_backend_destroy(&presenter));
+        if (FILE *file = std::fopen(path, "rb")) {
+            for (unsigned i = 0; i < 5; ++i) {
+                unsigned char bgr[3]{};
+                const unsigned x = i == 4 ? 52 : 52 + 64 * i;
+                const unsigned y = i == 4 ? 116 : 52;
+                std::fseek(file, 54 + (240 - 1 - y) * 320 * 3 + x * 3, SEEK_SET);
+                passed &= std::fread(bgr, 1, 3, file) == 3;
+                const bool red = bgr[2] > 245 && bgr[1] < 10 && bgr[0] < 10;
+                const bool green = bgr[1] > 245 && bgr[0] < 10 && bgr[2] < 10;
+                const bool blended = bgr[1] > 170 && bgr[1] < 210 &&
+                    bgr[0] > 45 && bgr[0] < 85 && bgr[2] < 10;
+                const bool black = bgr[0] == 0 && bgr[1] == 0 && bgr[2] == 0;
+                const bool pixel_ok = i == 4 ? black : i == 1 ? green : i == 2 ? blended : red;
+                if (!pixel_ok) std::fprintf(stderr, "FAIL mip pixel %u BGR=%u,%u,%u\n",
+                    i, bgr[0], bgr[1], bgr[2]);
+                passed &= pixel_ok;
+            }
+            std::fclose(file);
+        } else passed = false;
+    }
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
+    DeleteFileA(path);
+    if (passed) std::puts("PASS mip selection, interpolation, bias, sampler cache eviction, texture alpha and vertex alpha");
+    return passed;
+}
+
 static bool testClose(bool idle)
 {
     RecompD3dPresenter *presenter = nullptr;
@@ -162,7 +268,7 @@ static bool testClose(bool idle)
 int main()
 {
     recomp_d3d_presenter_set_immediate_present(false);
-    if (!testTicks() || !testCapturedDraw() || !testClose(false) || !testClose(true)) return 1;
+    if (!testTicks() || !testCapturedDraw() || !testMipSampler() || !testClose(false) || !testClose(true)) return 1;
     std::puts("PASS presenter render thread");
     return 0;
 }

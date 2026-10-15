@@ -146,6 +146,9 @@ typedef struct RecompD3dPresenterDrawCommand {
     bool has_texture;
     /* Guest D3DTADDRESS U/V for the texture's stage; 0 (unknown) wraps. */
     uint32_t address_u, address_v;
+    /* Stage-0 mip selection; zero initialization keeps linear mips and no bias. */
+    bool point_mip_filter;
+    float mip_lod_bias;
     /* Storage aliases the current guest backbuffer, whose pixels are host-owned. */
     bool texture_is_backbuffer;
     /* GetBackBuffer(-1): the frame Present last showed, not the one in progress. */

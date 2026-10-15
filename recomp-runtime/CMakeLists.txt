@@ -8,6 +8,25 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Official SDL3 VC build for the Windows input host; SDL3.dll is copied beside
+# each target that uses it.
+if(WIN32)
+    if(POLICY CMP0135)
+        cmake_policy(SET CMP0135 NEW)
+    endif()
+    include(FetchContent)
+    FetchContent_Declare(SDL3
+        URL https://github.com/libsdl-org/SDL/releases/download/release-3.4.16/SDL3-devel-3.4.16-VC.zip
+        URL_HASH SHA256=1a784cb2a5c64d56fe7a62090fe9d242d9865f235e4ea9678f1a6ba4e693e7de)
+    FetchContent_MakeAvailable(SDL3)
+    find_package(SDL3 3.4 CONFIG REQUIRED PATHS "${sdl3_SOURCE_DIR}/cmake" NO_DEFAULT_PATH)
+    function(recomp_use_sdl3 target)
+        target_link_libraries(${target} PRIVATE SDL3::SDL3)
+        add_custom_command(TARGET ${target} POST_BUILD COMMAND "${CMAKE_COMMAND}" -E
+            copy_if_different "$<TARGET_FILE:SDL3::SDL3>" "$<TARGET_FILE_DIR:${target}>")
+    endfunction()
+endif()
+
 include(CTest)
 option(RECOMP_NATIVE_AUDIO_TEST "Test PCM consumption on an installed audio endpoint" OFF)
 
@@ -94,11 +113,19 @@ add_test(NAME recomp-runtime-save-transaction COMMAND recomp_save_transaction_te
 add_executable(recomp_controller_settings_test controller_settings.cpp controller_settings_test.cpp)
 add_test(NAME recomp-runtime-controller-settings COMMAND recomp_controller_settings_test)
 
+add_executable(recomp_input_adapter_test input_adapter.c input_model.c input_adapter_test.c
+    runtime.c stop_report.c kernel_ordinals.c apu_model.c ohci_model.c)
+add_test(NAME recomp-runtime-input-adapter COMMAND recomp_input_adapter_test)
+
 add_executable(recomp_input_pulse_source_test input_pulse_source.c input_pulse_source_test.c)
 target_compile_definitions(recomp_input_pulse_source_test PRIVATE RECOMP_INPUT_PULSE_SOURCE_STANDALONE)
 add_test(NAME recomp-runtime-input-pulses COMMAND recomp_input_pulse_source_test)
 
 if(WIN32)
+    add_executable(recomp_input_host_test input_host_win32.c input_host_win32_test.c)
+    target_link_libraries(recomp_input_host_test PRIVATE user32)
+    recomp_use_sdl3(recomp_input_host_test)
+    add_test(NAME recomp-runtime-input-host-sdl COMMAND recomp_input_host_test)
     add_library(recomp_audio STATIC audio_output_xaudio2.cpp audio_capture_xapo.cpp)
     target_include_directories(recomp_audio PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(recomp_audio PUBLIC xaudio2 xapobase ole32)
@@ -272,11 +299,13 @@ if(RECOMP_PROGRAM_DIR)
         d3d_frame_model.c d3d_tile_model.c d3d_vertex_shader_model.c
         dsound_api_adapter.c dsound_device_model.c dsound_buffer_adapter.c
         dsound_buffer_model.c dsound_effects_adapter.c dsound_effects_image.c dsound_mix_model.c xbox_adpcm.c
+        input_model.c input_adapter.c input_host_win32.c input_pulse_source.c
         host_diagnostics.cpp "${_missing_source}" ${_program_sources})
     target_compile_definitions(recomp_program_runner PRIVATE RECOMP_XBE_SHA256="${_xbe_sha256}")
     if(MSVC)
         target_compile_options(recomp_program_runner PRIVATE /we4013)
     endif()
-    target_link_libraries(recomp_program_runner PRIVATE recomp_kernel recomp_xbe recomp_d3d_presenter recomp_audio dbghelp)
+    target_link_libraries(recomp_program_runner PRIVATE recomp_kernel recomp_xbe recomp_d3d_presenter recomp_audio dbghelp user32)
+    recomp_use_sdl3(recomp_program_runner)
     target_include_directories(recomp_program_runner PRIVATE "${_derived_dir}")
 endif()

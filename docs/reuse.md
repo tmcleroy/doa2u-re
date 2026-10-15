@@ -12,7 +12,7 @@ private inputs, generated code and caches were excluded.
 | Shared models | APU, OHCI, fibers, directory enumeration, symbolic links, CRI service lifecycle and D3D frame commands; existing synthetic suites |
 | Audio helpers | Xbox ADPCM decoder and DirectSound HRTF; existing standalone tests |
 | Movie helper | Planar color conversion; existing standalone tests |
-| Input | Scripted pulse source and persistent controller settings; existing tests |
+| Input | Controller model, SDL host, scripted pulse source and persistent settings; synthetic API and virtual-pad tests |
 | Saves | Save transaction journal, recovery and validation; existing tests |
 | Timing | Guest clock and Windows vblank pacing, including the existing unpaced test |
 | Tooling | Verified ISO extraction, synthetic importer tests, XBE metadata inspection and public export checker |
@@ -40,7 +40,13 @@ The audio pass brings over the committed DOA3 XAudio2 PCM/capture host and
 the independent buffer clock. It excludes the sister manager/APU layouts,
 opaque unmapped handles and effects-download success stub. New 5849 bindings
 own device/buffer views and headroom/data/reference contracts. Host status
-distinguishes explicit mute from device failure. Input remains unbound.
+distinguishes explicit mute from device failure.
+
+The input pass ports the controller model and SDL host from committed DOA3
+`9fce2e5958dc0322a7474aada684445e1954ffc4`. The 5849 adapter uses separately
+verified entry points and packed structures. Feedback completes synchronously
+through the native kernel's event service. No sister-game input addresses or
+game-state hooks are enabled.
 
 The effects decoder and guest view are independent new code. Native FX uses
 the installed XAudio2 I3DL2 implementation rather than retail DSP programs.

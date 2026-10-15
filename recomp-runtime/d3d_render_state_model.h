@@ -216,6 +216,8 @@ typedef enum RecompD3dMaterialAlphaMode {
     RECOMP_D3D_MATERIAL_ALPHA_NONE = 0,
     RECOMP_D3D_MATERIAL_ALPHA_MODULATE_TEXTURE = 1,
     RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE = 2,
+    RECOMP_D3D_MATERIAL_ALPHA_SELECT_TEXTURE = 3,
+    RECOMP_D3D_MATERIAL_ALPHA_SELECT_VERTEX_DIFFUSE = 4,
 } RecompD3dMaterialAlphaMode;
 
 /* Recognizes the measured stage-0 material modes 3 and 0. */

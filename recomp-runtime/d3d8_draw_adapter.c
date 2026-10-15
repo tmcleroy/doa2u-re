@@ -264,17 +264,25 @@ static void fixed_stages(const RecompD3dVertexLayout *layout, RecompD3dPresenter
         if (layout->texcoord_count == 0u || stage[0][0] < 1u || stage[0][0] > 3u ||
             stage[0][1] < 1u || stage[0][1] > 3u || stage[0][3] != 2u || stage[0][4] != 2u ||
             stage[0][9] != 0u || stage[0][10] != 0u || stage[0][11] != 0u ||
-            (draw->texture.mip_levels > 1u && stage[0][5] != 2u))
+            (draw->texture.mip_levels > 1u && stage[0][5] != 1u && stage[0][5] != 2u))
             recomp_stop(2, "d3d8:draw-texture-sampler");
         float bias;
         memcpy(&bias, &stage[0][6], sizeof bias);
-        if (!isfinite(bias) || (draw->texture.mip_levels > 1u && bias != 0.0f))
+        if (!isfinite(bias) || bias < -16.0f || bias > 15.99f)
             recomp_stop(2, "d3d8:draw-texture-lod-bias");
+        draw->point_mip_filter = stage[0][5] == 1u;
+        draw->mip_lod_bias = bias;
         const bool color_modulate = stage[0][12] == 4u && stage[0][14] == 2u &&
             (stage[0][15] == 0u || stage[0][15] == 1u);
         const bool alpha_modulate = stage[0][16] == 4u && stage[0][18] == 2u &&
             (stage[0][19] == 0u || stage[0][19] == 1u);
+        const bool texture_alpha = stage[0][16] == 2u && stage[0][18] == 2u;
+        if (texture_alpha) draw->material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_SELECT_TEXTURE;
         const bool white = layout->diffuse_offset == RECOMP_D3D_FVF_ABSENT;
+        const bool vertex_alpha = !white &&
+            ((stage[0][16] == 2u && stage[0][18] <= 1u) ||
+             (stage[0][16] == 3u && stage[0][19] <= 1u));
+        if (vertex_alpha) draw->material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_SELECT_VERTEX_DIFFUSE;
         const bool white_alpha = white && layout->pretransformed &&
             recomp_d3d_texture_material_alpha_mode(stage[0][12], stage[0][14], stage[0][15],
                 stage[0][16], stage[0][18], stage[0][19]) == RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE;
@@ -283,7 +291,7 @@ static void fixed_stages(const RecompD3dVertexLayout *layout, RecompD3dPresenter
             draw->material_alpha = 1.0f;
         }
         if (!(color_modulate || (white && stage[0][12] == 2u && stage[0][14] == 2u)) ||
-            !(alpha_modulate || white_alpha || (white && stage[0][16] == 2u && stage[0][18] == 2u)))
+            !(alpha_modulate || white_alpha || texture_alpha || vertex_alpha))
             recomp_stop(2, "d3d8:draw-texture-combine");
         if (stage[0][20] != 0u || stage[0][21] != 0u || stage[0][28] != 0u)
             recomp_stop(2, "d3d8:draw-texture-coordinates");
@@ -370,12 +378,7 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     draw->cull_mode = state->cull_mode == 0x900u ? RECOMP_D3D_CULL_CLOCKWISE :
         state->cull_mode == 0x901u ? RECOMP_D3D_CULL_COUNTER_CLOCKWISE : RECOMP_D3D_CULL_NONE;
     draw->texture_factor = state->texture_factor;
-    if (*recomp_memory_u32(device + 0x1a04u) != device + 0x1a24u)
-        recomp_stop(2, "d3d8:draw-offscreen-target");
-    const uint32_t depth = *recomp_memory_u32(device + 0x1a08u);
-    if (depth != 0u && depth != device + 0x1a6cu)
-        recomp_stop(2, "d3d8:draw-depth-target");
-    draw->target.no_depth = depth == 0u;
+    recomp_d3d8_target(&draw->target);
     attach_texture(device, 0u, draw);
     if (*recomp_memory_u32(device + PIXEL_HANDLE) != 0u) {
         if (!four_tap(device, draw)) recomp_stop(2, "d3d8:draw-pixel-shader-unsupported");

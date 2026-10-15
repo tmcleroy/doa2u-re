@@ -2,6 +2,9 @@
 #include "host_diagnostics.h"
 #include "d3d8_adapter.h"
 #include "dsound_api_adapter.h"
+#include "input_adapter.h"
+#include "input_host_win32.h"
+#include "input_pulse_source.h"
 #include "runner_load.h"
 #include "save_transaction.h"
 #include "xbox_memory_layout.h"
@@ -17,17 +20,47 @@ RecompFunction recomp_program_lookup(std::uint32_t address);
 #include <iostream>
 #include <string>
 #include <vector>
+#include <charconv>
+
+static RecompInputPulseSource inputPulses;
+
+static bool sampleInput(std::uint32_t port, RecompInputGamepad *gamepad)
+{
+    if (port != 0u) return recomp_input_host_sample(port, gamepad);
+    const bool sampled = recomp_input_pulse_source_sample(&inputPulses, gamepad);
+    static bool startHeld;
+    const bool start = sampled && (gamepad->buttons & RECOMP_INPUT_BUTTON_START) != 0u;
+    if (start != startHeld) {
+        std::fprintf(stderr, "recomp input: Start %s poll=%llu\n", start ? "down" : "up",
+            static_cast<unsigned long long>(inputPulses.sample_count));
+        startHeld = start;
+    }
+    return sampled;
+}
 
 int main(int argc, char **argv)
 {
     recomp_install_host_diagnostics();
     std::string xbePath, discRoot, expectStop, milestoneLog;
+    recomp_input_pulse_source_init(&inputPulses, recomp_input_host_sample, 0u);
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
+        if (argument == "--input-start-pulse-at" && i + 1 < argc) {
+            const std::string value = argv[++i];
+            std::uint64_t poll = 0u;
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), poll);
+            if (parsed.ec != std::errc() || parsed.ptr != value.data() + value.size() ||
+                !recomp_input_pulse_source_add_poll(&inputPulses, poll)) {
+                std::cerr << "recomp runner: invalid Start poll or too many pulses\n";
+                return 64;
+            }
+            continue;
+        }
         if ((argument != "--xbe" && argument != "--disc-root" &&
              argument != "--expect-stop" && argument != "--milestone-log") || i + 1 >= argc) {
             std::cerr << "usage: recomp_program_runner --xbe <path> [--disc-root <path>]"
-                " [--expect-stop <id>] [--milestone-log <path>]\n";
+                " [--expect-stop <id>] [--milestone-log <path>]"
+                " [--input-start-pulse-at <poll>]\n";
             return 64;
         }
         const std::string value = argv[++i];
@@ -78,6 +111,10 @@ int main(int argc, char **argv)
     const RecompMemoryRegion region = {0u, memory.size(), memory.data()};
     recomp_runtime_init(&region, 1u, nullptr, 0u, nullptr, 0u);
     recomp_runtime_set_lookup(recomp_program_lookup);
+    recomp_input_adapter_reset();
+    recomp_input_adapter_set_source(sampleInput);
+    recomp_input_adapter_set_feedback_sink(recomp_input_host_set_vibration);
+    std::atexit(recomp_input_host_stop_vibration);
     std::atexit(recomp_d3d8_shutdown);
     std::atexit(recomp_dsound_api_shutdown);
     recomp_runtime.registers.esp = XBOX_STARTUP_STACK_TOP;

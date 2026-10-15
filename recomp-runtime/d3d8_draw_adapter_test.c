@@ -28,6 +28,8 @@ static bool fail_allocation;
 static jmp_buf stopped;
 static char stop_reason[128];
 static RecompD3dTextureDesc texture;
+static RecompD3dPresenterTarget target;
+void recomp_d3d8_target(RecompD3dPresenterTarget *out) { *out = target; }
 
 void recomp_stop(int code, const char *format, ...)
 {
@@ -126,6 +128,7 @@ static void initialize(void)
         *recomp_memory_u32(base + 76u) = 0u;
     }
     texture = (RecompD3dTextureDesc){0};
+    target = (RecompD3dPresenterTarget){0};
     texture.format_byte = 6u;
     texture.bits_per_pixel = 32u;
     texture.width = texture.height = 4u;
@@ -194,15 +197,22 @@ static int draw_tests(void)
     CHECK(submitted.data.draw.vertex_bytes == ram + VERTICES);
     CHECK(captured_indices[0] == 0u && captured_indices[2] == 2u);
     CHECK(!submitted.data.draw.has_transform && submitted.data.draw.viewport[2] == 720.0f);
+    target.offscreen = true;
+    target.no_depth = true;
+    target.color = texture;
+    invoke(0x348240u, 5u, 3u, VERTICES, 28u);
+    CHECK(submitted.data.draw.target.offscreen && submitted.data.draw.target.no_depth &&
+        submitted.data.draw.target.color.data == texture.data);
+    target = (RecompD3dPresenterTarget){0};
     invoke(0x3483b0u, 6u, 2u, 4u, 0u);
-    CHECK(recomp_runtime.registers.esp == STACK + 16u && submits == 2u);
+    CHECK(recomp_runtime.registers.esp == STACK + 16u && submits == 3u);
     CHECK(submitted.data.draw.vertex_bytes == ram + VERTICES + 56u);
     CHECK(submitted.data.draw.triangle_count == 2u);
     const uint16_t indices[3] = {4u, 0u, 2u};
     recomp_guest_store(INDICES, indices, sizeof indices);
     *recomp_memory_u32(DEVICE + 0x1cu) = 2u;
     invoke(0x348450u, 5u, 3u, INDICES, 0u);
-    CHECK(recomp_runtime.registers.esp == STACK + 16u && submits == 3u);
+    CHECK(recomp_runtime.registers.esp == STACK + 16u && submits == 4u);
     CHECK(submitted.data.draw.vertex_count == 5u && captured_indices[0] == 4u);
     CHECK(submitted.data.draw.vertex_bytes == ram + VERTICES + 56u);
     *recomp_memory_u32(DEVICE + 0x798u) = 2u;
@@ -216,6 +226,24 @@ static int draw_tests(void)
     CHECK(submitted.data.draw.has_texture && submitted.data.draw.texture_bytes == ram + 0x8000u);
     CHECK(submitted.data.draw.texture_byte_count == 64u);
     CHECK(submitted.data.draw.address_u == 1u && submitted.data.draw.address_v == 1u);
+    texture.mip_levels = 3u;
+    *recomp_memory_u32(STAGES + 20u) = 1u;
+    *recomp_memory_u32(STAGES + 24u) = 0xc0000000u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 28u);
+    CHECK(submitted.data.draw.point_mip_filter && submitted.data.draw.mip_lod_bias == -2.0f);
+    *recomp_memory_u32(STAGES + 64u) = 2u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 28u);
+    CHECK(submitted.data.draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_SELECT_TEXTURE);
+    *recomp_memory_u32(STAGES + 72u) = 0u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 28u);
+    CHECK(submitted.data.draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_SELECT_VERTEX_DIFFUSE);
+    *recomp_memory_u32(STAGES + 72u) = 2u;
+    *recomp_memory_u32(STAGES + 64u) = 4u;
+    *recomp_memory_u32(STAGES + 24u) = 0x7f800000u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 28u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:draw-texture-lod-bias") == 0);
+    texture.mip_levels = 1u;
+    *recomp_memory_u32(STAGES + 24u) = 0u;
     *recomp_memory_u32(DEVICE + 0x798u) = 0x104u;
     *recomp_memory_u32(STAGES + 64u) = 3u;
     invoke(0x348240u, 6u, 4u, VERTICES, 24u);

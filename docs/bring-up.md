@@ -103,13 +103,22 @@ formats. Cube/volume views and displaced swizzled locks remain unsupported.
 DrawIndexedVertices to the existing D3D11 presenter. It snapshots fixed-function
 layouts, transforms, viewport, depth/blend state, stage-0 texture and palette.
 Supported combinations include texture/diffuse modulation, white diffuse alpha
-selection and texture factors. Pixel-shader creation, deletion, binding and
+selection, texture alpha selection and texture factors. Linear min/mag filters
+support point or linear mip selection with finite native-range LOD bias.
+Pixel-shader creation, deletion, binding and
 constants retain the 5849 layout; native custom shading currently supports the
 sister presenter's exact four-tap filter. Other combiners, fixed lighting and
-multiple streams stop explicitly. Offscreen targets and partial clears remain
-unbound. Synthetic draw tests establish these contracts, not title acceptance.
+multiple streams stop explicitly. BGRA8 offscreen color targets and D24S8
+custom depth targets bind through the shared presenter; clears and draws
+snapshot their storage descriptors. Binding counts retain parent textures,
+and viewport extents follow the target. Front-buffer targets, offscreen sharing
+of main depth, and partial clears remain guarded. Synthetic draw tests establish
+these contracts, not title acceptance.
 
 KickPushBuffer publishes queued native commands. WaitForIdle drains them.
+InsertFence returns an even sequence after draining; BlockOnFence drains too.
+These synchronous fences order captured resource use without a console GPU.
+They do not supply render-target readback or hardware timing parity.
 PersistDisplay retains the native displayed image, and same-mode Reset replaces
 the guest surface headers and viewport while preserving non-target state and
 frame count. Reset clears depth/stencil only. Resizing and other display modes
@@ -130,6 +139,23 @@ the current fiber is TLS block +0xC and the converted main fiber +0x10.
 Guest FS refers to the PCR block. The guest-thread scheduler saves and
 restores each thread's current fiber. Without this binding, the tasks never
 run and the game only clears frames.
+
+## Input API contract
+
+`input_adapter.c` binds 5849 XInitDevices, device enumeration/changes,
+XInputOpen/Close, capabilities, state and feedback. The shared controller model
+retains packets, connection changes and per-port motor state. Packed guest
+states have a four-byte packet followed by the 18-byte Xbox gamepad payload.
+Feedback writes its final status and signals an optional native event handle
+before returning. Rumble is synchronous; console USB allocation is host-owned.
+An explicit XInputPoll binding remains unresolved.
+
+The shared SDL host maps four gamepads and keeps a keyboard controller on
+port zero. Enter is Start, arrows are the D-pad, Z/X are A/B, A/S are X/Y,
+Q/W are White/Black and E/R are the triggers. Keyboard input requires window
+focus. `--input-start-pulse-at <poll>` sends a one-sample Start edge through
+ordinary controller sampling; it can be repeated up to four times. The bounded
+probe accepts the same option. Input scripts do not alter game-owned state.
 
 ## Audio API contract
 
@@ -196,7 +222,7 @@ the existing worker modules run; they do not force middleware load status.
 3. Verify additional indirect targets and function bounds against the selected
    Ghidra program and private identity receipt when a run reaches them.
 4. Complete native recording/crosstalk routing and CRI services, then XAPI
-   input/fibers. Verify native audio, movies, polling and worker scheduling
+   input coverage. Verify native audio, movies, polling and worker scheduling
    against natural runs.
 5. Bind additional D3D8 resources, shaders and draws through the semantic
    presenter. Verify title/menu entry and the first natural fight.

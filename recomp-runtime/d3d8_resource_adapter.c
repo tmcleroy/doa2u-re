@@ -88,11 +88,21 @@ static uint32_t reference(uint32_t resource, bool release)
     return release ? count - 1u : count + 1u;
 }
 
+uint32_t recomp_d3d8_resource_add_ref(uint32_t resource)
+{
+    return reference(resource, false);
+}
+
 static void bind(uint32_t resource)
 {
     if (resource == 0u) return;
     uint32_t value = common(resource);
     if ((value & RETAIN_MASK) == RETAIN_MASK) recomp_stop(2, "d3d8:resource-binding-overflow");
+    if ((value & RETAIN_MASK) == 0u && (value & TYPE_MASK) == 0x50000u && word(resource + 20u) != 0u) {
+        const uint32_t parent = word(resource + 20u);
+        if ((common(parent) & TYPE_MASK) != 0x40000u) recomp_stop(2, "d3d8:surface-parent-type");
+        bind(parent);
+    }
     put(resource, value + BIND_REF);
 }
 
@@ -101,10 +111,25 @@ static void unbind(uint32_t resource, uint32_t device, bool fence)
     if (resource == 0u) return;
     uint32_t value = common(resource);
     if ((value & RETAIN_MASK) == 0u) recomp_stop(2, "d3d8:resource-binding-underflow");
+    const uint32_t parent = (value & RETAIN_MASK) == BIND_REF && (value & TYPE_MASK) == 0x50000u
+        ? word(resource + 20u) : 0u;
     value -= BIND_REF;
     put(resource, value);
     if (fence) put(resource + 8u, word(device + 0x2cu));
+    if (parent != 0u) unbind(parent, device, false);
     if ((value & 0x78ffffu) == 0u) destroy(resource);
+}
+
+void recomp_d3d8_resource_set_render_targets(uint32_t color, uint32_t depth)
+{
+    const uint32_t device = recomp_d3d8_require_device();
+    const uint32_t old_color = word(device + 0x1a04u), old_depth = word(device + 0x1a08u);
+    bind(color);
+    bind(depth);
+    unbind(old_color, device, true);
+    unbind(old_depth, device, true);
+    put(device + 0x1a04u, color);
+    put(device + 0x1a08u, depth);
 }
 
 bool recomp_d3d8_resource_describe(uint32_t resource, RecompD3dTextureDesc *out)

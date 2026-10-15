@@ -10,6 +10,11 @@ from run_game import prepare_disc, run
 
 
 class DiscTests(unittest.TestCase):
+    def test_rejects_invalid_start_polls_before_reading_inputs(self):
+        for polls in ([0], [-1], [2**64], [1, 2, 3, 4, 5]):
+            with self.assertRaisesRegex(ValueError, "Start polls"):
+                run(1, polls)
+
     def test_links_files_and_keeps_source_saves_out(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

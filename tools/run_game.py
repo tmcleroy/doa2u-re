@@ -30,9 +30,11 @@ def prepare_disc(source, disc):
     staging.rename(disc)
 
 
-def run(seconds):
+def run(seconds, start_polls=()):
     if seconds <= 0:
         raise ValueError("Probe duration must be positive")
+    if len(start_polls) > 4 or any(poll <= 0 or poll > 2**64 - 1 for poll in start_polls):
+        raise ValueError("Start polls must be positive uint64 values, at most four")
     selected = selected_xbe()
     generated = ROOT / "private/program/generated"
     receipt = json.loads((ROOT / "private/program/receipt.json").read_text(encoding="utf-8"))
@@ -54,7 +56,10 @@ def run(seconds):
         log.write(f"runner_sha256={sha256(runner)}\nprogram_manifest={receipt['manifest_sha256']}\n")
         log.flush()
         try:
-            result = subprocess.run([str(runner), "--xbe", str(xbe), "--disc-root", str(disc)],
+            command = [str(runner), "--xbe", str(xbe), "--disc-root", str(disc)]
+            for poll in start_polls:
+                command.extend(["--input-start-pulse-at", str(poll)])
+            result = subprocess.run(command,
                                     cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, timeout=seconds)
             code = result.returncode
         except subprocess.TimeoutExpired:
@@ -67,9 +72,10 @@ def run(seconds):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seconds", type=int, default=30)
+    parser.add_argument("--input-start-pulse-at", type=int, action="append", default=[])
     args = parser.parse_args()
     try:
-        raise SystemExit(run(args.seconds))
+        raise SystemExit(run(args.seconds, args.input_start_pulse_at))
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         print(f"Cannot run boot probe: {error}", file=sys.stderr)
         raise SystemExit(1)

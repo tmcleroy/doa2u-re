@@ -205,8 +205,9 @@ void buildDrawShaderSource(
         "                (light_stage.w > 0.5f ? input.color.a : 1.0f);\n"
         "        } else if (directional_flags.x > 0.5f) shaded.rgb *= input.color.rgb;\n"
         "        if (lighting_flags.x > 0.5f) shaded.rgb = 0.0f;\n"
-        "        shaded.a = blend_flags.w > 0.5f\n"
-            "            ? blend_flags.z : shaded.a * blend_flags.z;\n"
+        "        shaded.a = blend_flags.w > 2.5f ? input.color.a\n"
+            "            : blend_flags.w > 1.5f ? sampled.a\n"
+            "            : blend_flags.w > 0.5f ? blend_flags.z : shaded.a * blend_flags.z;\n"
         "        if (blend_flags.y > 1.5f) shaded *= texture_factor;\n"
         "    }\n"
         /* Fixed function adds specular after the texture stages, textured or not. */
@@ -355,6 +356,15 @@ struct BlendStateEntry {
     ID3D11BlendState *state;
 };
 
+constexpr uint32_t kSamplerSlots = 64u;
+
+struct SamplerEntry {
+    D3D11_TEXTURE_ADDRESS_MODE u, v;
+    bool point_mip_filter;
+    float mip_lod_bias;
+    ID3D11SamplerState *state;
+};
+
 /* Guest textures are cached by address and shape. Linear movie buffers are
    rewritten in place, so their pixels are refreshed whenever sampled.
    Map and menu screens sample about 300 textures per frame; a FIFO smaller
@@ -487,7 +497,9 @@ struct RecompD3dPresenter {
     std::vector<DepthTargetEntry> depth_targets;
     uint64_t target_bytes = 0u;
     ID3D11SamplerState *draw_sampler = nullptr;
-    ID3D11SamplerState *address_samplers[4][4]{};
+    SamplerEntry samplers[kSamplerSlots]{};
+    uint32_t sampler_count = 0u;
+    uint32_t next_sampler_slot = 0u;
     ID3D11SamplerState *filter_sampler = nullptr;
     ID3D11SamplerState *program_mask_sampler = nullptr;
     bool draw_shared_ready = false;
@@ -675,9 +687,9 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     presenter->depth_targets.clear();
     presenter->target_bytes = 0u;
     releaseCom(presenter->draw_sampler);
-    for (auto &row : presenter->address_samplers) {
-        for (auto &sampler : row) releaseCom(sampler);
-    }
+    for (auto &entry : presenter->samplers) releaseCom(entry.state);
+    presenter->sampler_count = 0u;
+    presenter->next_sampler_slot = 0u;
     releaseCom(presenter->filter_sampler);
     releaseCom(presenter->program_mask_sampler);
     presenter->draw_vertex_capacity = 0u;
@@ -1588,8 +1600,7 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
         if (FAILED(result)) return false;
     }
 
-    /* The guest's own sampler state is a separate seam; linear filtering with
-       wrap addressing is the common case for this title's textures. */
+    /* Zero-initialized draw commands keep the original linear/wrap sampler. */
     D3D11_SAMPLER_DESC sampler_desc{};
     sampler_desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     sampler_desc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
@@ -2088,25 +2099,39 @@ ID3D11ShaderResourceView *lookupBackBufferTexture(
 /* Xbox D3DTADDRESS WRAP..BORDER (1..4) share D3D11's values and CLAMPTOEDGE
    clamps. The casino Zack sprite draws V 0..2 with CLAMP; wrap shows it twice. */
 ID3D11SamplerState *lookupDrawSampler(
-    RecompD3dPresenter *presenter, uint32_t address_u, uint32_t address_v)
+    RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw)
 {
     const auto host = [](uint32_t mode) {
         return mode == 5u ? D3D11_TEXTURE_ADDRESS_CLAMP : mode >= 1u && mode <= 4u
             ? static_cast<D3D11_TEXTURE_ADDRESS_MODE>(mode) : D3D11_TEXTURE_ADDRESS_WRAP;
     };
     if (presenter->draw_sampler == nullptr) return nullptr;
-    const D3D11_TEXTURE_ADDRESS_MODE u = host(address_u), v = host(address_v);
-    ID3D11SamplerState *&sampler = presenter->address_samplers[u - 1][v - 1];
-    if (sampler == nullptr) {
-        D3D11_SAMPLER_DESC desc{};
-        presenter->draw_sampler->GetDesc(&desc);
-        desc.AddressU = u;
-        desc.AddressV = v;
-        if (FAILED(presenter->device->CreateSamplerState(&desc, &sampler))) {
-            return presenter->draw_sampler;
+    const D3D11_TEXTURE_ADDRESS_MODE u = host(draw.address_u), v = host(draw.address_v);
+    const float bias = draw.mip_lod_bias;
+    if (u == D3D11_TEXTURE_ADDRESS_WRAP && v == D3D11_TEXTURE_ADDRESS_WRAP &&
+        !draw.point_mip_filter && bias == 0.0f) return presenter->draw_sampler;
+    for (uint32_t i = 0u; i < presenter->sampler_count; ++i) {
+        const SamplerEntry &entry = presenter->samplers[i];
+        if (entry.u == u && entry.v == v &&
+            entry.point_mip_filter == draw.point_mip_filter && entry.mip_lod_bias == bias) {
+            return entry.state;
         }
     }
-    return sampler;
+    D3D11_SAMPLER_DESC desc{};
+    presenter->draw_sampler->GetDesc(&desc);
+    desc.AddressU = u;
+    desc.AddressV = v;
+    desc.Filter = draw.point_mip_filter
+        ? D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT : D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    desc.MipLODBias = bias;
+    ID3D11SamplerState *state = nullptr;
+    if (FAILED(presenter->device->CreateSamplerState(&desc, &state))) return nullptr;
+    SamplerEntry &entry = presenter->samplers[presenter->next_sampler_slot];
+    releaseCom(entry.state);
+    entry = {u, v, draw.point_mip_filter, bias, state};
+    presenter->next_sampler_slot = (presenter->next_sampler_slot + 1u) % kSamplerSlots;
+    if (presenter->sampler_count < kSamplerSlots) ++presenter->sampler_count;
+    return state;
 }
 
 void unindexTexture(RecompD3dPresenter *presenter, uint32_t slot)
@@ -2384,7 +2409,10 @@ RecompD3dPresenterError submitDraw(
     if (draw.vertex_bytes == nullptr || draw.index_bytes == nullptr ||
         draw.vertex_stride == 0u || draw.vertex_count == 0u ||
         draw.index_count == 0u ||
-        static_cast<unsigned>(draw.cull_mode) > RECOMP_D3D_CULL_COUNTER_CLOCKWISE) {
+        static_cast<unsigned>(draw.cull_mode) > RECOMP_D3D_CULL_COUNTER_CLOCKWISE ||
+        !std::isfinite(draw.mip_lod_bias) ||
+        draw.mip_lod_bias < D3D11_MIP_LOD_BIAS_MIN ||
+        draw.mip_lod_bias > D3D11_MIP_LOD_BIAS_MAX) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
 
@@ -2586,7 +2614,9 @@ RecompD3dPresenterError submitDraw(
         : (draw.modulate_texture_factor ? 2.0f : 0.0f);
     draw_constants[70] = draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_NONE
         ? 1.0f : draw.material_alpha;
-    draw_constants[71] = draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE
+    draw_constants[71] = draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_SELECT_VERTEX_DIFFUSE
+        ? 3.0f : draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_SELECT_TEXTURE
+        ? 2.0f : draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE
         ? 1.0f : 0.0f;
     draw_constants[72] = ((draw.texture_factor >> 16u) & 0xffu) / 255.0f;
     draw_constants[73] = ((draw.texture_factor >> 8u) & 0xffu) / 255.0f;
@@ -2646,8 +2676,9 @@ RecompD3dPresenterError submitDraw(
         draw.four_tap_filter || draw.has_alpha_mask ||
                 (draw.program_count && (!draw.address_u || !draw.address_v))
             ? presenter->filter_sampler
-            : lookupDrawSampler(presenter, draw.address_u, draw.address_v),
+            : lookupDrawSampler(presenter, draw),
         draw.program_alpha_mask ? presenter->program_mask_sampler : presenter->filter_sampler};
+    if (samplers[0] == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     presenter->context->PSSetSamplers(0u, 2u, samplers);
     presenter->context->RSSetState(presenter->draw_rasterizer_states[draw.cull_mode]);
     ID3D11DepthStencilState *depth_state = lookupDepthState(presenter, draw.depth);

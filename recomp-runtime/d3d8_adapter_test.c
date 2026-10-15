@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "d3d8_adapter.h"
+#include "d3d8_resource_adapter.h"
 #include "d3d_device_model.h"
 #include "d3d_frame_model.h"
 #include "d3d_tile_model.h"
@@ -20,6 +21,8 @@ enum {
     TILE_SOURCE = 0x1a00u,
     COLOR_SOURCE = 0x2000u,
     DEPTH_SOURCE = 0x2200u,
+    OFFSCREEN = 0x2400u,
+    OFFSCREEN_DEPTH = 0x2500u,
     ENTRY_ESP = 0x8000u,
     DEVICE_GLOBAL = 0x3554f8u,
     DEVICE = 0x355500u,
@@ -47,6 +50,36 @@ static uint32_t create_count, submit_count, destroy_count;
 static uint32_t vblank_reset_count, wait_present_count, wait_vblank_count;
 void recomp_d3d8_state_reset(void) {}
 void recomp_d3d8_resource_reset(void) {}
+bool recomp_d3d8_resource_describe(uint32_t resource, RecompD3dTextureDesc *out)
+{
+    const uint32_t *header = recomp_memory_u32(resource);
+    const uint32_t format = (header[3] >> 8u) & 255u;
+    if ((header[0] & 0x70000u) != 0x50000u) return false;
+    *out = (RecompD3dTextureDesc){
+        .format_byte = format, .bits_per_pixel = 32u, .render_target = true,
+        .depth = format == 0x2au || format == 0x2eu, .linear = header[4] != 0u,
+        .width = header[4] ? (header[4] & 0xfffu) + 1u : 1u << ((header[3] >> 20u) & 15u),
+        .height = header[4] ? ((header[4] >> 12u) & 0xfffu) + 1u : 1u << ((header[3] >> 24u) & 15u),
+        .pitch = header[4] ? ((header[4] >> 24u) + 1u) * 64u : 0u,
+        .data = header[1] & 0x03ffffffu, .mip_levels = 1u,
+    };
+    return true;
+}
+uint32_t recomp_d3d8_resource_add_ref(uint32_t resource)
+{
+    return ++*recomp_memory_u32(resource) & RECOMP_D3D_SURFACE_REFERENCE_MASK;
+}
+void recomp_d3d8_resource_set_render_targets(uint32_t color, uint32_t depth)
+{
+    const uint32_t old_color = *recomp_memory_u32(DEVICE + 0x1a04u);
+    const uint32_t old_depth = *recomp_memory_u32(DEVICE + 0x1a08u);
+    *recomp_memory_u32(color) += RECOMP_D3D_SURFACE_BOUND;
+    if (depth != 0u) *recomp_memory_u32(depth) += RECOMP_D3D_SURFACE_BOUND;
+    *recomp_memory_u32(old_color) -= RECOMP_D3D_SURFACE_BOUND;
+    if (old_depth != 0u) *recomp_memory_u32(old_depth) -= RECOMP_D3D_SURFACE_BOUND;
+    *recomp_memory_u32(DEVICE + 0x1a04u) = color;
+    *recomp_memory_u32(DEVICE + 0x1a08u) = depth;
+}
 void recomp_d3d_presenter_report_draw_textures(void) {}
 static unsigned flush_count;
 static bool flush_wait;
@@ -412,6 +445,64 @@ int main(void)
         submitted.data.clear.clear_color && submitted.data.clear.clear_depth &&
         submitted.data.clear.clear_stencil && submitted.data.clear.color == 0x10203040u &&
         submitted.data.clear.z == 1.0f && submitted.data.clear.stencil == 0u);
+    const RecompD3dSurfaceHeader offscreen = {
+        0x1050001u, 0x200000u, 0u, 0x11229u, 0x0e09f0efu, 0u,
+    };
+    const RecompD3dSurfaceHeader offscreen_depth = {
+        0x50001u, 0x300000u, 0u, 0x12e29u, 0x0e09f0efu, 0u,
+    };
+    memcpy(recomp_memory(OFFSCREEN, sizeof offscreen), &offscreen, sizeof offscreen);
+    memcpy(recomp_memory(OFFSCREEN_DEPTH, sizeof offscreen_depth), &offscreen_depth, sizeof offscreen_depth);
+    arguments[0] = OFFSCREEN; arguments[1] = 0u;
+    passed &= call(0x3447d0u, arguments, 2u, NULL);
+    passed &= expect("offscreen binding resets viewport to target dimensions",
+        *recomp_memory_u32(DEVICE + 0x1a04u) == OFFSCREEN &&
+        *recomp_memory_u32(DEVICE + 0xee8u) == 240u &&
+        *recomp_memory_u32(DEVICE + 0xeecu) == 160u &&
+        recomp_runtime.registers.eax == EAX_SENTINEL &&
+        recomp_runtime.registers.esp == ENTRY_ESP + 12u);
+    viewport = (RecompD3dViewport){230u, 150u, UINT32_MAX, UINT32_MAX, 0.0f, 1.0f};
+    memcpy(recomp_memory(VIEWPORT_OUTPUT, sizeof viewport), &viewport, sizeof viewport);
+    arguments[0] = VIEWPORT_OUTPUT;
+    passed &= call(0x344e10u, arguments, 1u, NULL);
+    passed &= expect("offscreen viewport clamps against target",
+        *recomp_memory_u32(DEVICE + 0xee8u) == 10u && *recomp_memory_u32(DEVICE + 0xeecu) == 10u);
+    arguments[0] = 0u; arguments[1] = OFFSCREEN_DEPTH;
+    passed &= call(0x3447d0u, arguments, 2u, NULL);
+    arguments[0] = 0u; arguments[1] = 0u;
+    passed &= call(0x347920u, arguments, 6u, NULL);
+    passed &= expect("offscreen clear snapshots color and custom depth",
+        submitted.data.clear.target.offscreen && submitted.data.clear.target.custom_depth &&
+        !submitted.data.clear.target.no_depth && submitted.data.clear.target.color.width == 240u &&
+        submitted.data.clear.target.color.data == 0x200000u &&
+        submitted.data.clear.target.depth.data == 0x300000u &&
+        *recomp_memory_u32(DEVICE + 0x948u) == 0x4b7fffffu &&
+        *recomp_memory_u32(DEVICE + 0x94cu) == 960u);
+    arguments[0] = COLOR_HEADER + 24u; arguments[1] = 0u;
+    passed &= call(0x3447d0u, arguments, 2u, "d3d8:target-front-buffer-unbound");
+    arguments[0] = COLOR_HEADER; arguments[1] = OFFSCREEN_DEPTH;
+    passed &= call(0x3447d0u, arguments, 2u, "d3d8:target-depth-size-unbound");
+    *recomp_memory_u32(OFFSCREEN + 12u) = 0x11029u;
+    arguments[0] = OFFSCREEN; arguments[1] = 0u;
+    passed &= call(0x3447d0u, arguments, 2u, "d3d8:target-surface");
+    passed &= expect("unsupported targets preserve bindings and viewport",
+        *recomp_memory_u32(DEVICE + 0x1a04u) == OFFSCREEN &&
+        *recomp_memory_u32(DEVICE + 0x1a08u) == OFFSCREEN_DEPTH &&
+        *recomp_memory_u32(OFFSCREEN_DEPTH) == 0xd0001u &&
+        *recomp_memory_u32(DEVICE + 0xee8u) == 240u);
+    *recomp_memory_u32(OFFSCREEN + 12u) = offscreen.format;
+    arguments[0] = COLOR_HEADER; arguments[1] = 0u;
+    passed &= call(0x3447d0u, arguments, 2u, NULL);
+    passed &= expect("restoring main target preserves creation dimensions and disables depth",
+        *recomp_memory_u32(DEVICE + 0xee8u) == 720u &&
+        *recomp_memory_u32(DEVICE + 0xeecu) == 480u);
+    arguments[0] = 0u; arguments[1] = 0u;
+    passed &= call(0x347920u, arguments, 6u, NULL);
+    passed &= expect("main target with null depth stays disabled",
+        !submitted.data.clear.target.offscreen && submitted.data.clear.target.no_depth &&
+        !submitted.data.clear.clear_depth && !submitted.data.clear.clear_stencil);
+    arguments[0] = 0u; arguments[1] = DEPTH_HEADER;
+    passed &= call(0x3447d0u, arguments, 2u, NULL);
     memcpy(recomp_memory(TILE_SOURCE, sizeof tile), &tile, sizeof tile);
     arguments[0] = 7u; arguments[1] = TILE_SOURCE;
     passed &= call(0x3459e0u, arguments, 2u, NULL);
@@ -488,6 +579,20 @@ int main(void)
         *recomp_memory_u32(DEPTH_HEADER) == 0xd0002u &&
         submitted.type == RECOMP_D3D_PRESENTER_COMMAND_CLEAR &&
         !submitted.data.clear.clear_color && submitted.data.clear.clear_depth && submitted.data.clear.clear_stencil);
+    *recomp_memory_u32(DEVICE + 0x2cu) = 2u;
+    passed &= call(0x3445f0u, arguments, 0u, NULL);
+    passed &= expect("insert completes queued work before returning fence", flush_count == 5u &&
+        flush_wait && recomp_runtime.registers.eax == 2u &&
+        recomp_runtime.registers.esp == ENTRY_ESP + 4u &&
+        *recomp_memory_u32(DEVICE + 0x2cu) == 4u);
+    passed &= call(0x3445f0u, arguments, 0u, NULL);
+    passed &= expect("fences advance by two", recomp_runtime.registers.eax == 4u &&
+        *recomp_memory_u32(DEVICE + 0x2cu) == 6u);
+    arguments[0] = 2u;
+    passed &= call(0x344430u, arguments, 1u, NULL);
+    passed &= expect("fence wait drains and preserves void ABI", flush_count == 7u &&
+        flush_wait && recomp_runtime.registers.eax == EAX_SENTINEL &&
+        recomp_runtime.registers.esp == ENTRY_ESP + 8u);
     recomp_d3d8_shutdown();
     passed &= expect("shutdown destroys presenter once", destroy_count == 1u);
     recomp_d3d8_shutdown();

@@ -115,8 +115,18 @@ int main(void)
     CHECK(word(OUTPUT + 20u) == 4u && word(OUTPUT + 24u) == 8u);
     invoke(0x348190u, surface, OUTPUT, 0u, 0x20u, 0u);
     CHECK(recomp_runtime.registers.esp == STACK + 20u && word(OUTPUT + 4u) == DATA + 512u);
+    recomp_d3d8_resource_set_render_targets(surface, 0u);
+    CHECK(word(DEVICE + 0x1a04u) == surface && word(DEVICE + 0x1a08u) == 0u);
+    CHECK(word(surface) == 0x10d0001u && word(TEXTURE) == 0xc0002u);
+    recomp_d3d8_resource_set_render_targets(surface, 0u);
+    CHECK(word(surface) == 0x10d0001u && word(TEXTURE) == 0xc0002u);
     CHECK(invoke(0x347ec0u, surface, 0u, 0u, 0u, 0u) == 0u);
+    CHECK(free_count == 0u && word(surface) == 0x10d0000u && word(TEXTURE) == 0xc0001u);
+    CHECK(recomp_d3d8_resource_add_ref(surface) == 1u && word(TEXTURE) == 0xc0002u);
+    CHECK(invoke(0x347ec0u, surface, 0u, 0u, 0u, 0u) == 0u && word(TEXTURE) == 0xc0001u);
+    recomp_d3d8_resource_set_render_targets(0u, 0u);
     CHECK(free_count == 1u && (word(TEXTURE) & 0xffffu) == 1u);
+    CHECK(word(TEXTURE) == 0x40001u);
 
     put(DEVICE + 0xcu, 0x80000000u);
     CHECK(invoke(0x345490u, 0u, TEXTURE, 0u, 0u, 0u) == 0u);
