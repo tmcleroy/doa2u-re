@@ -236,6 +236,146 @@ static bool testMipSampler()
     return passed;
 }
 
+static bool testLighting()
+{
+    char folder[MAX_PATH], path[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "lit", 0, path)) return false;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", path);
+    RecompD3dPresenter *presenter = nullptr;
+    bool passed = expect("create lighting", d3d11_backend_create(&config, &presenter));
+    if (passed) {
+        auto clear = clearCommand();
+        clear.data.clear.color = 0xff000000u;
+        passed &= expect("lighting clear", d3d11_backend_submit(presenter, &clear));
+        for (unsigned i = 0; i < 10 && passed; ++i) {
+            struct Vertex { float x, y, z, nx, ny, nz, u, v; };
+            Vertex vertices[] = {
+                {-0.1f, 0.1f, 0.5f, 0, 0, 1, 0, 0}, {0.1f, 0.1f, 0.5f, 0, 0, 1, 1, 0},
+                {-0.1f, -0.1f, 0.5f, 0, 0, 1, 0, 1}, {0.1f, -0.1f, 0.5f, 0, 0, 1, 1, 1}};
+            const uint16_t indices[] = {0, 1, 2, 3};
+            RecompD3dPresenterCommand command{RECOMP_D3D_PRESENTER_COMMAND_DRAW};
+            auto &draw = command.data.draw;
+            draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+            draw.index_count = draw.vertex_count = 4;
+            draw.triangle_count = 2;
+            draw.vertex_stride = sizeof(Vertex);
+            draw.fvf = 0x112u;
+            draw.vertex_bytes = vertices;
+            draw.index_bytes = indices;
+            draw.blend.color_write_mask = 15;
+            draw.has_transform = true;
+            draw.transform[0] = draw.transform[5] = 1.5f;
+            draw.transform[10] = draw.transform[15] = 1;
+            draw.transform[12] = -0.75f + 0.5f * (i % 4);
+            draw.transform[13] = i < 4 ? 0.5f : -0.5f;
+            draw.depth.alpha_test_enable = true;
+            draw.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER;
+            draw.depth.alpha_ref = 128;
+            auto &light = draw.directional;
+            light.enabled = i != 5;
+            light.stage_mode = light.normalize = true;
+            light.count = 1;
+            for (unsigned j = 0; j < 16; j += 5)
+                light.normal_transforms[0][j] = light.world_transforms[0][j] = 1;
+            const float base[] = {0.1f, 0.05f, 0.025f, 0};
+            const float material[] = {0.5f, 0.25f, 0.75f, 0.75f};
+            const float color[] = {0.6f, 0.8f, 0.4f, 0};
+            const float ambient[] = {0.025f, 0.05f, 0.075f, 0};
+            std::memcpy(light.ambient_emissive, base, sizeof base);
+            std::memcpy(light.material_diffuse, material, sizeof material);
+            std::memcpy(light.colors[0], color, sizeof color);
+            std::memcpy(light.ambient[0], ambient, sizeof ambient);
+            light.directions[0][2] = 1;
+            if (i == 1) for (auto &vertex : vertices) vertex.nz = -1;
+            if (i == 2 || i == 3) {
+                light.world_transforms[0][14] = 1;
+                light.positions[0][2] = 3.5f;
+                light.positions[0][3] = 1;
+                light.attenuation[0][0] = 1;
+                light.attenuation[0][1] = 0.5f;
+                light.attenuation[0][3] = i == 2 ? 3.0f : 1.0f;
+            }
+            if (i == 4 || i == 8) {
+                if (i == 4) {
+                    std::memset(light.colors, 0, sizeof light.colors);
+                    std::memset(light.ambient, 0, sizeof light.ambient);
+                }
+                for (unsigned j = 0; j < 3; ++j)
+                    light.specular[0][j] = i == 4 ? 0.2f + j * 0.1f : 0.05f + j * 0.05f;
+                light.view[2] = 1;
+                light.view[3] = 8;
+            }
+            if (i == 6) light.material_diffuse[3] = 0.25f;
+            if (i == 7) {
+                for (auto &vertex : vertices) { vertex.nx = 2; vertex.nz = 0; }
+                light.normal_transforms[0][0] = light.normal_transforms[0][10] = 0;
+                light.normal_transforms[0][2] = 1;
+            }
+            const uint32_t base_pixel = i == 9 ? 0xc080e0ffu : 0x800000ffu;
+            const uint32_t environment_pixel = i == 9 ? 0x80ff8000u : 0x40ff0000u;
+            if (i >= 8) {
+                draw.transform[12] = i == 9 ? -0.5f : 0;
+                draw.transform[13] = 0;
+                draw.depth.alpha_test_enable = false;
+                draw.blend.blend_enable = true;
+                draw.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
+                draw.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+                draw.has_texture = draw.has_reflection = draw.reflection_mesh_uv = true;
+                draw.texture.data = 0x1000u;
+                draw.texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
+                draw.texture.bits_per_pixel = 32;
+                draw.texture.width = draw.texture.height = 1;
+                draw.texture_bytes = &base_pixel;
+                draw.texture_byte_count = sizeof base_pixel;
+                draw.reflection_texture = draw.texture;
+                draw.reflection_texture.data = 0x2000u;
+                draw.reflection_bytes = &environment_pixel;
+                draw.reflection_byte_count = sizeof environment_pixel;
+                std::memcpy(draw.reflection_diffuse, material, sizeof material);
+            }
+            struct DiffuseVertex { float x, y, z; uint32_t diffuse; float u, v; };
+            DiffuseVertex diffuse_vertices[4]{};
+            if (i == 9) {
+                for (unsigned j = 0; j < 4; ++j)
+                    diffuse_vertices[j] = {vertices[j].x, vertices[j].y, vertices[j].z,
+                        0x8080ffc0u, vertices[j].u, vertices[j].v};
+                draw.fvf = 0x142u;
+                draw.vertex_stride = sizeof(DiffuseVertex);
+                draw.vertex_bytes = diffuse_vertices;
+                light.enabled = false;
+            }
+            passed &= expect("lighting draw", d3d11_backend_submit(presenter, &command));
+        }
+        RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
+        present.data.present = {5, 1};
+        passed &= expect("lighting present", d3d11_backend_submit(presenter, &present));
+        passed &= expect("destroy lighting", d3d11_backend_destroy(&presenter));
+        if (FILE *file = std::fopen(path, "rb")) {
+            const int expected[][3] = {{102, 77, 108}, {26, 26, 32}, {54, 45, 67}, {6, 13, 26},
+                {108, 89, 77}, {255, 0, 0}, {0, 0, 0}, {102, 77, 108}, {30, 7, 10}, {21, 39, 21}};
+            // Reflection alpha is diffuse.a * lerp(base.a * diffuse.a, env.a, env.a).
+            for (unsigned i = 0; i < 10; ++i) {
+                unsigned char bgr[3]{};
+                const unsigned x = i >= 8 ? (i == 9 ? 80 : 160) : 40 + 80 * (i % 4);
+                const unsigned y = i >= 8 ? 120 : 60 + 120 * (i / 4);
+                std::fseek(file, 54 + (239 - y) * 960 + x * 3, SEEK_SET);
+                passed &= std::fread(bgr, 1, 3, file) == 3;
+                for (unsigned c = 0; c < 3; ++c) {
+                    const bool pixel_ok = std::abs(int(bgr[c]) - expected[i][c]) <= 1;
+                    if (!pixel_ok) std::fprintf(stderr, "FAIL lighting pixel %u channel=%u actual=%u expected=%d\n",
+                        i, c, bgr[c], expected[i][c]);
+                    passed &= pixel_ok;
+                }
+            }
+            std::fclose(file);
+        } else passed = false;
+    }
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
+    DeleteFileA(path);
+    if (passed) std::puts("PASS native lighting diffuse, ambient, point attenuation/range, specular, alpha, normal transform and reflection");
+    return passed;
+}
+
 static bool testClose(bool idle)
 {
     RecompD3dPresenter *presenter = nullptr;
@@ -268,7 +408,7 @@ static bool testClose(bool idle)
 int main()
 {
     recomp_d3d_presenter_set_immediate_present(false);
-    if (!testTicks() || !testCapturedDraw() || !testMipSampler() || !testClose(false) || !testClose(true)) return 1;
+    if (!testTicks() || !testCapturedDraw() || !testMipSampler() || !testLighting() || !testClose(false) || !testClose(true)) return 1;
     std::puts("PASS presenter render thread");
     return 0;
 }

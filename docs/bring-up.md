@@ -107,7 +107,17 @@ selection, texture alpha selection and texture factors. Linear min/mag filters
 support point or linear mip selection with finite native-range LOD bias.
 Pixel-shader creation, deletion, binding and
 constants retain the 5849 layout; native custom shading currently supports the
-sister presenter's exact four-tap filter. Other combiners, fixed lighting and
+sister presenter's exact four-tap filter. The fixed-function draw snapshot
+binds up to eight directional/point light slots, front material and ambient,
+normalization, blended world/normal transforms and infinite-view specular.
+Missing vertex colors resolve material sources as the SDK does. Native pixel
+tests cover diffuse/ambient, point range/attenuation, specular, normal transforms
+and alpha. The reflection material binds the sister presenter's two-texture
+alpha blend and final diffuse modulation, with generated reflection coordinates
+or mesh UV0 and matching samplers. Unlit vertex diffuse and lit material diffuse
+retain their respective alpha sources. Blended reflection coordinates, vertex
+color lighting sources, local-view specular, two-sided/spot lighting, other
+combiners (including the premultiplied texture-alpha blend) and
 multiple streams stop explicitly. BGRA8 offscreen color targets and D24S8
 custom depth targets bind through the shared presenter; clears and draws
 snapshot their storage descriptors. Binding counts retain parent textures,

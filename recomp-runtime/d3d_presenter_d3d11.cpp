@@ -184,11 +184,11 @@ void buildDrawShaderSource(
         "float4 ps_main(VSOut input) : SV_TARGET {\n"
         "    float4 shaded = input.color;\n"
         "    if (reflection_flags.x > 0.5f) {\n"
-        "        float4 base = guest_texture.Sample(guest_sampler, input.texcoord);\n"
-        "        base.a *= reflection_diffuse.a;\n"
-        "        float4 env = alpha_mask.Sample(guest_sampler, input.reflection_coord);\n"
-        "        float4 diffuse = reflection_diffuse;\n"
+        "        float4 diffuse = %s;\n"
         "        if (directional_flags.x > 0.5f) diffuse.rgb = input.color.rgb;\n"
+        "        float4 base = guest_texture.Sample(guest_sampler, input.texcoord);\n"
+        "        base.a *= diffuse.a;\n"
+        "        float4 env = alpha_mask.Sample(guest_sampler, input.reflection_coord);\n"
         "        shaded = lerp(base, env, env.a) * diffuse;\n"
         "    } else\n"
         "%s"
@@ -274,6 +274,7 @@ void buildDrawShaderSource(
                   "        output.reflection_coord = mul(float4(r, 1), reflection_transform).xy;\n"
                   "    }\n")
             : "",
+        has_diffuse ? "input.color" : "reflection_diffuse",
         four_coords
             ? "    if (texture_flags.z > 0.5f) {\n"
               "        float4 t0 = guest_texture.Sample(guest_sampler, input.texcoord * texture_flags.xy);\n"

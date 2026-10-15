@@ -100,5 +100,15 @@ The resource/draw pass connects those helpers to verified 5849 resource,
 stream, pixel-shader and draw entry points. It also carries over the committed
 DOA3 render-state model and exact four-tap filter recognition. Native capture
 now owns non-linear texture payloads. The bindings retain explicit limits for
-unrecognized combiners, programmable vertices, lighting and external resource
+unrecognized combiners, programmable vertices and external resource
 allocator ownership; no sister-game state hooks are enabled.
+
+The lighting snapshot ports committed DOA3's directional/point presenter
+contract from `9fce2e5958dc0322a7474aada684445e1954ffc4`. DOA2U uses its verified
+5849 active-slot array, material/source shadows and transforms. Synthetic
+snapshots and native pixel readback cover that connection. Unsupported lighting
+configurations stop rather than falling through to an unlit approximation.
+The same committed presenter supplies the reflection material; its 5849 binding
+verifies texture1 transforms, generated coordinates and matching samplers.
+Reflection diffuse now selects stream color for unlit colored vertices, while
+the evaluated lighting path retains material alpha and post-stage specular.

@@ -3,6 +3,7 @@
 #include "d3d8_adapter.h"
 #include "d3d8_resource_adapter.h"
 #include "d3d8_state_adapter.h"
+#include "d3d_light_model.h"
 
 #include <setjmp.h>
 #include <stdarg.h>
@@ -268,6 +269,124 @@ static int draw_tests(void)
     return 0;
 }
 
+static int lighting_tests(void)
+{
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected lighting stop: %s\n", stop_reason); return 1; }
+    initialize();
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x112u;
+    *recomp_memory_u32(DEVICE + 0xf88u) = 0x7000u;
+    *recomp_memory_u32(0x355368u) = 0xdeadbeefu; /* Inline Simple calls do not maintain this shadow. */
+    *recomp_memory_u32(0x3553f8u) = 1u;
+    *recomp_memory_u32(0x3553fcu) = 1u;
+    *recomp_memory_u32(0x355404u) = 1u;
+    *recomp_memory_u32(0x35541cu) = 1u; /* No FVF color: source falls back to material. */
+    *recomp_memory_u32(0x35542cu) = 0xff804020u;
+    *recomp_memory_u32(0x355498u) = 1u;
+    const float material[17] = {0.5f, 0.75f, 1.0f, 0.25f, 0.2f, 0.4f, 0.6f, 1.0f,
+        0.1f, 0.2f, 0.3f, 1.0f, 0.05f, 0.1f, 0.15f, 0.0f, 16.0f};
+    recomp_guest_store(DEVICE + 0xf00u, material, sizeof material);
+    const uint32_t lights = 0x9000u;
+    *recomp_memory_u32(DEVICE + 0x7a4u) = lights;
+    *recomp_memory_u32(DEVICE + 0x7a8u) = 4u;
+    *recomp_memory_u32(DEVICE + 0x7acu) = lights;
+    *recomp_memory_u32(DEVICE + 0x7acu + 12u) = lights + 3u * sizeof(RecompD3dLightRecord);
+    RecompD3dLightRecord directional = {0}, point = {0};
+    directional.desc.type = 3u;
+    directional.desc.diffuse[0] = 1.0f;
+    directional.desc.specular[1] = 0.5f;
+    directional.desc.ambient[2] = 0.25f;
+    directional.normalized_direction[2] = 1.0f;
+    directional.slot = 0u;
+    point.desc.type = 1u;
+    point.desc.diffuse[1] = 0.5f;
+    point.desc.position[0] = 2.0f;
+    point.desc.position[1] = 3.0f;
+    point.desc.position[2] = 4.0f;
+    point.desc.range = 20.0f;
+    point.desc.attenuation[0] = 1.0f;
+    point.desc.attenuation[1] = 0.5f;
+    point.slot = 3u;
+    recomp_guest_store(lights, &directional, sizeof directional);
+    recomp_guest_store(lights + 3u * sizeof point, &point, sizeof point);
+    const float world[16] = {2,0,0,0, 0,3,0,0, 0,0,4,0, 5,6,7,1};
+    recomp_guest_store(DEVICE + 0xde0u, world, sizeof world);
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    const RecompD3dDirectionalLighting *lit = &submitted.data.draw.directional;
+    CHECK(lit->enabled && lit->normalize && lit->stage_mode && lit->count == 2u);
+    CHECK(lit->directions[0][2] == 1.0f && lit->positions[0][3] == 0.0f);
+    CHECK(lit->positions[1][0] == 2.0f && lit->positions[1][3] == 1.0f);
+    CHECK(lit->attenuation[1][1] == 0.5f && lit->attenuation[1][3] == 20.0f);
+    CHECK(lit->material_diffuse[3] == 0.25f && lit->specular[0][1] == 0.1f);
+    CHECK(lit->ambient[0][2] == 0.15f && lit->ambient_emissive[0] > 0.15f &&
+        lit->ambient_emissive[0] < 0.151f);
+    CHECK(lit->normal_transforms[0][0] == 0.5f && lit->normal_transforms[0][10] == 0.25f);
+    CHECK(lit->world_transforms[0][12] == 5.0f && lit->view[2] == -1.0f && lit->view[3] == 16.0f);
+    CHECK(lit->stage[0] == 1.0f && lit->stage[1] == 1.0f && lit->stage[2] == 1.0f && lit->stage[3] == 1.0f);
+    CHECK(recomp_d3d8_state_set_simple(0x4037cu, 0x1d00u));
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:lighting-shade-mode") == 0);
+    CHECK(recomp_d3d8_state_set_simple(0x4037cu, 0x1d01u));
+    uint32_t saved_stages[4][32];
+    recomp_guest_load(saved_stages, STAGES, sizeof saved_stages);
+    const uint32_t reflection[3][6] = {{2,2,1,4,2,0}, {14,2,1,14,2,1}, {4,0,1,4,0,1}};
+    const uint32_t offsets[6] = {12,14,15,16,18,19};
+    for (uint32_t stage = 0u; stage < 3u; ++stage)
+        for (uint32_t i = 0u; i < 6u; ++i)
+            *recomp_memory_u32(STAGES + stage * 128u + offsets[i] * 4u) = reflection[stage][i];
+    *recomp_memory_u32(STAGES + 128u + 21u * 4u) = 2u;
+    *recomp_memory_u32(STAGES + 128u + 28u * 4u) = 0x30000u;
+    *recomp_memory_u32(DEVICE + 0xf8cu) = 0x7000u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    CHECK(submitted.data.draw.has_reflection && !submitted.data.draw.reflection_mesh_uv);
+    CHECK(submitted.data.draw.reflection_bytes == ram + texture.data &&
+        submitted.data.draw.reflection_byte_count == 64u);
+    CHECK(submitted.data.draw.reflection_world_view[12] == 5.0f &&
+        submitted.data.draw.reflection_normal[0] == 0.5f &&
+        submitted.data.draw.reflection_transform[15] == 1.0f &&
+        submitted.data.draw.reflection_diffuse[3] == 0.25f);
+    *recomp_memory_u32(STAGES + 128u + 48u) = *recomp_memory_u32(STAGES + 128u + 64u) = 16u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:draw-texture-stages") == 0);
+    *recomp_memory_u32(STAGES + 128u + 48u) = *recomp_memory_u32(STAGES + 128u + 64u) = 14u;
+    *recomp_memory_u32(STAGES + 128u + 6u * 4u) = 0x3f800000u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:reflection-sampler") == 0);
+    *recomp_memory_u32(STAGES + 128u + 6u * 4u) = 0u;
+    *recomp_memory_u32(STAGES + 128u + 21u * 4u) = 0u;
+    *recomp_memory_u32(STAGES + 128u + 28u * 4u) = 0u;
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x142u;
+    *recomp_memory_u32(0x3553f8u) = 0u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 24u);
+    CHECK(submitted.data.draw.has_reflection && submitted.data.draw.reflection_mesh_uv && !lit->enabled);
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x112u;
+    *recomp_memory_u32(0x3553f8u) = 1u;
+    recomp_guest_store(STAGES, saved_stages, sizeof saved_stages);
+    *recomp_memory_u32(DEVICE + 0xf8cu) = 0u;
+    *recomp_memory_u32(DEVICE + 0xf88u) = 0u;
+    *recomp_memory_u32(STAGES + 48u) = *recomp_memory_u32(STAGES + 64u) = 1u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    CHECK(lit->enabled && lit->stage_mode && !submitted.data.draw.has_texture && lit->count == 2u);
+    recomp_guest_store(STAGES, saved_stages, sizeof saved_stages);
+    *recomp_memory_u32(DEVICE + 0xf88u) = 0x7000u;
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x116u;
+    *recomp_memory_u32(0x355484u) = 1u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 36u);
+    CHECK(submitted.data.draw.blend_weight_count == 1u &&
+        lit->normal_transforms[1][0] == 1.0f && lit->world_transforms[1][15] == 1.0f);
+    *recomp_memory_u32(0x3553fcu) = 0u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 36u);
+    CHECK(lit->view[3] == 0.0f);
+    *recomp_memory_u32(0x3553fcu) = 1u;
+    *recomp_memory_u32(0x355400u) = 1u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 36u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:lighting-local-viewer") == 0);
+    *recomp_memory_u32(0x355400u) = 0u;
+    *recomp_memory_u32(DEVICE + 0x7acu) = lights + 1u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 36u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:lighting-slot") == 0);
+    return 0;
+}
+
 static int filter_tests(void)
 {
     if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected stop: %s\n", stop_reason); return 1; }
@@ -309,7 +428,7 @@ static int filter_tests(void)
 int main(void)
 {
     initialize();
-    if (pixel_tests() || draw_tests() || filter_tests()) return 1;
+    if (pixel_tests() || draw_tests() || lighting_tests() || filter_tests()) return 1;
     puts("PASS D3D8 pixel lifecycle/constants and semantic draw ABI/snapshots");
     return 0;
 }

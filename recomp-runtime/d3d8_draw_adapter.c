@@ -5,6 +5,7 @@
 #include "d3d8_state_adapter.h"
 #include "d3d_device_model.h"
 #include "d3d_draw_model.h"
+#include "d3d_light_model.h"
 #include "kernel_abi.h"
 #include "stop_report.h"
 
@@ -254,6 +255,134 @@ static bool four_tap(uint32_t device, RecompD3dPresenterDrawCommand *draw)
     return true;
 }
 
+static void attach_lighting(uint32_t device, const RecompD3dVertexLayout *layout,
+    RecompD3dPresenterDrawCommand *draw)
+{
+    if (layout->pretransformed || *recomp_memory_u32(0x3553f8u) == 0u) return;
+    /* Missing FVF colors resolve to material even when COLORVERTEX is enabled. */
+    /* shortcut: vertex-color sources and two-sided lighting need additional presenter inputs. */
+    if (layout->normal_offset == RECOMP_D3D_FVF_ABSENT ||
+        layout->diffuse_offset != RECOMP_D3D_FVF_ABSENT ||
+        layout->specular_offset != RECOMP_D3D_FVF_ABSENT ||
+        *recomp_memory_u32(0x355494u) != 0u)
+        recomp_stop(2, "d3d8:lighting-layout-or-source");
+    /* Inline Simple setters bypass the guest shadow; absent state retains the SDK smooth default. */
+    uint32_t shade = 0x1d01u;
+    (void)recomp_d3d_get_simple_render_state(recomp_d3d8_state_model(), 0x4037cu, &shade);
+    if (shade != 0x1d01u)
+        recomp_stop(2, "d3d8:lighting-shade-mode");
+    RecompD3dDirectionalLighting result = {0};
+    const uint32_t *stage = recomp_memory_u32(STAGES);
+    for (uint32_t channel = 0u; draw->has_texture && channel < 2u; ++channel) {
+        const uint32_t op = stage[12u + channel * 4u];
+        const uint32_t arg1 = stage[14u + channel * 4u], arg2 = stage[15u + channel * 4u];
+        const bool first = op == 2u || op == 4u, second = op == 3u || op == 4u;
+        if ((!first && !second) || (first && arg1 != 0u && arg1 != 2u) ||
+            (second && arg2 != 0u && arg2 != 2u)) recomp_stop(2, "d3d8:lighting-stage");
+        result.stage[channel * 2u] = (first && arg1 == 2u) || (second && arg2 == 2u);
+        result.stage[channel * 2u + 1u] = (first && arg1 == 0u) || (second && arg2 == 0u);
+    }
+    float material[17];
+    recomp_guest_load(material, device + 0xf00u, sizeof material);
+    for (uint32_t i = 0u; i < 17u; ++i)
+        if (!isfinite(material[i])) recomp_stop(2, "d3d8:lighting-material");
+    const uint32_t ambient = *recomp_memory_u32(0x35542cu);
+    for (uint32_t c = 0u; c < 3u; ++c)
+        result.ambient_emissive[c] = material[12u + c] + material[4u + c] *
+            ((ambient >> (16u - 8u * c)) & 255u) / 255.0f;
+    memcpy(result.material_diffuse, material, sizeof result.material_diffuse);
+    const uint32_t array = *recomp_memory_u32(device + 0x7a4u);
+    const uint32_t capacity = *recomp_memory_u32(device + 0x7a8u);
+    if (capacity > RECOMP_XBOX_RAM_SIZE / sizeof(RecompD3dLightRecord) ||
+        (capacity != 0u && array == 0u)) recomp_stop(2, "d3d8:lighting-array");
+    if (capacity != 0u) recomp_memory(array, capacity * sizeof(RecompD3dLightRecord));
+    for (uint32_t slot = 0u; slot < 8u; ++slot) {
+        const uint32_t address = *recomp_memory_u32(device + 0x7acu + slot * 4u);
+        if (address == 0u) continue;
+        if (address < array || (address - array) / sizeof(RecompD3dLightRecord) >= capacity ||
+            (address - array) % sizeof(RecompD3dLightRecord) != 0u)
+            recomp_stop(2, "d3d8:lighting-slot");
+        RecompD3dLightRecord record;
+        recomp_guest_load(&record, address, sizeof record);
+        const RecompD3dLightDesc *light = &record.desc;
+        if (record.slot != slot || (light->type != 1u && light->type != 3u))
+            recomp_stop(2, "d3d8:lighting-type-or-slot");
+        const float *values = (const float *)(const void *)((const uint8_t *)light + 4u);
+        for (uint32_t i = 0u; i < 25u; ++i)
+            if (!isfinite(values[i])) recomp_stop(2, "d3d8:lighting-nonfinite");
+        const uint32_t i = result.count++;
+        for (uint32_t c = 0u; c < 3u; ++c) {
+            result.colors[i][c] = light->diffuse[c];
+            result.specular[i][c] = light->specular[c] * material[8u + c];
+            result.ambient[i][c] = light->ambient[c] * material[4u + c];
+            result.positions[i][c] = light->position[c];
+            result.directions[i][c] = record.normalized_direction[c];
+            result.attenuation[i][c] = light->attenuation[c];
+            if (!isfinite(result.directions[i][c])) recomp_stop(2, "d3d8:lighting-direction");
+        }
+        result.positions[i][3] = light->type == 1u;
+        result.attenuation[i][3] = light->range;
+    }
+    for (uint32_t i = 0u; i <= layout->blend_weight_count; ++i) {
+        recomp_guest_load(result.world_transforms[i], device + 0xde0u + i * 64u, 64u);
+        if (!recomp_d3d_normal_transform(result.world_transforms[i], result.normal_transforms[i]))
+            recomp_stop(2, "d3d8:lighting-normal-transform");
+    }
+    if (*recomp_memory_u32(0x3553fcu) != 0u || (*recomp_memory_u32(device + 8u) & 0x40u) != 0u) {
+        if (*recomp_memory_u32(0x355400u) != 0u) recomp_stop(2, "d3d8:lighting-local-viewer");
+        float view[16];
+        recomp_guest_load(view, device + 0xc60u, sizeof view);
+        const float length = sqrtf(view[2] * view[2] + view[6] * view[6] + view[10] * view[10]);
+        if (!isfinite(length) || length <= 0.0f) recomp_stop(2, "d3d8:lighting-view");
+        for (uint32_t c = 0u; c < 3u; ++c) result.view[c] = -view[2u + 4u * c] / length;
+        /* shortcut: zero power uses epsilon until the presenter has a separate specular-enable bit. */
+        result.view[3] = material[16] > 0.0f ? material[16] : 1e-6f;
+    }
+    result.normalize = *recomp_memory_u32(0x355498u) != 0u;
+    result.stage_mode = result.enabled = true;
+    draw->directional = result;
+}
+
+static void attach_reflection(uint32_t device, const RecompD3dVertexLayout *layout,
+    RecompD3dPresenterDrawCommand *draw)
+{
+    uint32_t stages[4][32];
+    recomp_guest_load(stages, STAGES, sizeof stages);
+    if (!recomp_d3d_reflection_material(stages)) return;
+    /* shortcut: generated reflection coordinates need blended world/view inputs before admitting skinning. */
+    if (layout->pretransformed || layout->blend_weight_count != 0u || layout->texcoord_count == 0u ||
+        (stages[1][28] != 0u && layout->normal_offset == RECOMP_D3D_FVF_ABSENT) || !draw->has_texture ||
+        draw->texture.linear || draw->texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8 ||
+        draw->palette_bytes != NULL) recomp_stop(2, "d3d8:reflection-layout");
+    /* The shared reflection path samples both textures with the stage-0 sampler. */
+    if (stages[0][5] != stages[1][5] || stages[0][6] != stages[1][6] ||
+        stages[0][7] != 0u || stages[1][7] != 0u)
+        recomp_stop(2, "d3d8:reflection-sampler");
+    RecompD3dPresenterDrawCommand texture = {0};
+    attach_texture(device, 1u, &texture);
+    if (!texture.has_texture || texture.texture.linear || texture.palette_bytes != NULL ||
+        texture.texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8)
+        recomp_stop(2, "d3d8:reflection-texture");
+    draw->reflection_texture = texture.texture;
+    draw->reflection_bytes = texture.texture_bytes;
+    draw->reflection_byte_count = texture.texture_byte_count;
+    float world[16], view[16];
+    recomp_guest_load(world, device + 0xde0u, sizeof world);
+    recomp_guest_load(view, device + 0xc60u, sizeof view);
+    multiply(world, view, draw->reflection_world_view);
+    if (!recomp_d3d_normal_transform(draw->reflection_world_view, draw->reflection_normal))
+        recomp_stop(2, "d3d8:reflection-normal");
+    recomp_guest_load(draw->reflection_transform, device + 0xd20u, sizeof draw->reflection_transform);
+    for (uint32_t i = 0u; i < 16u; ++i)
+        if (!isfinite(draw->reflection_transform[i])) recomp_stop(2, "d3d8:reflection-transform");
+    recomp_guest_load(draw->reflection_diffuse, device + 0xf00u, sizeof draw->reflection_diffuse);
+    for (uint32_t i = 0u; i < 4u; ++i)
+        if (!isfinite(draw->reflection_diffuse[i])) recomp_stop(2, "d3d8:reflection-material");
+    draw->reflection_mesh_uv = stages[1][28] == 0u;
+    draw->reflection_normalize = *recomp_memory_u32(0x355498u) != 0u;
+    draw->has_reflection = true;
+}
+
 static void fixed_stages(const RecompD3dVertexLayout *layout, RecompD3dPresenterDrawCommand *draw)
 {
     uint32_t stage[4][32];
@@ -290,15 +419,16 @@ static void fixed_stages(const RecompD3dVertexLayout *layout, RecompD3dPresenter
             draw->material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE;
             draw->material_alpha = 1.0f;
         }
-        if (!(color_modulate || (white && stage[0][12] == 2u && stage[0][14] == 2u)) ||
-            !(alpha_modulate || white_alpha || texture_alpha || vertex_alpha))
+        if (!draw->directional.enabled && !draw->has_reflection &&
+            (!(color_modulate || (white && stage[0][12] == 2u && stage[0][14] == 2u)) ||
+             !(alpha_modulate || white_alpha || texture_alpha || vertex_alpha)))
             recomp_stop(2, "d3d8:draw-texture-combine");
         if (stage[0][20] != 0u || stage[0][21] != 0u || stage[0][28] != 0u)
             recomp_stop(2, "d3d8:draw-texture-coordinates");
         const uint32_t final[6] = {stage[1][12], stage[1][14], stage[1][15],
             stage[1][16], stage[1][18], stage[1][19]};
         draw->modulate_texture_factor = recomp_d3d_texture_factor_modulate_selected(final, stage[2][12]);
-        if (stage[1][12] != 1u && !draw->modulate_texture_factor)
+        if (stage[1][12] != 1u && !draw->modulate_texture_factor && !draw->has_reflection)
             recomp_stop(2, "d3d8:draw-texture-stages");
     }
 }
@@ -320,8 +450,6 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     if ((draw->fvf & 1u) != 0u || !recomp_d3d_fvf_layout(draw->fvf, &layout) ||
         layout.stride > stride || (draw->fvf & ~0xfdfu) != 0u)
         recomp_stop(2, "d3d8:draw-vertex-layout:%08x:%u", draw->fvf, stride);
-    if (!layout.pretransformed && *recomp_memory_u32(0x3553f8u) != 0u)
-        recomp_stop(2, "d3d8:draw-fixed-lighting-unsupported");
     for (uint32_t i = 1u; i < 16u; ++i) {
         if (*recomp_memory_u32(STREAMS + i * 12u + 8u) != 0u)
             recomp_stop(2, "d3d8:draw-multiple-streams");
@@ -380,9 +508,13 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     draw->texture_factor = state->texture_factor;
     recomp_d3d8_target(&draw->target);
     attach_texture(device, 0u, draw);
+    attach_lighting(device, &layout, draw);
     if (*recomp_memory_u32(device + PIXEL_HANDLE) != 0u) {
         if (!four_tap(device, draw)) recomp_stop(2, "d3d8:draw-pixel-shader-unsupported");
-    } else fixed_stages(&layout, draw);
+    } else {
+        attach_reflection(device, &layout, draw);
+        fixed_stages(&layout, draw);
+    }
     command.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
     recomp_d3d8_submit(&command);
     free(sequential);
