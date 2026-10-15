@@ -119,6 +119,9 @@ int main(void)
     CHECK(invoke(0x344210u, 9u, INPUT) == 0x11223344u);
     CHECK(recomp_runtime.registers.esp == STACK + 12u);
     CHECK(memcmp(ram + DEVICE + 0xea0u, matrix, sizeof matrix) == 0);
+    memset(ram + INPUT, 0, sizeof matrix);
+    CHECK(invoke(0x344330u, 9u, INPUT) == 0x11223344u);
+    CHECK(memcmp(ram + INPUT, matrix, sizeof matrix) == 0);
     CHECK(*recomp_memory_u32(DIRTY) == 0x200u);
     invoke(0x344210u, 1u, INPUT);
     float derived[3];
@@ -186,7 +189,7 @@ int main(void)
     for (uint32_t i = 0u; i < 8u; ++i) invoke(0x345300u, i, 1u);
     if (setjmp(stopped) == 0) { invoke(0x345300u, 8u, 1u); return 1; }
     CHECK(strcmp(stop_reason, "d3d8:unsupported-active-light-count") == 0);
-    passed &= check_frame_state();
+    passed &= check_frame_state() == 0;
     if (passed) puts("PASS D3D8 gamma, transform, fog, light, shader and frame-state ABI/shadow state");
     return passed ? 0 : 1;
 }
@@ -196,7 +199,7 @@ static int check_frame_state(void)
     /* SetRenderState_Simple: fastcall, plain ret, caller owns its shadows. */
     recomp_runtime.registers.ecx = 0x4035cu;
     recomp_runtime.registers.edx = 1u;
-    CHECK(invoke(0x346240u, 0u, 0u) == 0u);
+    CHECK(invoke(0x346240u, 0u, 0u) == 0x11223344u);
     CHECK(recomp_runtime.registers.esp == STACK + 4u);
 
     CHECK(invoke(0x347490u, 1u, 0u) == 0u);
@@ -205,15 +208,15 @@ static int check_frame_state(void)
     CHECK(*recomp_memory_u32(0x3554a0u) == 1u);
     CHECK(invoke(0x346930u, 0x1b02u, 0u) == 0u);
     CHECK(*recomp_memory_u32(0x35548cu) == 0x1b02u);
-    if (setjmp(stopped) == 0) { invoke(0x346930u, 0x1b03u, 0u); return 0; }
+    if (setjmp(stopped) == 0) { invoke(0x346930u, 0x1b03u, 0u); return 1; }
     CHECK(strncmp(stop_reason, "d3d8:unsupported-fill-mode", 26) == 0);
     CHECK(invoke(0x346540u, 0u, 0u) == 0u);
     CHECK(*recomp_memory_u32(0x3554bcu) == 0u);
-    CHECK(invoke(0x346610u, 3u, 0u) == 0u);
-    CHECK(*recomp_memory_u32(0x3554acu) == 3u);
+    CHECK(invoke(0x346610u, 0x901u, 0u) == 0u);
+    CHECK(*recomp_memory_u32(0x3554acu) == 0x901u);
     CHECK(invoke(0x347800u, 0u, 0u) == 0u);
     CHECK(*recomp_memory_u32(0x3554c0u) == 0u);
-    if (setjmp(stopped) == 0) { invoke(0x347800u, 0x11u, 0u); return 0; }
+    if (setjmp(stopped) == 0) { invoke(0x347800u, 0x11u, 0u); return 1; }
     CHECK(strncmp(stop_reason, "d3d8:unsupported-state-value", 28) == 0);
     *recomp_memory_u32(DIRTY) = 0u;
     CHECK(invoke(0x3466c0u, 1u, 0u) == 0u);
@@ -226,22 +229,26 @@ static int check_frame_state(void)
     CHECK(recomp_runtime.registers.esp == STACK + 8u);
     CHECK(memcmp(ram + DEVICE + 0xf00u, ram + INPUT, 68u) == 0);
     CHECK(*recomp_memory_u32(DIRTY) == 0x9000u);
-    if (setjmp(stopped) == 0) { invoke(0x3443a0u, 0u, 0u); return 0; }
+    if (setjmp(stopped) == 0) { invoke(0x3443a0u, 0u, 0u); return 1; }
     CHECK(strcmp(stop_reason, "d3d8:material-pointer") == 0);
 
-    /* SetTexture(stage, NULL) clears the stage marker and dirties texture state. */
-    *recomp_memory_u32(DIRTY) = 0u;
-    for (uint32_t stage = 0u; stage < 4u; ++stage) CHECK(invoke(0x345490u, stage, 0u) == 0u);
-    CHECK(recomp_runtime.registers.esp == STACK + 12u);
-    CHECK(*recomp_memory_u32(DIRTY) == 0x4800u);
-    CHECK(*recomp_memory_u32(DEVICE + 0xcu) == 0x80000000u &&
-        *recomp_memory_u32(DEVICE + 0x18u) == 0x80000000u);
-    CHECK(*recomp_memory_u32(DEVICE + 0xf88u) == 0u);
-    if (setjmp(stopped) == 0) { invoke(0x345490u, 0u, INPUT); return 0; }
-    CHECK(strncmp(stop_reason, "d3d8:texture-unbound", 20) == 0);
-    if (setjmp(stopped) == 0) { invoke(0x345490u, 4u, 0u); return 0; }
-    CHECK(strncmp(stop_reason, "d3d8:texture-stage", 18) == 0);
-
+    CHECK(invoke(0x346760u, 0x3f800000u, 0u) == 0u);
+    CHECK(*recomp_memory_u32(0x3554d4u) == 0x3f800000u);
+    CHECK(invoke(0x346700u, 0xff123456u, 0u) == 0u);
+    CHECK(recomp_d3d8_state_model()->texture_factor == 0xff123456u);
+    CHECK(recomp_d3d8_state_set_simple(0x40304u, 1u));
+    CHECK(recomp_d3d8_state_set_simple(0x40344u, 0x302u));
+    CHECK(recomp_d3d8_state_set_simple(0x40348u, 0x303u));
+    CHECK(!recomp_d3d8_state_set_simple(0x40345u, 0u));
+    RecompD3dBlendState blend;
+    recomp_d3d_blend_state(recomp_d3d8_state_model(), &blend);
+    CHECK(blend.blend_enable && blend.src_factor == RECOMP_D3D_BLEND_SRC_ALPHA &&
+        blend.dst_factor == RECOMP_D3D_BLEND_INV_SRC_ALPHA);
+    RecompD3dDepthState depth;
+    recomp_d3d_depth_state(recomp_d3d8_state_model(), &depth);
+    CHECK(depth.depth_write_enable && depth.depth_test_enable && depth.stencil_enable);
+    CHECK(invoke(0x346a60u, 2u, 0u) == 0u);
+    CHECK(*recomp_memory_u32(0x355484u) == 2u);
     /* SetVertexShader binds the FVF declaration and latches device shadows. */
     *recomp_memory_u32(DEVICE + 0x794u) = 0x357b80u;
     *recomp_memory_u32(0x357b80u + 4u) = 0x402u;
@@ -252,7 +259,7 @@ static int check_frame_state(void)
     CHECK(*recomp_memory_u32(DEVICE + 0x794u) == 0x357b80u);
     CHECK(*recomp_memory_u32(DEVICE + 0x798u) == 0x112u);
     CHECK(*recomp_memory_u32(DEVICE + 0x79cu) == 0u);
-    CHECK(*recomp_memory_u32(DIRTY) == 0x1d70u);
+    CHECK(*recomp_memory_u32(DIRTY) == 0x1670u);
     CHECK(*recomp_memory_u32(0x357b80u + 0x1cu) == 0x32u);
     CHECK(*recomp_memory_u32(0x357b80u + 0x38u) == 0x0cu);
     CHECK(*recomp_memory_u32(0x357b80u + 0xa8u) == 0x18u);
@@ -260,12 +267,12 @@ static int check_frame_state(void)
     *recomp_memory_u32(DIRTY) = 0u;
     CHECK(invoke(0x349320u, 0x112u, 0u) == 0u);
     CHECK(*recomp_memory_u32(DIRTY) == 0x70u);
-    if (setjmp(stopped) == 0) { invoke(0x349320u, 0x357b81u, 0u); return 0; }
+    if (setjmp(stopped) == 0) { invoke(0x349320u, 0x357b81u, 0u); return 1; }
     CHECK(strncmp(stop_reason, "d3d8:programmable-shader-unbound", 32) == 0);
-    if (setjmp(stopped) == 0) { invoke(0x349320u, 0x902u, 0u); return 0; }
+    if (setjmp(stopped) == 0) { invoke(0x349320u, 0x902u, 0u); return 1; }
     CHECK(strncmp(stop_reason, "d3d8:invalid-fvf", 16) == 0);
     *recomp_memory_u32(DEVICE + 0x794u) = 0u;
-    if (setjmp(stopped) == 0) { invoke(0x349320u, 0x112u, 0u); return 0; }
+    if (setjmp(stopped) == 0) { invoke(0x349320u, 0x112u, 0u); return 1; }
     CHECK(strcmp(stop_reason, "d3d8:missing-declaration") == 0);
     return 0;
 }

@@ -18,7 +18,7 @@ private inputs, generated code and caches were excluded.
 | Tooling | Verified ISO extraction, synthetic importer tests, XBE metadata inspection and public export checker |
 
 `runtime.h` and the input/presenter model headers are retained as dependencies
-of these tests. Their presence does not supply a complete runtime or renderer.
+of these tests. Their presence alone does not supply a complete runtime or renderer.
 The initial snapshot kept `program_manual.c` empty. Bring-up now includes one
 verified XAPI kernel-compatibility entry; the native host owns kernel lifetime
 instead of patching a retail kernel PE or registering its INIT/LDT segment.
@@ -89,3 +89,10 @@ a drop-in runner for this title.
 Shared decisions stay in DOAXBV's [custody](https://github.com/NoRain211/doaxbv-re/issues/2),
 [presenter](https://github.com/NoRain211/doaxbv-re/issues/6), and
 [audio/movie](https://github.com/NoRain211/doaxbv-re/issues/8) issues.
+
+The resource/draw pass connects those helpers to verified 5849 resource,
+stream, pixel-shader and draw entry points. It also carries over the committed
+DOA3 render-state model and exact four-tap filter recognition. Native capture
+now owns non-linear texture payloads. The bindings retain explicit limits for
+unrecognized combiners, programmable vertices, lighting and external resource
+allocator ownership; no sister-game state hooks are enabled.

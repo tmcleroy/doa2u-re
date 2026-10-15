@@ -89,7 +89,7 @@ bool recomp_d3d_build_fixed_function_declaration(
         set_word(
             declaration,
             0x10u,
-            declaration[0x10u / 4u] | (size << (i * 8u)));
+            declaration[0x10u / 4u] | (size << ((i * 8u) & 31u)));
         offset += size * 4u;
         texture_formats >>= 2u;
     }

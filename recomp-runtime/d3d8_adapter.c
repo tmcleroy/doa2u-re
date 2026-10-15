@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "d3d8_adapter.h"
+#include "d3d8_state_adapter.h"
+#include "d3d8_resource_adapter.h"
 #include "d3d_device_model.h"
 #include "d3d_vertex_shader_model.h"
 #include "d3d_frame_model.h"
@@ -30,6 +32,7 @@ enum {
 static RecompD3dDeviceState device_state;
 static RecompD3dFrameState frame_state;
 static RecompD3dPresenter *presenter;
+static uint32_t submitted_draws;
 
 static uint32_t argument(uint32_t entry, uint32_t index)
 {
@@ -61,16 +64,32 @@ void recomp_d3d8_submit(const RecompD3dPresenterCommand *command)
     if (error != RECOMP_D3D_PRESENTER_OK) {
         recomp_stop(2, "d3d8:presenter:%u", (unsigned)error);
     }
+    if (command->type == RECOMP_D3D_PRESENTER_COMMAND_DRAW && ++submitted_draws <= 4u) {
+        fprintf(stderr, "recomp d3d8: Draw count=%u fvf=%08x vertices=%u texture=%u format=%02x\n",
+            submitted_draws, command->data.draw.fvf, command->data.draw.vertex_count,
+            command->data.draw.has_texture, command->data.draw.texture.format_byte);
+    }
+}
+
+void recomp_d3d8_release_memory(uint32_t base, uint32_t size)
+{
+    if (presenter == NULL) return;
+    const RecompD3dPresenterError error = recomp_d3d_presenter_release_memory(presenter, base, size);
+    if (error != RECOMP_D3D_PRESENTER_OK) recomp_stop(2, "d3d8:release-memory:%u", (unsigned)error);
 }
 
 void recomp_d3d8_shutdown(void)
 {
     if (presenter != NULL) {
+        recomp_d3d_presenter_report_draw_textures();
         const RecompD3dPresenterError error = recomp_d3d_presenter_destroy(&presenter);
         fprintf(stderr, "recomp d3d8: presenter shutdown=%u\n", (unsigned)error);
     }
+    recomp_d3d8_resource_reset();
     recomp_d3d_device_reset(&device_state);
     recomp_d3d_frame_reset(&frame_state);
+    recomp_d3d8_state_reset();
+    submitted_draws = 0u;
 }
 
 static uint32_t color_header(uint32_t index)
@@ -80,6 +99,7 @@ static uint32_t color_header(uint32_t index)
 
 static void write_initial_device(void)
 {
+    recomp_d3d8_state_reset();
     memset(recomp_memory(DEVICE, DEVICE_SIZE), 0, DEVICE_SIZE);
     for (uint32_t i = 0; i < 2u; ++i) {
         store(color_header(i), &device_state.color[i], sizeof device_state.color[i]);
@@ -103,6 +123,8 @@ static void write_initial_device(void)
         }
     }
     *recomp_memory_u32(DEVICE + 0x938u) = 1u;
+    *recomp_memory_u32(DEVICE + 0x196cu) = 0x11u;
+    *recomp_memory_u32(DEVICE + 0x1970u) = 1u;
     *recomp_memory_u32(DEVICE + 0x940u) = 0x3f800000u;
     *recomp_memory_u32(DEVICE + 0x944u) = 0x3f800000u;
     *recomp_memory_u32(DEVICE + 0x8u) = 2u;
@@ -242,6 +264,15 @@ static void get_depth_surface(void)
     recomp_runtime.registers.esp = entry + 4u;
 }
 
+static void get_render_target(void)
+{
+    recomp_d3d8_require_device();
+    const uint32_t address = *recomp_memory_u32(DEVICE + TARGET);
+    if (address != 0u) reference_surface(address, false);
+    recomp_runtime.registers.eax = address;
+    recomp_runtime.registers.esp += 4u;
+}
+
 static void get_viewport(void)
 {
     const uint32_t entry = recomp_runtime.registers.esp;
@@ -359,6 +390,68 @@ static void block_until_vertical_blank(void)
     recomp_runtime.registers.esp += 4u;
 }
 
+static void flush(bool wait)
+{
+    recomp_d3d8_require_device();
+    const RecompD3dPresenterError error = recomp_d3d_presenter_flush(presenter, wait);
+    if (error == RECOMP_D3D_PRESENTER_CLOSED) recomp_stop(0, "host-window-closed");
+    if (error != RECOMP_D3D_PRESENTER_OK) recomp_stop(2, "d3d8:flush:%u", (unsigned)error);
+}
+
+static void kick(void) { flush(false); recomp_runtime.registers.esp += 4u; }
+static void wait_idle(void) { flush(true); recomp_runtime.registers.esp += 4u; }
+
+static void persist_display(void)
+{
+    /* The native window retains its displayed front buffer across reset. */
+    flush(true);
+    recomp_runtime.registers.eax = RECOMP_D3D_OK;
+    recomp_runtime.registers.esp += 4u;
+}
+
+static void reset_device(void)
+{
+    recomp_d3d8_require_device();
+    const uint32_t parameters = argument(recomp_runtime.registers.esp, 0u);
+    RecompD3dCreateRequest request = {.device_type = 1u, .behavior_flags = 0x40u};
+    RecompD3dDeviceState candidate = {0};
+    RecompD3dSurfaceHeader colors[2], depth;
+    if (parameters == 0u) recomp_stop(2, "d3d8:reset-pointer");
+    load(&request.presentation, parameters, sizeof request.presentation);
+    if (!recomp_d3d_create_request_supported(&request)) recomp_stop(2, "d3d8:reset-mode");
+    for (uint32_t i = 0u; i < 2u; ++i)
+        load(&colors[i], request.presentation.buffer_surfaces[i], sizeof colors[i]);
+    load(&depth, request.presentation.depth_stencil_surface, sizeof depth);
+    const RecompD3dDeviceError error = recomp_d3d_device_create(&candidate, &request, colors, &depth);
+    if (error != RECOMP_D3D_DEVICE_OK) recomp_stop(2, "d3d8:reset-surfaces:%u", (unsigned)error);
+    if (candidate.width != device_state.width || candidate.height != device_state.height)
+        recomp_stop(2, "d3d8:reset-resize-unbound");
+    for (uint32_t i = 0u; i < 2u; ++i) validate_storage(&colors[i]);
+    validate_storage(&depth);
+    flush(true);
+    /* Same native attachments: retain displayed pixels and all non-RT state. */
+    device_state = candidate;
+    for (uint32_t i = 0u; i < 2u; ++i)
+        store(color_header(i), &candidate.color[i], sizeof candidate.color[i]);
+    store(DEVICE + DEPTH_HEADER, &candidate.depth, sizeof candidate.depth);
+    *recomp_memory_u32(DEVICE + TARGET) = color_header(0u);
+    *recomp_memory_u32(DEVICE + DEPTH) = DEVICE + DEPTH_HEADER;
+    *recomp_memory_u32(DEVICE + DEFAULT_DEPTH) = DEVICE + DEPTH_HEADER;
+    store(DEVICE + VIEWPORT, &candidate.viewport, sizeof candidate.viewport);
+    *recomp_memory_u32(0x35545cu) = request.presentation.full_screen_presentation_interval;
+    *recomp_memory_u32(DEVICE + 0x196cu) = request.presentation.multi_sample_type;
+    *recomp_memory_u32(DEVICE + 0x1970u) = request.presentation.swap_effect;
+    RecompD3dFrameResult clear = recomp_d3d_frame_clear(&frame_state, 0u, 0u,
+        RECOMP_D3D_CLEAR_DEPTH | RECOMP_D3D_CLEAR_STENCIL, 0u, 0x3f800000u, 0u);
+    if (clear.error != RECOMP_D3D_FRAME_OK) recomp_stop(2, "d3d8:reset-clear");
+    recomp_d3d8_submit(&clear.command);
+    recomp_runtime.registers.eax = RECOMP_D3D_OK;
+    recomp_runtime.registers.esp += 8u;
+    fprintf(stderr, "recomp d3d8: Reset %ux%u interval=%08x frame=%u\n",
+        candidate.width, candidate.height, request.presentation.full_screen_presentation_interval,
+        frame_state.swap_counter);
+}
+
 /* Every SDK setter that is still unreplaced reserves console push-buffer
    space here, then waits forever for GPU hardware this host lacks. Stop with
    the caller's return address so the missing API is named immediately. */
@@ -376,6 +469,7 @@ RecompFunction recomp_d3d8_lookup_manual(uint32_t address)
     case 0x00347ec0u: return release;
     case 0x00344a50u: return get_back_buffer;
     case 0x00344df0u: return get_depth_surface;
+    case 0x00344dd0u: return get_render_target;
     case 0x00344360u: return get_viewport;
     case 0x00344e10u: return set_viewport;
     case 0x003447d0u: return set_render_target;
@@ -383,6 +477,10 @@ RecompFunction recomp_d3d8_lookup_manual(uint32_t address)
     case 0x00347920u: return clear;
     case 0x0034af80u: return swap;
     case 0x0034a310u: return push_buffer_unbound;
+    case 0x00344440u: return kick;
+    case 0x00344420u: case 0x0034a370u: return wait_idle;
+    case 0x00345d70u: return persist_display;
+    case 0x00344720u: return reset_device;
     /* CRI's no-argument tail aliases bypass generated callee lookup. */
     case 0x002fc300u: case 0x002fc5a0u: case 0x003444c0u: return block_until_vertical_blank;
     default: return NULL;

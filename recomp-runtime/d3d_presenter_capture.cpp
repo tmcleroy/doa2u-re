@@ -17,20 +17,6 @@ constexpr const void *Draw::*pointer_fields[] = {
 // No readable guest span can exceed the runner's entire 64 MiB RAM region.
 constexpr uint64_t max_span_bytes = 64u * 1024u * 1024u;
 constexpr size_t null_offset = SIZE_MAX;
-constexpr size_t borrowed_offset = SIZE_MAX - 1u;
-
-/* The backend reads swizzled, compressed and P8 texture bytes only on a cache
-   miss, keyed by address and shape, so those stay borrowed from guest RAM;
-   linear BGRA (0x12) is re-uploaded on every hit and is copied.
-   ponytail: a miss after the guest frees and refills an address within the
-   queued ticks reads the newer bytes; copy on first use per key if that shows. */
-bool borrowed(const Draw &draw, size_t field)
-{
-    const RecompD3dTextureDesc *desc = field == 2u ? &draw.texture
-        : field == 4u ? &draw.alpha_mask : field == 6u ? &draw.reflection_texture : nullptr;
-    return desc != nullptr && desc->format_byte != 0x12u;
-}
-
 void copyCommand(RecompD3dPresenterCommand &to, const RecompD3dPresenterCommand &from)
 {
     if (from.type != RECOMP_D3D_PRESENTER_COMMAND_DRAW || from.data.draw.program_count != 0u) {
@@ -81,10 +67,6 @@ RecompD3dPresenterError D3dCapturePacket::add(
         if (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW) {
             for (size_t i = 0u; i < 7u; ++i) {
                 const void *source = command.data.draw.*pointer_fields[i];
-                if (source != nullptr && borrowed(command.data.draw, i)) {
-                    captured.offsets[i] = borrowed_offset;
-                    continue;
-                }
                 captured.value.data.draw.*pointer_fields[i] = nullptr;
                 captured.offsets[i] = null_offset;
                 if (source == nullptr) continue;
@@ -161,7 +143,6 @@ void D3dCapturePacket::seal()
     for (auto &captured : commands_) {
         if (captured.value.type != RECOMP_D3D_PRESENTER_COMMAND_DRAW) continue;
         for (size_t i = 0u; i < 7u; ++i) {
-            if (captured.offsets[i] == borrowed_offset) continue;
             captured.value.data.draw.*pointer_fields[i] = captured.offsets[i] == null_offset
                 ? nullptr : payload_.data() + captured.offsets[i];
         }

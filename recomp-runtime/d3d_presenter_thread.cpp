@@ -295,6 +295,24 @@ RecompD3dPresenterError recomp_d3d_presenter_release_memory(
     return thread.packets[thread.open].addRelease(base, size);
 }
 
+RecompD3dPresenterError recomp_d3d_presenter_flush(RecompD3dPresenter *presenter, bool wait)
+{
+    auto error = validate(presenter);
+    if (error != RECOMP_D3D_PRESENTER_OK) return error;
+    auto &thread = *active_thread;
+    error = status(thread);
+    if (error != RECOMP_D3D_PRESENTER_OK) return error;
+    if (thread.packets[thread.open].count() != 0u) {
+        error = publish(thread, false);
+        if (error != RECOMP_D3D_PRESENTER_OK) return error;
+    }
+    if (!wait) return RECOMP_D3D_PRESENTER_OK;
+    std::unique_lock<std::mutex> lock(thread.mutex);
+    thread.changed.wait(lock, [&] { return thread.pending == 0u ||
+        thread.status != RECOMP_D3D_PRESENTER_OK; });
+    return thread.status;
+}
+
 RecompD3dPresenterError recomp_d3d_presenter_destroy(RecompD3dPresenter **presenter)
 {
     if (presenter == nullptr) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;

@@ -40,8 +40,10 @@ The effects-image adapter decodes programs, owns validated maps/state and
 binds native I3DL2 reverb with stereo dry/wet routing. Recording sends and
 3D crosstalk need further native services. The clock and vblank bindings
 allow background archive workers to progress during startup.
-Passing synthetic tests does not establish title-screen or gameplay
-compatibility.
+The graphics adapter also binds textures, vertex buffers, pixel-shader state
+and three draw APIs to the shared D3D11 presenter. Unsupported shader and
+resource paths stop explicitly. Passing synthetic tests does not establish
+title-screen or gameplay compatibility.
 
 Read [reuse](docs/reuse.md) for the source provenance and what can be brought
 over next, and [bring-up](docs/bring-up.md) for the next implementation steps.

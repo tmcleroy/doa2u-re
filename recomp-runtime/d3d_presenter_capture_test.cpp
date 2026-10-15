@@ -38,9 +38,11 @@ int main()
     draw.texture.data = 0x101000u;
     draw.alpha_mask.data = 0x202000u;
     draw.reflection_texture.data = 0x303000u;
-    // Linear BGRA is re-uploaded on cache hits, so its bytes must be owned.
+    // Swizzled, P8 and linear uploads all own their queued bytes.
     draw.texture.format_byte = draw.alpha_mask.format_byte =
-        draw.reflection_texture.format_byte = 0x12u;
+        draw.reflection_texture.format_byte = 0u;
+    draw.alpha_mask.format_byte = 0x0bu;
+    draw.reflection_texture.format_byte = 0x12u;
     draw.program_count = 1u;
     draw.target.color.data = 0x404000u;
     draw.target.depth.data = 0x505000u;
@@ -173,7 +175,7 @@ int main()
     value.data.draw.directional.ambient[7][0] = 0.25f;
     CHECK(packet.add(value) == RECOMP_D3D_PRESENTER_OK);
     value.data.draw.directional = {};
-    value.data.draw.texture.format_byte = 0u; // swizzled: borrowed from guest RAM
+    value.data.draw.texture.format_byte = 0u; // Swizzled uploads also own their bytes.
     CHECK(packet.add(value) == RECOMP_D3D_PRESENTER_OK);
     for (auto field : fields) value.data.draw.*field = nullptr;
     value.data.draw.texture_byte_count = 12u;
@@ -199,7 +201,7 @@ int main()
     CHECK(packet.command(5).data.draw.directional.attenuation[7][1] == 0.05f);
     CHECK(packet.command(5).data.draw.directional.attenuation[7][3] == 100.0f);
     CHECK(packet.command(5).data.draw.directional.ambient[7][0] == 0.25f);
-    CHECK(packet.command(6).data.draw.texture_bytes == sources[2].data());
+    CHECK(packet.command(6).data.draw.texture_bytes != sources[2].data());
     CHECK(packet.command(6).data.draw.vertex_bytes != sources[0].data());
     std::puts("PASS capture ownership, order, deduplication, overflow, alignment, move and reuse");
     return 0;

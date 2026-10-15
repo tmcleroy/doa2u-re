@@ -26,6 +26,23 @@ enum {
     D3D_OUT_OF_MEMORY = 0x8007000eu,
 };
 
+static RecompD3dRenderStateModel render_state;
+
+const RecompD3dRenderStateModel *recomp_d3d8_state_model(void)
+{
+    return &render_state;
+}
+
+void recomp_d3d8_state_reset(void)
+{
+    recomp_d3d_render_state_reset(&render_state);
+}
+
+bool recomp_d3d8_state_set_simple(uint32_t method, uint32_t value)
+{
+    return recomp_d3d_set_simple_render_state(&render_state, method, value);
+}
+
 static void set_gamma(void)
 {
     uint32_t device = recomp_d3d8_require_device();
@@ -235,30 +252,45 @@ static void set_vertex_shader(void)
 
 static void set_render_state_simple(void)
 {
-    /* Fastcall (method in ECX, value in EDX), plain ret. These are console
-       GPU register writes; the game keeps its own semantic shadows, which a
-       future draw producer reads. No native effect until then. */
     recomp_d3d8_require_device();
+    if (!recomp_d3d_set_simple_render_state(&render_state,
+            recomp_runtime.registers.ecx, recomp_runtime.registers.edx)) {
+        recomp_stop(2, "d3d8:invalid-simple-state:%08x", recomp_runtime.registers.ecx);
+    }
     recomp_runtime.registers.esp += 4u;
 }
 
-static void set_state_global(uint32_t address, uint32_t accepted)
+static void get_transform(void)
+{
+    uint32_t device = recomp_d3d8_require_device();
+    uint32_t state = kernel_arg(1u), output = kernel_arg(2u);
+    if (state >= 10u || output == 0u) recomp_stop(2, "d3d8:get-transform-arguments");
+    recomp_guest_memcpy(output, device + 0xc60u + state * 64u, 64u);
+    recomp_runtime.registers.esp += 12u;
+}
+
+static void set_state_global(uint32_t address,
+    bool (*setter)(RecompD3dRenderStateModel *, uint32_t))
 {
     recomp_d3d8_require_device();
     const uint32_t value = kernel_arg(1u);
-    if (accepted != 0u && value > accepted) {
+    if (!setter(&render_state, value)) {
         recomp_stop(2, "d3d8:unsupported-state-value:%08x:%08x", address, value);
     }
     *recomp_memory_u32(address) = value;
     kernel_return(1u, 0u);
 }
 
-/* Runtime MSAA changes need presenter recreation; only the created mode is accepted. */
-static void multi_sample_anti_alias(void) { set_state_global(G_MSAA, 0u); }
-static void z_enable(void) { set_state_global(G_ZENABLE, 2u); }
-static void stencil_enable(void) { set_state_global(G_STENCIL, 1u); }
-static void edge_anti_alias(void) { set_state_global(G_EDGE_AA, 1u); }
-static void cull_mode(void) { set_state_global(G_CULL, 3u); }
+static void multi_sample_anti_alias(void)
+{
+    /* shortcut: this device has one sample; enabling MSAA needs target recreation. */
+    if (kernel_arg(1u) != 0u) recomp_stop(2, "d3d8:unsupported-state-value:multisample");
+    set_state_global(G_MSAA, recomp_d3d_set_multisample_antialias);
+}
+static void z_enable(void) { set_state_global(G_ZENABLE, recomp_d3d_set_z_enable); }
+static void stencil_enable(void) { set_state_global(G_STENCIL, recomp_d3d_set_stencil_enable); }
+static void edge_anti_alias(void) { set_state_global(G_EDGE_AA, recomp_d3d_set_edge_antialias); }
+static void cull_mode(void) { set_state_global(G_CULL, recomp_d3d_set_cull_mode); }
 
 static void fill_mode(void)
 {
@@ -266,7 +298,7 @@ static void fill_mode(void)
     const uint32_t value = kernel_arg(1u);
     /* D3DFILL_POINT/SOLID/WIREFRAME; the SDK forwards SOLID when a
        fill-mode override global is active. Only the shadow is semantic. */
-    if (value != 0x1b00u && value != 0x1b01u && value != 0x1b02u) {
+    if (!recomp_d3d_set_fill_mode(&render_state, value)) {
         recomp_stop(2, "d3d8:unsupported-fill-mode:%08x", value);
     }
     *recomp_memory_u32(G_FILL_MODE) = value;
@@ -277,7 +309,8 @@ static void normalize_normals(void)
 {
     recomp_d3d8_require_device();
     const uint32_t value = kernel_arg(1u);
-    if (value > 1u) recomp_stop(2, "d3d8:unsupported-normalize:%08x", value);
+    if (!recomp_d3d_set_normalize_normals(&render_state, value))
+        recomp_stop(2, "d3d8:unsupported-normalize:%08x", value);
     *recomp_memory_u32(G_NORMALIZE) = value;
     *recomp_memory_u32(D3D_DIRTY) |= 0x200u;
     kernel_return(1u, 0u);
@@ -294,32 +327,69 @@ static void set_material(void)
     kernel_return(1u, 0u);
 }
 
-static void set_texture(void)
+static void texture_factor(void)
+{
+    set_state_global(0x3554b0u, recomp_d3d_set_texture_factor);
+}
+
+static void line_width(void)
+{
+    recomp_d3d8_require_device();
+    const uint32_t value = kernel_arg(1u);
+    float width;
+    memcpy(&width, &value, sizeof width);
+    /* shortcut: the presenter currently supports the default one-pixel width. */
+    if (width != 1.0f) recomp_stop(2, "d3d8:unsupported-line-width:%08x", value);
+    *recomp_memory_u32(0x3554d4u) = value;
+    kernel_return(1u, 0u);
+}
+
+static void stencil_fail(void)
+{
+    recomp_d3d8_require_device();
+    uint32_t value = kernel_arg(1u);
+    RecompD3dStencilOp op;
+    if (!recomp_d3d_stencil_op_from_nv(value, &op))
+        recomp_stop(2, "d3d8:invalid-stencil-fail:%08x", value);
+    recomp_d3d_set_simple_render_state(&render_state, 0x40370u, value);
+    *recomp_memory_u32(0x3554a4u) = value;
+    kernel_return(1u, 0u);
+}
+
+static void vertex_blend(void)
+{
+    recomp_d3d8_require_device();
+    uint32_t value = kernel_arg(1u);
+    if (value > 3u) recomp_stop(2, "d3d8:unsupported-vertex-blend:%08x", value);
+    *recomp_memory_u32(0x355484u) = value;
+    *recomp_memory_u32(D3D_DIRTY) |= 0x200u;
+    kernel_return(1u, 0u);
+}
+
+static void texcoord_index(void)
 {
     uint32_t device = recomp_d3d8_require_device();
-    const uint32_t stage = kernel_arg(1u), texture = kernel_arg(2u);
-    if (stage >= 4u) recomp_stop(2, "d3d8:texture-stage:%u", stage);
-    /* shortcut: non-null textures need 5849 resource addref/release and
-       native upload; bind them with the texture/draw producer. */
-    if (texture != 0u) recomp_stop(2, "d3d8:texture-unbound:%08x", texture);
-    const uint32_t slot = device + DEV_TEXTURE_STAGE + stage * 4u;
-    if (*recomp_memory_u32(slot) != 0u) {
-        recomp_stop(2, "d3d8:texture-release-unbound");
-    }
-    *recomp_memory_u32(device + 0xcu + stage * 4u) = 0x80000000u;
-    *recomp_memory_u32(D3D_DIRTY) |= 0x4800u;
+    uint32_t stage = kernel_arg(1u), value = kernel_arg(2u);
+    if (stage >= 4u || (value & 0xffffu) >= 8u || (value >> 16u) > 3u)
+        recomp_stop(2, "d3d8:unsupported-texcoord:%u:%08x", stage, value);
+    *recomp_memory_u32(0x3550d0u + stage * 128u) = value;
+    *recomp_memory(0x7c0a79u + stage, 1u) = (uint8_t)(9u + value);
+    const uint32_t previous = *recomp_memory_u32(device + 0x950u);
+    uint32_t generated = (previous & ~(1u << stage)) |
+        ((value >> 16u == 1u || value >> 16u == 3u) ? 1u << stage : 0u);
+    *recomp_memory_u32(device + 0x950u) = generated;
+    *recomp_memory_u32(D3D_DIRTY) |= 0x47fu | ((previous == 0u && generated != 0u) ? 0x200u : 0u);
     kernel_return(2u, 0u);
 }
 
 RecompFunction recomp_d3d8_state_lookup_manual(uint32_t address)
 {
-    /* Verified 5849 API entries; spot lights, >8 active lights, programmable
-       shaders, non-null textures and unsupported state values stop explicitly. */
+    /* Verified 5849 API entries; unsupported state values stop explicitly. */
     switch (address) {
     case 0x00344180u: return set_gamma;
     case 0x00344210u: return set_transform;
+    case 0x00344330u: return get_transform;
     case 0x003443a0u: return set_material;
-    case 0x00345490u: return set_texture;
     case 0x003465c0u: return set_fog_color;
     case 0x00345040u: return set_light;
     case 0x00345300u: return light_enable;
@@ -327,6 +397,11 @@ RecompFunction recomp_d3d8_state_lookup_manual(uint32_t address)
     case 0x00346540u: return edge_anti_alias;
     case 0x00346610u: return cull_mode;
     case 0x003466c0u: return normalize_normals;
+    case 0x00346700u: return texture_factor;
+    case 0x00346760u: return line_width;
+    case 0x00346a60u: return vertex_blend;
+    case 0x00346ab0u: return texcoord_index;
+    case 0x003475c0u: return stencil_fail;
     case 0x00346930u: return fill_mode;
     case 0x00347490u: return z_enable;
     case 0x00347520u: return stencil_enable;

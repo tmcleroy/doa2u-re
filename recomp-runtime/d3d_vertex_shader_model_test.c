@@ -52,6 +52,10 @@ int main(void)
     passed &= expect_u32("3-component UV type", declaration[0xacu / 4u], 0x32u);
     passed &= expect_u32("3-component UV mask", declaration[0x10u / 4u], 3u);
 
+    passed &= expect_u32("eight texture sets accepted",
+        recomp_d3d_build_fixed_function_declaration(0x802u, declaration), 1u);
+    passed &= expect_u32("x86 texture-mask shift wraps",
+        declaration[0x10u / 4u], 0x02020202u);
     passed &= expect_u32("nine texture sets rejected",
         recomp_d3d_build_fixed_function_declaration(0x902u, declaration), 0u);
     passed &= expect_u32("null declaration rejected",

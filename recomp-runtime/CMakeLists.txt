@@ -33,8 +33,14 @@ add_executable(recomp_d3d8_adapter_test d3d8_adapter.c d3d8_adapter_test.c
 add_test(NAME recomp-runtime-d3d8-adapter COMMAND recomp_d3d8_adapter_test)
 
 add_executable(recomp_d3d8_state_test d3d8_state_adapter.c d3d8_state_adapter_test.c
-    d3d_light_model.c d3d_vertex_shader_model.c)
+    d3d_light_model.c d3d_vertex_shader_model.c d3d_render_state_model.c)
 add_test(NAME recomp-runtime-d3d8-state COMMAND recomp_d3d8_state_test)
+add_executable(recomp_d3d8_resource_test d3d8_resource_adapter.c d3d_texture_model.c
+    d3d8_resource_adapter_test.c)
+add_test(NAME recomp-runtime-d3d8-resource COMMAND recomp_d3d8_resource_test)
+add_executable(recomp_d3d8_draw_test d3d8_draw_adapter.c d3d8_draw_adapter_test.c
+    d3d_draw_model.c d3d_texture_model.c d3d_render_state_model.c)
+add_test(NAME recomp-runtime-d3d8-draw COMMAND recomp_d3d8_draw_test)
 add_executable(recomp_d3d_light_test d3d_light_model.c d3d_light_model_test.c)
 add_test(NAME recomp-runtime-d3d-light COMMAND recomp_d3d_light_test)
 add_executable(recomp_d3d_vertex_declaration_test
@@ -44,6 +50,7 @@ if(NOT MSVC)
     target_link_libraries(recomp_model_test PRIVATE m)
     target_link_libraries(recomp_d3d8_adapter_test PRIVATE m)
     target_link_libraries(recomp_d3d8_state_test PRIVATE m)
+    target_link_libraries(recomp_d3d8_draw_test PRIVATE m)
     target_link_libraries(recomp_d3d_light_test PRIVATE m)
 endif()
 
@@ -260,7 +267,8 @@ if(RECOMP_PROGRAM_DIR)
     endforeach()
     message(STATUS "Generated ${_missing_count} fail-loud stubs for absent snapshot bodies")
     add_executable(recomp_program_runner runner.cpp program_adapters.c program_manual.c
-        d3d8_adapter.c d3d8_state_adapter.c d3d_device_model.c d3d_light_model.c
+        d3d8_adapter.c d3d8_state_adapter.c d3d8_resource_adapter.c d3d8_draw_adapter.c
+        d3d_device_model.c d3d_light_model.c d3d_render_state_model.c
         d3d_frame_model.c d3d_tile_model.c d3d_vertex_shader_model.c
         dsound_api_adapter.c dsound_device_model.c dsound_buffer_adapter.c
         dsound_buffer_model.c dsound_effects_adapter.c dsound_effects_image.c dsound_mix_model.c xbox_adpcm.c

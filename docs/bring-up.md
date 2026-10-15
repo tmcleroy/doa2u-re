@@ -82,26 +82,40 @@ SDK shadow banks; Swap consumes the bank selected by preincrement frame
 parity. Light-array growth repairs active pointers. HRESULT and void
 calling conventions have separate synthetic ABI checks.
 
-Alternate modes, parent resources, final resource destruction, offscreen
-targets, partial viewport/rectangle clears, nonzero Swap flags, spot lights,
-and additional resources/shaders/draws remain explicit limits or unbound
-APIs. The borrowed-texture capture limitation inherited from the presenter
-must be resolved before relying on queued non-linear texture uploads.
-No title/menu acceptance is established by these model contracts.
+The frame-state adapter records semantic depth, stencil, blend and alpha-test
+state through the shared render-state model. Simple states use the SDK's
+fastcall convention, with separate guest shadows maintained by the caller.
+SetVertexShader rebuilds the fixed-function declaration and applies the 5849
+dirty bits. SetMaterial retains its 17-word device shadow. Programmable vertex
+shaders, spot lights, nondefault raster modes and runtime multisampling remain
+explicit limits.
 
-The console setters write GPU commands into a push buffer that only real
-hardware drains, so every frame-state API is replaced whole. SetVertexShader
-rebuilds the fixed-function declaration with the builder carried over from
-DOA3. It stores the declaration, handle and program-slot shadows, and applies
-the SDK's dirty bits. Creation replays the SDK's final FVF 2 declaration, so
-the first bind never reads an empty declaration. The z, stencil, fill, edge
-antialiasing, normalize, cull and multisample setters keep their game-visible
-globals. SetRenderState_Simple is a fastcall register write with
-caller-owned shadows. SetMaterial copies its 17 words into the device shadow.
-SetTexture accepts NULL bindings for stages 0 to 3. Programmable shaders,
-non-null textures, unsupported state values and runtime multisample changes
-stop explicitly. These setters record state for a future draw producer; no
-game geometry is drawn yet.
+`d3d8_resource_adapter.c` binds registered textures, palettes, vertex/index
+buffers and surface views. Binding references retain storage independently
+of visible references. Native-created vertex buffers and mip surface wrappers
+have owned lifetimes; final destruction of external headers is guarded until
+their allocator is verified. Locks validate mip/rectangle spans. Write locks
+and texture registration invalidate native texture caches. Queued draws own
+all submitted vertex, index, palette and texture bytes, including non-linear
+formats. Cube/volume views and displaced swizzled locks remain unsupported.
+
+`d3d8_draw_adapter.c` binds DrawVertices, DrawVerticesUP and
+DrawIndexedVertices to the existing D3D11 presenter. It snapshots fixed-function
+layouts, transforms, viewport, depth/blend state, stage-0 texture and palette.
+Supported combinations include texture/diffuse modulation, white diffuse alpha
+selection and texture factors. Pixel-shader creation, deletion, binding and
+constants retain the 5849 layout; native custom shading currently supports the
+sister presenter's exact four-tap filter. Other combiners, fixed lighting and
+multiple streams stop explicitly. Offscreen targets and partial clears remain
+unbound. Synthetic draw tests establish these contracts, not title acceptance.
+
+KickPushBuffer publishes queued native commands. WaitForIdle drains them.
+PersistDisplay retains the native displayed image, and same-mode Reset replaces
+the guest surface headers and viewport while preserving non-target state and
+frame count. Reset clears depth/stencil only. Resizing and other display modes
+need further bindings. The lifter handles WBINVD over coherent host memory;
+there is no separate guest CPU cache or direct GPU consumer of guest bytes.
+
 Any SDK API that is still unreplaced reserves console push-buffer space and
 would then wait forever for GPU hardware. The reservation routine stops
 instead and reports the calling API's return address.

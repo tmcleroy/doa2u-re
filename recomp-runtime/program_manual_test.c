@@ -19,6 +19,18 @@ RecompFunction recomp_d3d8_lookup_manual(uint32_t address)
     return NULL;
 }
 
+RecompFunction recomp_d3d8_resource_lookup_manual(uint32_t address)
+{
+    (void)address;
+    return NULL;
+}
+
+RecompFunction recomp_d3d8_draw_lookup_manual(uint32_t address)
+{
+    (void)address;
+    return NULL;
+}
+
 RecompFunction recomp_d3d8_state_lookup_manual(uint32_t address)
 {
     (void)address;

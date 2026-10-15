@@ -73,6 +73,8 @@ static bool testTicks()
         RECOMP_D3D_PRESENTER_ALREADY_INITIALIZED);
     std::thread other([&] {
         passed &= expect("owner thread", tick(presenter, 1), RECOMP_D3D_PRESENTER_WRONG_THREAD);
+        passed &= expect("flush owner", recomp_d3d_presenter_flush(presenter, true),
+            RECOMP_D3D_PRESENTER_WRONG_THREAD);
     });
     other.join();
     for (uint32_t i = 1; i <= 5 && passed; ++i) passed &= expect("tick", tick(presenter, i));
@@ -80,6 +82,9 @@ static bool testTicks()
     passed &= expect("partial clear", recomp_d3d_presenter_submit(presenter, &clear));
     passed &= expect("partial release", recomp_d3d_presenter_release_memory(
         presenter, 0x00200000u, 4096u));
+    passed &= expect("publish without present", recomp_d3d_presenter_flush(presenter, false));
+    passed &= expect("wait idle", recomp_d3d_presenter_flush(presenter, true));
+    passed &= expect("empty wait idle", recomp_d3d_presenter_flush(presenter, true));
     recomp_d3d_presenter_report_draw_textures();
     passed &= destroy(presenter);
     if (passed) std::puts("PASS five CLEAR/PRESENT ticks and partial shutdown");

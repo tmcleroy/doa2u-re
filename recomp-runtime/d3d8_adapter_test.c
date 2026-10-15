@@ -45,6 +45,24 @@ static RecompD3dPresenterError create_error;
 static RecompD3dPresenterError submit_error;
 static uint32_t create_count, submit_count, destroy_count;
 static uint32_t vblank_reset_count, wait_present_count, wait_vblank_count;
+void recomp_d3d8_state_reset(void) {}
+void recomp_d3d8_resource_reset(void) {}
+void recomp_d3d_presenter_report_draw_textures(void) {}
+static unsigned flush_count;
+static bool flush_wait;
+RecompD3dPresenterError recomp_d3d_presenter_flush(RecompD3dPresenter *presenter, bool wait)
+{
+    (void)presenter;
+    ++flush_count;
+    flush_wait = wait;
+    return RECOMP_D3D_PRESENTER_OK;
+}
+RecompD3dPresenterError recomp_d3d_presenter_release_memory(
+    RecompD3dPresenter *presenter, uint32_t base, uint32_t size)
+{
+    (void)presenter; (void)base; (void)size;
+    return RECOMP_D3D_PRESENTER_OK;
+}
 void recomp_d3d_wait_vblank(void) { ++wait_vblank_count; }
 static jmp_buf stop_environment;
 static bool stop_armed;
@@ -323,6 +341,12 @@ int main(void)
         *recomp_memory_u32(COLOR_HEADER) == 0xd0003u);
     arguments[0] = COLOR_HEADER;
     passed &= call(0x347ec0u, arguments, 1u, NULL);
+    passed &= call(0x344dd0u, arguments, 0u, NULL);
+    passed &= expect("render target getter returns retained header",
+        recomp_runtime.registers.eax == COLOR_HEADER &&
+        recomp_runtime.registers.esp == ENTRY_ESP + 4u &&
+        *recomp_memory_u32(COLOR_HEADER) == 0xd0003u);
+    passed &= call(0x347ec0u, arguments, 1u, NULL);
     passed &= expect("back buffer release stays stable",
         recomp_runtime.registers.eax == 2u &&
         *recomp_memory_u32(COLOR_HEADER) == 0xd0002u);
@@ -441,6 +465,29 @@ int main(void)
     passed &= expect("vblank tail aliases bind the same API",
         recomp_d3d8_lookup_manual(0x2fc300u) == recomp_d3d8_lookup_manual(0x3444c0u) &&
         recomp_d3d8_lookup_manual(0x2fc5a0u) == recomp_d3d8_lookup_manual(0x3444c0u));
+    passed &= call(0x344440u, arguments, 0u, NULL);
+    passed &= expect("kick flushes without present", flush_count == 1u && !flush_wait &&
+        recomp_runtime.registers.esp == ENTRY_ESP + 4u && recomp_runtime.registers.eax == EAX_SENTINEL);
+    passed &= call(0x344420u, arguments, 0u, NULL);
+    passed &= expect("idle waits", flush_count == 2u && flush_wait);
+    passed &= call(0x345d70u, arguments, 0u, NULL);
+    passed &= expect("persist keeps native display after draining", flush_count == 3u &&
+        flush_wait && recomp_runtime.registers.eax == 0u);
+    *recomp_memory_u32(PARAMETERS + 48u) = 1u;
+    *recomp_memory_u32(DEVICE + 0xf88u) = 0x12345678u;
+    *recomp_memory_u32(DEVICE + 0xc60u) = 0x3f400000u;
+    arguments[0] = PARAMETERS;
+    passed &= call(0x344720u, arguments, 1u, NULL);
+    passed &= expect("reset retains native display, frame count and non-RT state",
+        recomp_runtime.registers.eax == 0u && recomp_runtime.registers.esp == ENTRY_ESP + 8u &&
+        create_count == 1u && destroy_count == 0u && flush_count == 4u &&
+        *recomp_memory_u32(DEVICE + 0xf88u) == 0x12345678u &&
+        *recomp_memory_u32(DEVICE + 0xc60u) == 0x3f400000u &&
+        *recomp_memory_u32(DEVICE + 0x2478u) == 2u && *recomp_memory_u32(0x35545cu) == 1u &&
+        *recomp_memory_u32(COLOR_HEADER) == 0xd0002u &&
+        *recomp_memory_u32(DEPTH_HEADER) == 0xd0002u &&
+        submitted.type == RECOMP_D3D_PRESENTER_COMMAND_CLEAR &&
+        !submitted.data.clear.clear_color && submitted.data.clear.clear_depth && submitted.data.clear.clear_stencil);
     recomp_d3d8_shutdown();
     passed &= expect("shutdown destroys presenter once", destroy_count == 1u);
     recomp_d3d8_shutdown();

@@ -217,6 +217,9 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
     const RecompD3dPresenterCommand *command);
 RecompD3dPresenterError recomp_d3d_presenter_destroy(
     RecompD3dPresenter **presenter);
+/* Publish queued work without swapping; optionally wait for its completion. */
+RecompD3dPresenterError recomp_d3d_presenter_flush(
+    RecompD3dPresenter *presenter, bool wait);
 
 /* Retire pixels only when their backing allocation is released, not when a
    nonowning surface wrapper is destroyed. Accepts guest RAM aliases. */
