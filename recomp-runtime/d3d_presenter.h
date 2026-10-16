@@ -164,6 +164,11 @@ typedef struct RecompD3dPresenterDrawCommand {
     /* Stage-0 mip selection; zero initialization keeps linear mips and no bias. */
     bool point_mip_filter;
     float mip_lod_bias;
+    /* Stage-0 D3DTSS_ALPHAKILL: discard fragments whose texel alpha is zero. */
+    bool alpha_kill;
+    /* Stage-0 TCI_CAMERASPACEREFLECTIONVECTOR with COUNT2: UV0 is generated from
+       reflection_world_view/normal and reflection_transform (TEXTURE0). */
+    bool texgen_reflection;
     /* Storage aliases the current guest backbuffer, whose pixels are host-owned. */
     bool texture_is_backbuffer;
     /* GetBackBuffer(-1): the frame Present last showed, not the one in progress. */

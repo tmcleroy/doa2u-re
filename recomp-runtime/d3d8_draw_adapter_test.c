@@ -256,6 +256,14 @@ static int draw_tests(void)
     *recomp_memory_u32(STAGES + 24u) = 0xc0000000u;
     invoke(0x348240u, 5u, 3u, VERTICES, 28u);
     CHECK(submitted.data.draw.point_mip_filter && submitted.data.draw.mip_lod_bias == -2.0f);
+    CHECK(!submitted.data.draw.alpha_kill);
+    *recomp_memory_u32(STAGES + 44u) = 4u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 28u);
+    CHECK(submitted.data.draw.alpha_kill);
+    *recomp_memory_u32(STAGES + 44u) = 1u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 28u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:draw-texture-sampler") == 0);
+    *recomp_memory_u32(STAGES + 44u) = 0u;
     *recomp_memory_u32(STAGES + 64u) = 2u;
     invoke(0x348240u, 5u, 3u, VERTICES, 28u);
     CHECK(submitted.data.draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_SELECT_TEXTURE);
@@ -380,6 +388,11 @@ static int lighting_tests(void)
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
     CHECK(strcmp(stop_reason, "d3d8:lighting-shade-mode") == 0);
     CHECK(recomp_d3d8_state_set_simple(0x4037cu, 0x1d01u));
+    const float flat[16] = {0,0,0,0, 0,-2,0,0, 0,0,0,0, 5,6,7,1};
+    recomp_guest_store(DEVICE + 0xde0u, flat, sizeof flat);
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    CHECK(lit->enabled && lit->world_transforms[0][5] == -2.0f && lit->normal_transforms[0][5] == 0.0f);
+    recomp_guest_store(DEVICE + 0xde0u, world, sizeof world);
     uint32_t saved_stages[4][32];
     recomp_guest_load(saved_stages, STAGES, sizeof saved_stages);
     const uint32_t reflection[3][6] = {{2,2,1,4,2,0}, {14,2,1,14,2,1}, {4,0,1,4,0,1}};
@@ -420,6 +433,24 @@ static int lighting_tests(void)
     *recomp_memory_u32(DEVICE + 0x798u) = 0x112u;
     *recomp_memory_u32(0x3553f8u) = 1u;
     recomp_guest_store(STAGES, saved_stages, sizeof saved_stages);
+    /* Stage-0 camera-space reflection texgen (COUNT2) reads TEXTURE0. */
+    const float texture0[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 9,0,0,1};
+    recomp_guest_store(DEVICE + 0xce0u, texture0, sizeof texture0);
+    *recomp_memory_u32(STAGES + 21u * 4u) = 2u;
+    *recomp_memory_u32(STAGES + 28u * 4u) = 0x30000u;
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x142u;
+    *recomp_memory_u32(0x3553f8u) = 0u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 24u);
+    CHECK(submitted.data.draw.texgen_reflection && !submitted.data.draw.has_reflection &&
+        submitted.data.draw.reflection_transform[12] == 9.0f &&
+        submitted.data.draw.reflection_world_view[12] == 5.0f);
+    *recomp_memory_u32(STAGES + 21u * 4u) = 3u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 24u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:draw-texture-coordinates") == 0);
+    *recomp_memory_u32(STAGES + 21u * 4u) = 0u;
+    *recomp_memory_u32(STAGES + 28u * 4u) = 0u;
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x112u;
+    *recomp_memory_u32(0x3553f8u) = 1u;
     *recomp_memory_u32(DEVICE + 0xf8cu) = 0u;
     *recomp_memory_u32(DEVICE + 0xf88u) = 0u;
     *recomp_memory_u32(STAGES + 48u) = *recomp_memory_u32(STAGES + 64u) = 1u;

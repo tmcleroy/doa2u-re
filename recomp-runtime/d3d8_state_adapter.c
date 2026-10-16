@@ -396,6 +396,20 @@ static void multi_sample_anti_alias(void)
     set_state_global(G_MSAA, recomp_d3d_set_multisample_antialias);
 }
 static void z_enable(void) { set_state_global(G_ZENABLE, recomp_d3d_set_z_enable); }
+
+/* MultiSampleMode/RenderTargetMode (0x3477a0/0x3477d0) pick 1X/2X/4X buffer
+   samples per shaded pixel (0x347130). The pass still covers every sample, as
+   the host's full-rate rendering does, so only the guest shadow is kept. */
+static void multi_sample_mode(uint32_t address)
+{
+    recomp_d3d8_require_device();
+    const uint32_t value = kernel_arg(1u);
+    if (value > 2u) recomp_stop(2, "d3d8:unsupported-state-value:%08x:%08x", address, value);
+    *recomp_memory_u32(address) = value;
+    kernel_return(1u, 0u);
+}
+static void back_buffer_sample_mode(void) { multi_sample_mode(0x3554c8u); }
+static void target_sample_mode(void) { multi_sample_mode(0x3554ccu); }
 static void stencil_enable(void) { set_state_global(G_STENCIL, recomp_d3d_set_stencil_enable); }
 static void edge_anti_alias(void) { set_state_global(G_EDGE_AA, recomp_d3d_set_edge_antialias); }
 static void cull_mode(void) { set_state_global(G_CULL, recomp_d3d_set_cull_mode); }
@@ -516,6 +530,8 @@ RecompFunction recomp_d3d8_state_lookup_manual(uint32_t address)
     case 0x00347490u: return z_enable;
     case 0x00347520u: return stencil_enable;
     case 0x00347800u: return multi_sample_anti_alias;
+    case 0x003477a0u: return back_buffer_sample_mode;
+    case 0x003477d0u: return target_sample_mode;
     case 0x00348de0u: return vertex_constant1;
     case 0x00348e40u: return vertex_constant4;
     case 0x00349320u: return set_vertex_shader;

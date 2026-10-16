@@ -43,6 +43,9 @@ patching and INIT/LDT registration are unnecessary. Its no-argument calling
 convention is tested; it consumes the return slot and leaves game globals
 untouched. SDK initializer-table callbacks are supplied through the public
 seed recipe rather than replaced by success stubs.
+Game handlers reached only through data tables (the game-mode table at
+0x6959f0 and the four-entry handler groups at 0x7c0040) are seeded the same
+way when the lifter misses them; an unresolved indirect call names the next one.
 
 `tools/build_game.py` authenticates the selected XBE, lifter revision,
 generated source manifest and final runner. CMake rejects partial or wrong
@@ -171,6 +174,28 @@ logical 720x480 units. PersistDisplay publishes an SDK-shaped saved surface
 without host pixels. Line lists draw natively; widths above one pixel become
 screen-space quads, and transformed wide lines stay guarded.
 there is no separate guest CPU cache or direct GPU consumer of guest bytes.
+
+Leaving character select, the game (0x282770) widens the old headers, persists
+the display, and Resets back to type 0x11. That Reset writes the same SDK fields
+for the new mode: scales 1.0, flag 0x4000 clear, MultiSampleMode 0 and swap
+filter 2. The game then restores the saved display into the 720-wide back
+buffer with CopyRects; the supersampled direction uses a CPU loop instead.
+The host's single main target still holds that frame, so CopyRects binds only
+this restore. It stops if a color clear or draw has written the target since
+the Swap before PersistDisplay. Other copies, such as the render-target
+snapshot at 0x277670, need a presenter copy command.
+
+Fixed-function stage 0 also admits D3DTSS_ALPHAKILL ENABLE (4), which discards
+fragments whose sampled texel alpha is zero, and camera-space reflection
+texgen (TCI 0x30000) with COUNT2. That texgen reuses the reflection inputs
+with the TEXTURE0 matrix (0xce0) and writes UV0; without a normal stream it
+uses a zero normal, as the stage-1 path does. When a lit world matrix is
+singular, the SDK inverse (0x34b530) fails and uploads an unset matrix. The
+adapter then uses zero normals, so only ambient and emissive light remain.
+MultiSampleMode and MultiSampleRenderTargetMode (0x3477a0/0x3477d0) store
+their guest shadow only. The game's 4X stencil pass on a one-sample back
+buffer shades fewer pixels, but it covers every sample, as the host's
+full-rate rendering does.
 
 Any SDK API that is still unreplaced reserves console push-buffer space and
 would then wait forever for GPU hardware. The reservation routine stops

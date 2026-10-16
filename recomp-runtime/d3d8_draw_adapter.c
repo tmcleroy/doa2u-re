@@ -378,8 +378,14 @@ static void attach_lighting(uint32_t device, const RecompD3dVertexLayout *layout
     }
     for (uint32_t i = 0u; i <= layout->blend_weight_count; ++i) {
         recomp_guest_load(result.world_transforms[i], device + 0xde0u + i * 64u, 64u);
-        if (!recomp_d3d_normal_transform(result.world_transforms[i], result.normal_transforms[i]))
-            recomp_stop(2, "d3d8:lighting-normal-transform");
+        if (!recomp_d3d_normal_transform(result.world_transforms[i], result.normal_transforms[i])) {
+            for (uint32_t j = 0u; j < 16u; ++j)
+                if (!isfinite(result.world_transforms[i][j])) recomp_stop(2, "d3d8:lighting-normal-transform");
+            /* The SDK inverse (0x34b530) fails on a zero determinant and uploads
+               an unset matrix. Such a world collapses an axis; zero normals keep
+               only ambient and emissive light. */
+            memset(result.normal_transforms[i], 0, sizeof result.normal_transforms[i]);
+        }
     }
     if (*recomp_memory_u32(0x3553fcu) != 0u || (*recomp_memory_u32(device + 8u) & 0x40u) != 0u) {
         if (*recomp_memory_u32(0x355400u) != 0u) recomp_stop(2, "d3d8:lighting-local-viewer");
@@ -394,6 +400,22 @@ static void attach_lighting(uint32_t device, const RecompD3dVertexLayout *layout
     result.normalize = *recomp_memory_u32(0x355498u) != 0u;
     result.stage_mode = result.enabled = true;
     draw->directional = result;
+}
+
+/* Camera-space reflection inputs: world-view, its normal matrix and the
+   texture matrix of the generating stage (TEXTURE0 0xce0, TEXTURE1 0xd20). */
+static void reflection_inputs(uint32_t device, uint32_t texture_matrix, RecompD3dPresenterDrawCommand *draw)
+{
+    float world[16], view[16];
+    recomp_guest_load(world, device + 0xde0u, sizeof world);
+    recomp_guest_load(view, device + 0xc60u, sizeof view);
+    multiply(world, view, draw->reflection_world_view);
+    if (!recomp_d3d_normal_transform(draw->reflection_world_view, draw->reflection_normal))
+        recomp_stop(2, "d3d8:reflection-normal");
+    recomp_guest_load(draw->reflection_transform, device + texture_matrix, sizeof draw->reflection_transform);
+    for (uint32_t i = 0u; i < 16u; ++i)
+        if (!isfinite(draw->reflection_transform[i])) recomp_stop(2, "d3d8:reflection-transform");
+    draw->reflection_normalize = *recomp_memory_u32(0x355498u) != 0u;
 }
 
 static void attach_reflection(uint32_t device, const RecompD3dVertexLayout *layout,
@@ -419,25 +441,17 @@ static void attach_reflection(uint32_t device, const RecompD3dVertexLayout *layo
     draw->reflection_texture = texture.texture;
     draw->reflection_bytes = texture.texture_bytes;
     draw->reflection_byte_count = texture.texture_byte_count;
-    float world[16], view[16];
-    recomp_guest_load(world, device + 0xde0u, sizeof world);
-    recomp_guest_load(view, device + 0xc60u, sizeof view);
-    multiply(world, view, draw->reflection_world_view);
-    if (!recomp_d3d_normal_transform(draw->reflection_world_view, draw->reflection_normal))
-        recomp_stop(2, "d3d8:reflection-normal");
-    recomp_guest_load(draw->reflection_transform, device + 0xd20u, sizeof draw->reflection_transform);
-    for (uint32_t i = 0u; i < 16u; ++i)
-        if (!isfinite(draw->reflection_transform[i])) recomp_stop(2, "d3d8:reflection-transform");
+    reflection_inputs(device, 0xd20u, draw);
     recomp_guest_load(draw->reflection_diffuse, device + 0xf00u, sizeof draw->reflection_diffuse);
     for (uint32_t i = 0u; i < 4u; ++i)
         if (!isfinite(draw->reflection_diffuse[i])) recomp_stop(2, "d3d8:reflection-material");
     draw->reflection_mesh_uv = stages[1][28] == 0u;
     draw->reflection_premultiplied = stages[1][12] == 16u;
-    draw->reflection_normalize = *recomp_memory_u32(0x355498u) != 0u;
     draw->has_reflection = true;
 }
 
-static void fixed_stages(const RecompD3dVertexLayout *layout, RecompD3dPresenterDrawCommand *draw)
+static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
+    RecompD3dPresenterDrawCommand *draw)
 {
     uint32_t stage[4][32];
     recomp_guest_load(stage, STAGES, sizeof stage);
@@ -446,9 +460,12 @@ static void fixed_stages(const RecompD3dVertexLayout *layout, RecompD3dPresenter
     if (!draw->use_texture_factor && draw->has_texture) {
         if (layout->texcoord_count == 0u || stage[0][0] < 1u || stage[0][0] > 3u ||
             stage[0][1] < 1u || stage[0][1] > 3u || stage[0][3] != 2u || stage[0][4] != 2u ||
-            stage[0][9] != 0u || stage[0][10] != 0u || stage[0][11] != 0u ||
+            stage[0][9] != 0u || stage[0][10] != 0u ||
+            /* ALPHAKILL is DISABLE (0) or ENABLE (4); the reflection path has no kill. */
+            (stage[0][11] != 0u && (stage[0][11] != 4u || draw->has_reflection)) ||
             (draw->texture.mip_levels > 1u && stage[0][5] != 1u && stage[0][5] != 2u))
             recomp_stop(2, "d3d8:draw-texture-sampler");
+        draw->alpha_kill = stage[0][11] == 4u;
         float bias;
         memcpy(&bias, &stage[0][6], sizeof bias);
         if (!isfinite(bias) || bias < -16.0f || bias > 15.99f)
@@ -489,8 +506,15 @@ static void fixed_stages(const RecompD3dVertexLayout *layout, RecompD3dPresenter
                (white && stage[0][12] == 2u && stage[0][14] == 2u)) ||
              !(alpha_modulate || white_alpha || texture_alpha || vertex_alpha || diffuse_alpha)))
             recomp_stop(2, "d3d8:draw-texture-combine");
-        if (stage[0][20] != 0u || stage[0][21] != 0u || stage[0][28] != 0u)
+        /* TEXTURETRANSFORMFLAGS COUNT2 over TCI_CAMERASPACEREFLECTIONVECTOR. */
+        const bool texgen = stage[0][21] == 2u && stage[0][28] == 0x30000u &&
+            !draw->has_reflection && !layout->pretransformed && layout->blend_weight_count == 0u;
+        if (stage[0][20] != 0u || (!texgen && (stage[0][21] != 0u || stage[0][28] != 0u)))
             recomp_stop(2, "d3d8:draw-texture-coordinates");
+        if (texgen) {
+            reflection_inputs(device, 0xce0u, draw);
+            draw->texgen_reflection = true;
+        }
         const uint32_t final[6] = {stage[1][12], stage[1][14], stage[1][15],
             stage[1][16], stage[1][18], stage[1][19]};
         draw->modulate_texture_factor = recomp_d3d_texture_factor_modulate_selected(final, stage[2][12]);
@@ -755,7 +779,7 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
             recomp_stop(2, "d3d8:draw-pixel-shader-unsupported");
     } else {
         attach_reflection(device, &layout, draw);
-        fixed_stages(&layout, draw);
+        fixed_stages(device, &layout, draw);
     }
     command.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
     uint8_t *widened = NULL;

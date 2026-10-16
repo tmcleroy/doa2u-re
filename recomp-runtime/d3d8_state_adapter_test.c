@@ -275,6 +275,10 @@ static int check_frame_state(void)
     CHECK(*recomp_memory_u32(0x3554c0u) == 0u);
     if (setjmp(stopped) == 0) { invoke(0x347800u, 0x11u, 0u); return 1; }
     CHECK(strncmp(stop_reason, "d3d8:unsupported-state-value", 28) == 0);
+    CHECK(invoke(0x3477a0u, 2u, 0u) == 0u && *recomp_memory_u32(0x3554c8u) == 2u);
+    CHECK(invoke(0x3477d0u, 1u, 0u) == 0u && *recomp_memory_u32(0x3554ccu) == 1u);
+    if (setjmp(stopped) == 0) { invoke(0x3477a0u, 3u, 0u); return 1; }
+    CHECK(strncmp(stop_reason, "d3d8:unsupported-state-value:003554c8", 37) == 0);
     *recomp_memory_u32(DIRTY) = 0u;
     CHECK(invoke(0x3466c0u, 1u, 0u) == 0u);
     CHECK(*recomp_memory_u32(0x355498u) == 1u && *recomp_memory_u32(DIRTY) == 0x200u);

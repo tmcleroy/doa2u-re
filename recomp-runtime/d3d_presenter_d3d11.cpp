@@ -200,6 +200,7 @@ void buildDrawShaderSource(
         "        shaded = texture_factor;\n"
         "    } else if (draw_flags.x > 0.5f) {\n"
         "        float4 sampled = guest_texture.Sample(guest_sampler, input.texcoord * texture_flags.xy);\n"
+        "        if (filter_flags.w > 0.5f && sampled.a == 0.0f) discard;\n"
         "        if (lighting_flags.y > 0.5f) sampled.rgb = 1.0f;\n"
         "        shaded %s sampled;\n"
         "        if (directional_flags.w > 0.5f) {\n"
@@ -264,19 +265,25 @@ void buildDrawShaderSource(
             ? (has_normal
                 ? "    if (reflection_flags.x > 1.5f) {\n"
                   "        output.reflection_coord = input.texcoord;\n"
-                  "    } else if (reflection_flags.x > 0.5f) {\n"
+                  "    } else if (reflection_flags.x > 0.5f || filter_texel.z > 0.5f) {\n"
                   "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
                   "        float3 n = mul(float4(input.normal, 0), reflection_normal).xyz;\n"
                   "        if (reflection_flags.y > 0.5f) n = normalize(n);\n"
                   "        float3 r = reflect(normalize(eye), n);\n"
-                  "        output.reflection_coord = mul(float4(r, 1), reflection_transform).xy;\n"
+                  "        float2 generated = mul(float4(r, 1), reflection_transform).xy;\n"
+                  "        if (filter_texel.z > 0.5f) output.texcoord = generated;\n"
+                  "        else output.reflection_coord = generated;\n"
                   "    }\n"
+                /* shortcut: without a normal stream NV2A reads a zero inline normal, so
+                   r is the eye direction; check the inline register if env maps look wrong. */
                 : "    if (reflection_flags.x > 1.5f) {\n"
                   "        output.reflection_coord = input.texcoord;\n"
-                  "    } else if (reflection_flags.x > 0.5f) {\n"
+                  "    } else if (reflection_flags.x > 0.5f || filter_texel.z > 0.5f) {\n"
                   "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
                   "        float3 r = normalize(eye);\n"
-                  "        output.reflection_coord = mul(float4(r, 1), reflection_transform).xy;\n"
+                  "        float2 generated = mul(float4(r, 1), reflection_transform).xy;\n"
+                  "        if (filter_texel.z > 0.5f) output.texcoord = generated;\n"
+                  "        else output.reflection_coord = generated;\n"
                   "    }\n")
             : "",
         has_diffuse ? "input.color" : "reflection_diffuse",
@@ -2711,19 +2718,23 @@ RecompD3dPresenterError submitDraw(
             filter[5] = 1.0f / draw.texture.height;
             unpack(draw.bright_pass_threshold, filter + 8);
         }
+        filter[3] = draw.alpha_kill ? 1.0f : 0.0f;
+        filter[6] = draw.texgen_reflection ? 1.0f : 0.0f;
         if (draw.four_tap_filter) {
             filter[1] = draw.four_tap_scale;
             filter[2] = draw.four_tap_sum_scale;
             for (unsigned i = 0u; i < 4u; ++i) unpack(draw.four_tap_factors[i], filter + 8 + i * 4);
         }
     }
-    if (draw.has_reflection) {
+    if (draw.has_reflection || draw.texgen_reflection) {
         std::memcpy(draw_constants + 84, draw.reflection_world_view, 64u);
         std::memcpy(draw_constants + 100, draw.reflection_normal, 64u);
         std::memcpy(draw_constants + 116, draw.reflection_transform, 64u);
+        draw_constants[137] = draw.reflection_normalize ? 1.0f : 0.0f;
+    }
+    if (draw.has_reflection) {
         std::memcpy(draw_constants + 132, draw.reflection_diffuse, 16u);
         draw_constants[136] = draw.reflection_mesh_uv ? 2.0f : 1.0f;
-        draw_constants[137] = draw.reflection_normalize ? 1.0f : 0.0f;
         draw_constants[139] = draw.reflection_premultiplied ? 1.0f : 0.0f;
     }
 
