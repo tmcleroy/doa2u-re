@@ -49,7 +49,7 @@ reimported, resolve its new path; never rely on the active tab.
 
 ## Lifter and shared source
 
-`tools/xboxrecomp` is pinned to `e38ab023f0eaa655edd7985580485c15b2d995d3`
+`tools/xboxrecomp` is pinned to `653782777dee86b70030622a64efb53d6d06cc0b`
 on `NoRain211/xboxrecomp`'s `codex/doa3-recipe` line. This is an initial
 tooling baseline, not a validated DOA2U recipe. Use its upstream interfaces
 (`--manual-functions`, `--coalesce-functions`). Update its gitlink and the
