@@ -28,11 +28,14 @@ class DiscTests(unittest.TestCase):
                     patch("run_game.sha256", return_value="hash"), \
                     patch("run_game.subprocess.run") as execute:
                 execute.return_value.returncode = 0
-                self.assertEqual(run(1, [30, 100], [200], isolated=True), 0)
+                self.assertEqual(run(1, [30, 100], [200], isolated=True,
+                                     buttons_polls=[(3800, 8), (4000, 1)]), 0)
                 command = execute.call_args.args[0]
                 self.assertEqual(command[command.index("--disc-root") + 1],
                                  str(root / "private/probe-disc"))
                 self.assertIn("--input-script-only", command)
+                self.assertEqual(command[-6:], ["--input-buttons-pulse-at", "3800", "8",
+                                               "--input-buttons-pulse-at", "4000", "1"])
             self.assertEqual(save.read_text(), "user save")
             self.assertFalse((root / "private/probe-disc/.recomp-storage").exists())
 
@@ -40,6 +43,12 @@ class DiscTests(unittest.TestCase):
         for polls in ([0], [-1], [2**64], [1, 2, 3, 4, 5]):
             with self.assertRaisesRegex(ValueError, "Start polls"):
                 run(1, polls)
+
+    def test_rejects_invalid_button_polls_before_reading_inputs(self):
+        for polls in ([(0, 8)], [(-1, 8)], [(2**64, 8)], [(1, 0)], [(1, 256)],
+                      [(1, -1)], [(1, 8)] * 1025):
+            with self.assertRaisesRegex(ValueError, "Button polls"):
+                run(1, buttons_polls=polls)
 
     def test_links_files_and_keeps_source_saves_out(self):
         with tempfile.TemporaryDirectory() as folder:

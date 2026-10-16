@@ -73,11 +73,27 @@ int main(int argc, char **argv)
             }
             continue;
         }
+        if (argument == "--input-buttons-pulse-at" && i + 2 < argc) {
+            const std::string value = argv[++i], maskValue = argv[++i];
+            std::uint64_t poll = 0u;
+            std::uint16_t mask = 0u;
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), poll);
+            const auto parsedMask = std::from_chars(maskValue.data(), maskValue.data() + maskValue.size(), mask);
+            if (parsed.ec != std::errc() || parsed.ptr != value.data() + value.size() ||
+                parsedMask.ec != std::errc() || parsedMask.ptr != maskValue.data() + maskValue.size() ||
+                mask == 0u || (mask & 0xff00u) != 0u ||
+                !recomp_input_pulse_source_add_buttons_poll(&inputPulses, poll, mask)) {
+                std::cerr << "recomp runner: invalid button poll/mask or too many pulses\n";
+                return 64;
+            }
+            continue;
+        }
         if ((argument != "--xbe" && argument != "--disc-root" &&
              argument != "--expect-stop" && argument != "--milestone-log") || i + 1 >= argc) {
             std::cerr << "usage: recomp_program_runner --xbe <path> [--disc-root <path>]"
                 " [--expect-stop <id>] [--milestone-log <path>]"
                 " [--input-start-pulse-at <poll>] [--input-a-pulse-at <poll>]"
+                " [--input-buttons-pulse-at <poll> <decimal-mask>]"
                 " [--input-script-only]\n";
             return 64;
         }
