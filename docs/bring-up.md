@@ -66,6 +66,13 @@ pace this takes roughly 12 minutes and shows a black window. The cache lives in
 `private/play-disc/.recomp-storage/partition5`. A probe stopped before all
 three archives finish leaves a partial install that the next boot repeats.
 
+The CRT remainder intrinsic at `0x336dfe` is replaced as a whole with native
+`fmod`. It consumes the x87 divisor at ST(0) and dividend at ST(1), returns
+one x87 result, and pops only the return address. This avoids unseeded
+internal special-value dispatch branches such as `0x338e10`. Numeric results
+include NaN for domain errors; guest CRT errno, math-error callbacks and
+unmasked floating-point exceptions are not implemented by this seam.
+
 ## Graphics API contract
 
 `d3d8_adapter.c` owns the whole 5849 CreateDevice boundary and uses the

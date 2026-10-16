@@ -66,6 +66,7 @@ add_executable(recomp_d3d_vertex_declaration_test
     d3d_vertex_shader_model.c d3d_vertex_shader_model_test.c)
 add_test(NAME recomp-runtime-d3d-vertex-declaration COMMAND recomp_d3d_vertex_declaration_test)
 if(NOT MSVC)
+    target_link_libraries(recomp_manual_test PRIVATE m)
     target_link_libraries(recomp_model_test PRIVATE m)
     target_link_libraries(recomp_d3d8_adapter_test PRIVATE m)
     target_link_libraries(recomp_d3d8_state_test PRIVATE m)

@@ -2,6 +2,8 @@
 #include "program_manual.h"
 #include "xbox_memory_layout.h"
 #include <stdlib.h>
+#include <math.h>
+#include <string.h>
 RecompRuntime recomp_runtime;
 uint8_t *recomp_fast_ram;
 static uint32_t tick, polls;
@@ -55,8 +57,45 @@ RecompFunction recomp_input_lookup_manual(uint32_t address)
     return NULL;
 }
 
+static int test_fmod(void)
+{
+    RecompFunction function = recomp_lookup_manual(0x00336dfeu);
+    if (function == NULL) return 0;
+    const double cases[][3] = {
+        {5.5, 2.0, 1.5}, {-5.5, 2.0, -1.5}, {5.5, -2.0, 1.5},
+        {0.0, 2.0, 0.0}, {-0.0, 2.0, -0.0}, {4.0, 2.0, 0.0},
+        {5.0, INFINITY, 5.0}, {INFINITY, 2.0, NAN}, {1.0, 0.0, NAN},
+        {NAN, 2.0, NAN}, {2.0, NAN, NAN}, {0x1p100, 3.0, 1.0},
+        {0x1p-1074, 1.0, 0x1p-1074}
+    };
+    for (unsigned top = 0u; top < 8u; ++top) {
+        for (unsigned i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+            recomp_runtime.registers = (RecompRegisters){1u, 2u, 3u, 4u, 5u, 6u, 7u, 0x1000u};
+            RecompRegisters expected = recomp_runtime.registers;
+            expected.esp += 4u;
+            recomp_runtime.fpu_top = top;
+            recomp_runtime.fpu_control_word = 0x027fu;
+            for (unsigned j = 0u; j < 8u; ++j) recomp_runtime.fpu_stack[j] = 100.0 + j;
+            recomp_runtime.fpu_stack[top] = cases[i][1];
+            recomp_runtime.fpu_stack[(top + 1u) & 7u] = cases[i][0];
+            function();
+            const unsigned result_top = (top + 1u) & 7u;
+            const double result = recomp_runtime.fpu_stack[result_top];
+            const double want = cases[i][2];
+            if (memcmp(&expected, &recomp_runtime.registers, sizeof(expected)) != 0 ||
+                recomp_runtime.fpu_top != result_top || recomp_runtime.fpu_control_word != 0x027fu ||
+                (isnan(want) ? !isnan(result) : result != want || !!signbit(result) != !!signbit(want))) return 0;
+            for (unsigned j = 0u; j < 8u; ++j) {
+                if (j != top && j != result_top && recomp_runtime.fpu_stack[j] != 100.0 + j) return 0;
+            }
+        }
+    }
+    return 1;
+}
+
 int main(void)
 {
+    if (!test_fmod()) return 1;
     RecompFunction init_segment = recomp_lookup_manual(0x002bd531u);
     if (init_segment == NULL) return 1;
     recomp_runtime.registers.esp = 0x1000u;
