@@ -1031,6 +1031,26 @@ static int factor_tests(void)
     return 0;
 }
 
+static int position_texgen_tests(void)
+{
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected position texgen stop: %s\n", stop_reason); return 1; }
+    initialize();
+    *recomp_memory_u32(DEVICE + 0xf88u) = 0x7000u;
+    set_stage(0u, 21u, 2u); set_stage(0u, 28u, 0x20000u);
+    const float matrix[16] = {2,3,4,5, 6,7,8,9, 10,11,12,13, 14,15,16,17};
+    recomp_guest_store(DEVICE + 0xce0u, matrix, sizeof matrix);
+    for (uint32_t normal = 0u; normal < 2u; ++normal) {
+        *recomp_memory_u32(DEVICE + 0x798u) = normal ? 0x112u : 0x142u;
+        invoke(0x348240u, 5u, 3u, VERTICES, normal ? 32u : 24u);
+        const RecompD3dPresenterDrawCommand *draw = &submitted.data.draw;
+        CHECK(draw->texgen_projected && !draw->texgen_reflection && !draw->texture_transform_uv);
+        for (uint32_t i = 0u; i < 16u; ++i)
+            CHECK(draw->reflection_transform[i] == (i % 4u == 2u ? (i == 14u ? 1.0f : 0.0f) : matrix[i]));
+    }
+    CHECK(submits == 2u);
+    return 0;
+}
+
 /* The stage effect's overlay passes, as FUN_0027be10 and FUN_0027c400 set them. */
 static int effect_tests(void)
 {
@@ -1207,7 +1227,7 @@ int main(void)
 {
     initialize();
     if (pixel_tests() || draw_tests() || line_tests() || quad_tests() || point_tests() || lighting_tests() || filter_tests() || bright_tests() ||
-        distortion_tests() || factor_tests() || effect_tests() || program_tests() || bump_tests()) return 1;
+        distortion_tests() || factor_tests() || position_texgen_tests() || effect_tests() || program_tests() || bump_tests()) return 1;
     puts("PASS D3D8 pixel lifecycle/constants and semantic draw ABI/snapshots");
     return 0;
 }

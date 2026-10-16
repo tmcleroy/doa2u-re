@@ -825,21 +825,27 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
            emits s = (m00, m10, 0, m20), t = (m01, m11, 0, m21) and q = 1. */
         const bool uv_transform = stage[0][21] == 2u && stage[0][28] == 0u &&
             !draw->has_reflection && !layout->pretransformed;
-        /* COUNT3|PROJECTED over TCI_CAMERASPACEPOSITION: 0x34f7d0 (case 0x331)
-           uploads S, T and Q as TEXTURE0 columns 0, 1 and 2. */
-        const bool projected = stage[0][21] == 0x103u && stage[0][28] == 0x20000u &&
+        /* Camera-space position: 0x34f7d0 uploads S/T from TEXTURE0 columns 0/1;
+           COUNT3|PROJECTED takes Q from column 2, COUNT2 (case 0x320) sets Q=1. */
+        const bool camera_position = (stage[0][21] == 2u || stage[0][21] == 0x103u) &&
+            stage[0][28] == 0x20000u &&
             !draw->has_reflection && !layout->pretransformed && layout->blend_weight_count == 0u;
         if (stage[0][20] != 0u ||
-            (!texgen && !uv_transform && !projected && (stage[0][21] != 0u || stage[0][28] != 0u)))
+            (!texgen && !uv_transform && !camera_position && (stage[0][21] != 0u || stage[0][28] != 0u)))
             recomp_stop(2, "d3d8:draw-texture-coordinates");
-        if (texgen || projected) {
+        if (texgen || camera_position) {
             /* Both stages generating: stage 1 keeps TEXTURE1 (FUN_00289680 sets only TEXTURE0). */
             if (draw->has_reflection && !draw->reflection_mesh_uv)
                 memcpy(draw->reflection_stage1_transform, draw->reflection_transform,
                     sizeof draw->reflection_stage1_transform);
             reflection_inputs(device, 0xce0u, draw);
             draw->texgen_reflection = texgen;
-            draw->texgen_projected = projected;
+            draw->texgen_projected = camera_position;
+            if (camera_position && stage[0][21] == 2u) {
+                draw->reflection_transform[2] = draw->reflection_transform[6] =
+                    draw->reflection_transform[10] = 0.0f;
+                draw->reflection_transform[14] = 1.0f;
+            }
         }
         if (uv_transform) {
             recomp_guest_load(draw->reflection_transform, device + 0xce0u, sizeof draw->reflection_transform);

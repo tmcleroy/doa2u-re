@@ -1105,6 +1105,19 @@ static bool testStageEffect()
         draw.texture_factor = 0xffffffffu;
         draw.modulate_texture_factor_alpha = true;
         passed &= expect("projected draw", d3d11_backend_submit(presenter, &command));
+        // COUNT2 uses Q=1. Mesh UVs are zero; camera translation and z contribute to S.
+        const World unprojected[] = {{0.375f, 0.75f, 0.5f, 0xff0000ffu, 0, 0},
+            {0.875f, 0.75f, 0.5f, 0xff0000ffu, 0, 0},
+            {0.375f, 0.25f, 0.5f, 0xff0000ffu, 0, 0}, {0.875f, 0.25f, 0.5f, 0xff0000ffu, 0, 0}};
+        draw.vertex_bytes = unprojected;
+        draw.reflection_world_view[12] = 0.25f;
+        std::memset(draw.reflection_transform, 0, sizeof draw.reflection_transform);
+        draw.reflection_transform[0] = 2;
+        draw.reflection_transform[8] = 1;
+        draw.reflection_transform[12] = -1.75f;
+        draw.reflection_transform[13] = 0.5f;
+        draw.reflection_transform[14] = 1;
+        passed &= expect("unprojected position draw", d3d11_backend_submit(presenter, &command));
         RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
         present.data.present = {5, 1};
         passed &= expect("effect present", d3d11_backend_submit(presenter, &present));
@@ -1114,7 +1127,8 @@ static bool testStageEffect()
             // kill-only at factor alpha 0.5 and killed;
             // the projected quad reads red at s/q 0.31 (s 0.63 would be green), green at 0.69.
             const int pixels[][4] = {{25, 40, 0, 128}, {55, 40, 0, 64}, {85, 40, 0, 255}, {115, 40, 0, 0},
-                {145, 40, 0, 128}, {175, 40, 0, 0}, {100, 200, 255, 0}, {220, 200, 0, 255}};
+                {145, 40, 0, 128}, {175, 40, 0, 0}, {100, 200, 255, 0}, {220, 200, 0, 255},
+                {240, 60, 255, 0}, {280, 60, 0, 255}};
             for (const auto &pixel : pixels) {
                 unsigned char bgr[3]{};
                 std::fseek(file, 54 + (239 - pixel[1]) * 960 + pixel[0] * 3, SEEK_SET);

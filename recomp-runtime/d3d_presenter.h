@@ -204,7 +204,7 @@ typedef struct RecompD3dPresenterDrawCommand {
     bool texture_factor_modulate;
     /* Stage-0 TCI_CAMERASPACEPOSITION with COUNT3|PROJECTED: (s, t, q) =
        (world-view position, 1) times reflection_transform columns 0-2, with
-       the sample at (s, t) / q per pixel. */
+       the sample at (s, t) / q per pixel. COUNT2 uses the same path with Q=1. */
     bool texgen_projected;
     /* A later stage's MODULATE(TFACTOR, CURRENT) on alpha alone. */
     bool modulate_texture_factor_alpha;

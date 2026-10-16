@@ -175,6 +175,11 @@ through, as 0x352e46 compiles it. Unlit stage-0 selection reuses the lit
 path's per-channel choice of texture and diffuse. A bound stage-1 texture
 under the TFACTOR variant on another coordinate set, a mask on another
 coordinate set or a linear or paletted mask still stop.
+Unprojected camera-space position with COUNT2 also binds for rigid world
+draws. The SDK upload (0x34f7d0, case 0x320) keeps the full S/T columns and
+sets Q to one; the adapter supplies that constant column to the same presenter
+path, so the texture matrix's third column cannot cause a divide. Native
+pixels check world-view position and S/T translation independently of mesh UVs.
 The fixed-function draw snapshot
 binds up to eight directional/point light slots, front material and ambient,
 normalization, blended world/normal transforms and infinite-view specular.
