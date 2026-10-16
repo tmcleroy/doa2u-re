@@ -43,7 +43,7 @@ def run(seconds, start_polls=(), a_polls=()):
     if receipt["recipe"]["xbe_sha256"] != sha256(selected) or program_manifest(generated) != (
             receipt["manifest_sha256"], receipt["ebp_count"]):
         raise ValueError("Game or generated sources differ from the build receipt")
-    runner = ROOT / "build/recomp-program/Debug/recomp_program_runner.exe"
+    runner = ROOT / "build/recomp-program/Release/recomp_program_runner.exe"
     if sha256(runner) != receipt["runner_sha256"]:
         raise ValueError("Runner differs from its successful build receipt")
     disc = ROOT / "private/play-disc"

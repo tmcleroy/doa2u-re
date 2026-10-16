@@ -79,9 +79,9 @@ def build(build_only=False, lift_only=False):
                 f"-DRECOMP_XBE_SHA256={recipe['xbe_sha256']}",
                 f"-DRECOMP_PROGRAM_MANIFEST_SHA256={receipt['manifest_sha256']}",
                 f"-DRECOMP_PROGRAM_EBP_EXPECTED={receipt['ebp_count']}"], logs / "configure.log")
-    run_logged(["cmake", "--build", build_dir, "--config", "Debug", "--parallel", "4",
+    run_logged(["cmake", "--build", build_dir, "--config", "Release", "--parallel", "4",
                 "--target", "recomp_program_runner"], logs / "build.log")
-    receipt["runner_sha256"] = sha256(build_dir / "Debug/recomp_program_runner.exe")
+    receipt["runner_sha256"] = sha256(build_dir / "Release/recomp_program_runner.exe")
     receipt_path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
 
 

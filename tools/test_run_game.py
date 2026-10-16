@@ -46,7 +46,7 @@ class DiscTests(unittest.TestCase):
             (root / "private/program").mkdir(parents=True)
             selected = root / "private/synthetic.input"
             selected.write_bytes(b"synthetic input")
-            runner = root / "build/recomp-program/Debug/recomp_program_runner.exe"
+            runner = root / "build/recomp-program/Release/recomp_program_runner.exe"
             runner.parent.mkdir(parents=True)
             runner.write_bytes(b"stale runner")
             receipt = dict(recipe=dict(xbe_sha256="input-hash"),
