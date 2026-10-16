@@ -1137,6 +1137,8 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     uint32_t stride, uint32_t index_address)
 {
     const uint32_t device = recomp_d3d8_require_device();
+    const bool quads = primitive == 8u;
+    if (quads) count &= ~3u;
     /* An even-count quad strip covers the triangles of a strip, in the same winding. */
     if (primitive == 9u) { primitive = 6u; count &= ~1u; }
     /* A line list draws whole pairs; the presenter maps it to D3D11 lines. */
@@ -1145,9 +1147,9 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     if (count > 65536u || vertices == 0u || stride == 0u)
         recomp_stop(2, "d3d8:draw-span");
     const bool points = primitive == 1u;
-    const uint32_t triangles = points ? count * 2u : primitive == 2u ? count / 2u :
+    const uint32_t triangles = points ? count * 2u : quads ? count / 2u : primitive == 2u ? count / 2u :
         recomp_d3d_draw_triangle_count(primitive, count);
-    if (!points && primitive != 2u && (primitive < 5u || primitive > 7u))
+    if (!points && !quads && primitive != 2u && (primitive < 5u || primitive > 7u))
         recomp_stop(2, "d3d8:draw-primitive:%u", primitive);
     if (triangles == 0u) return;
     RecompD3dPresenterCommand command = {0};
@@ -1184,6 +1186,20 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
         if (sequential == NULL) recomp_stop(2, "d3d8:draw-index-allocation");
         for (uint32_t i = 0u; i < count; ++i) sequential[i] = (uint16_t)i;
         indices = sequential;
+    }
+    if (quads) {
+        /* shortcut: use diagonal 0-2, verify the hardware split if quad interpolation differs. */
+        static const uint32_t order[6] = {0u, 1u, 2u, 0u, 2u, 3u};
+        uint16_t *expanded_indices = malloc(triangles * 3u * sizeof *expanded_indices);
+        if (expanded_indices == NULL) recomp_stop(2, "d3d8:draw-index-allocation");
+        for (uint32_t i = 0u; i < count / 4u; ++i)
+            for (uint32_t j = 0u; j < 6u; ++j)
+                expanded_indices[i * 6u + j] = indices[i * 4u + order[j]];
+        free(sequential);
+        sequential = expanded_indices;
+        indices = sequential;
+        primitive = 5u;
+        count = triangles * 3u;
     }
     draw->vertex_count = largest + 1u;
     const uint32_t bytes = recomp_d3d_draw_vertex_bytes(stride, largest);

@@ -24,7 +24,7 @@ uint8_t *recomp_fast_ram;
 static uint8_t ram[RECOMP_XBOX_RAM_SIZE];
 static RecompD3dRenderStateModel state;
 static RecompD3dPresenterCommand submitted;
-static uint16_t captured_indices[65536];
+static uint16_t captured_indices[98304];
 static float captured_vertices[64];
 static uint32_t allocated = 0x360000u, freed, submits;
 static bool fail_allocation;
@@ -337,6 +337,35 @@ static int draw_tests(void)
     *recomp_memory_u32(DEVICE + 0x784u) = 1u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 28u); return 1; }
     CHECK(strcmp(stop_reason, "d3d8:draw-pixel-shader-unsupported") == 0);
+    return 0;
+}
+
+static int quad_tests(void)
+{
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected quad stop: %s\n", stop_reason); return 1; }
+    initialize();
+    const uint16_t triangles[12] = {0,1,2, 0,2,3, 4,5,6, 4,6,7};
+    invoke(0x348240u, 8u, 9u, VERTICES, 28u);
+    CHECK(submits == 1u && submitted.data.draw.primitive_type == 5u &&
+        submitted.data.draw.vertex_count == 8u && submitted.data.draw.index_count == 12u &&
+        submitted.data.draw.triangle_count == 4u);
+    CHECK(memcmp(captured_indices, triangles, sizeof triangles) == 0);
+    const uint16_t source[9] = {6,2,5,1, 7,3,4,0, UINT16_MAX};
+    const uint16_t indexed[12] = {6,2,5, 6,5,1, 7,3,4, 7,4,0};
+    recomp_guest_store(INDICES, source, sizeof source);
+    invoke(0x348450u, 8u, 9u, INDICES, 0u);
+    CHECK(submits == 2u && submitted.data.draw.vertex_count == 8u &&
+        submitted.data.draw.index_count == 12u && submitted.data.draw.triangle_count == 4u);
+    CHECK(memcmp(captured_indices, indexed, sizeof indexed) == 0);
+    CHECK(memcmp(ram + INDICES, source, sizeof source) == 0);
+    invoke(0x3483b0u, 8u, 2u, 4u, 0u);
+    CHECK(submits == 3u && submitted.data.draw.vertex_bytes == ram + VERTICES + 56u &&
+        submitted.data.draw.index_count == 6u && submitted.data.draw.vertex_count == 4u);
+    invoke(0x348240u, 8u, 3u, 0u, 0u);
+    CHECK(submits == 3u);
+    invoke(0x348240u, 8u, 65536u, VERTICES, 28u);
+    CHECK(submits == 4u && submitted.data.draw.index_count == 98304u &&
+        submitted.data.draw.vertex_count == 65536u && captured_indices[98303] == UINT16_MAX);
     return 0;
 }
 
@@ -1098,7 +1127,7 @@ static int bump_tests(void)
 int main(void)
 {
     initialize();
-    if (pixel_tests() || draw_tests() || point_tests() || lighting_tests() || filter_tests() || bright_tests() ||
+    if (pixel_tests() || draw_tests() || quad_tests() || point_tests() || lighting_tests() || filter_tests() || bright_tests() ||
         distortion_tests() || effect_tests() || program_tests() || bump_tests()) return 1;
     puts("PASS D3D8 pixel lifecycle/constants and semantic draw ABI/snapshots");
     return 0;

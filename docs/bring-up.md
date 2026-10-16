@@ -132,7 +132,11 @@ live C0/C1 factors, and the post-process bright pass. The bright pass matches
 its exact combiner words and Gaussian-cubic stage-0 filtering, then computes
 saturate(2 * (gauss3x3(t0) - c0) - 1) with the 1-2-1 kernel at level 0. The
 bloom composite binds stage-0 MODULATE2X of texture and texture factor over
-white vertices; quad strips draw as triangle strips. The fight's trail strips
+white vertices; quad strips draw as triangle strips. Quad lists (type 8,
+including FUN_0023d2a0's four-vertex draws) expand each group of four indices
+to two triangles, preserving vertex order and ignoring an incomplete final
+quad. UP, stream and indexed draws share the conversion. The split uses
+diagonal 0-2; hardware interpolation parity is unverified. The fight's trail strips
 (setup 0x23a42d, FVF 0x102, draw 0x23ca7e) use 1x MODULATE(TEXTURE, TFACTOR)
 with a grey factor, stage-0 alpha DISABLE and stages 1-3 off, so they draw
 texture times factor with the white diffuse alpha.
