@@ -24,6 +24,7 @@ static uint8_t ram[RECOMP_XBOX_RAM_SIZE];
 static RecompD3dRenderStateModel state;
 static RecompD3dPresenterCommand submitted;
 static uint16_t captured_indices[65536];
+static float captured_vertices[64];
 static uint32_t allocated = 0x360000u, freed, submits;
 static bool fail_allocation;
 static jmp_buf stopped;
@@ -82,6 +83,9 @@ void recomp_d3d8_submit(const RecompD3dPresenterCommand *command)
 {
     submitted = *command;
     memcpy(captured_indices, command->data.draw.index_bytes, command->data.draw.index_count * 2u);
+    const size_t vertex_bytes = (size_t)command->data.draw.vertex_stride * command->data.draw.vertex_count;
+    memcpy(captured_vertices, command->data.draw.vertex_bytes,
+        vertex_bytes < sizeof captured_vertices ? vertex_bytes : sizeof captured_vertices);
     ++submits;
 }
 
@@ -281,6 +285,32 @@ static int draw_tests(void)
     invoke(0x348240u, 9u, 5u, VERTICES, 28u);
     CHECK(submits == quads + 1u && submitted.data.draw.primitive_type == 6u &&
         submitted.data.draw.index_count == 4u && submitted.data.draw.triangle_count == 2u);
+    invoke(0x348240u, 2u, 5u, VERTICES, 28u);
+    CHECK(submits == quads + 2u && submitted.data.draw.primitive_type == 2u &&
+        submitted.data.draw.index_count == 4u && submitted.data.draw.triangle_count == 2u);
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 2u, 2u, VERTICES, 20u); return 1; }
+    CHECK(strncmp(stop_reason, "d3d8:draw-vertex-layout:00000144:20", 35u) == 0);
+    *recomp_memory_u32(DEVICE + 0xf88u) = 0u;
+    invoke(0x348240u, 2u, 2u, VERTICES, 20u);
+    CHECK(submits == quads + 3u && submitted.data.draw.fvf == 0x44u && !submitted.data.draw.has_texture);
+    /* Width 2 widens an x-major line by one pixel above and below. */
+    const float line[10] = {10.0f, 20.0f, 0.0f, 1.0f, 0.0f, 50.0f, 24.0f, 0.0f, 1.0f, 0.0f};
+    const float wide = 2.0f;
+    recomp_guest_store(0x4800u, line, sizeof line);
+    recomp_guest_store(0x3554d4u, &wide, sizeof wide);
+    invoke(0x348240u, 2u, 2u, 0x4800u, 20u);
+    CHECK(submitted.data.draw.primitive_type == 5u && submitted.data.draw.index_count == 6u &&
+        submitted.data.draw.vertex_count == 4u && submitted.data.draw.triangle_count == 2u &&
+        submitted.data.draw.cull_mode == RECOMP_D3D_CULL_NONE);
+    CHECK(captured_indices[2] == 3u && captured_indices[5] == 2u);
+    CHECK(captured_vertices[1] == 19.0f && captured_vertices[6] == 21.0f &&
+        captured_vertices[10] == 50.0f && captured_vertices[11] == 23.0f && captured_vertices[16] == 25.0f);
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x142u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 2u, 2u, VERTICES, 24u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:draw-wide-lines:1") == 0);
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x144u;
+    recomp_guest_store(0x3554d4u, &(float){1.0f}, sizeof(float));
+    *recomp_memory_u32(DEVICE + 0xf88u) = 0x7000u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 65537u, VERTICES, 28u); return 1; }
     CHECK(strcmp(stop_reason, "d3d8:draw-span") == 0);
     *recomp_memory_u32(DEVICE + 0x798u) = 0x1002u;
@@ -544,6 +574,8 @@ static int program_tests(void)
     const float one = 1.0f, two = 2.0f, constant = 7.0f;
     recomp_guest_store(DEVICE + 0x95cu, &one, 4u);
     recomp_guest_store(DEVICE + 0x960u, &one, 4u);
+    recomp_guest_store(DEVICE + 0x96cu, &one, 4u);
+    recomp_guest_store(DEVICE + 0x970u, &one, 4u);
     recomp_guest_store(DEVICE + 0x948u, &two, 4u);
     recomp_guest_store(0x354440u + 96u * 16u, &constant, 4u);
     *recomp_memory_u32(DEVICE + 0x798u) = PROGRAM + 1u;
@@ -558,6 +590,13 @@ static int program_tests(void)
     CHECK(draw->program_constants[58][2] == 2.0f && draw->program_constants[59][0] == 360.53125f);
     CHECK(draw->program_constants[59][1] == 240.53125f && draw->program_constants[59][2] == 0.0f);
     CHECK(!draw->has_transform && draw->screen_space_offset[0] == 0.0f && !draw->program_alpha_mask);
+    /* A 2x supersampled back buffer keeps the host at its logical 720 pixels. */
+    recomp_guest_store(DEVICE + 0x95cu, &two, 4u);
+    recomp_guest_store(DEVICE + 0x96cu, &two, 4u);
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    CHECK(draw->program_constants[58][0] == 360.0f && draw->program_constants[59][0] == 360.53125f);
+    recomp_guest_store(DEVICE + 0x95cu, &one, 4u);
+    recomp_guest_store(DEVICE + 0x96cu, &one, 4u);
     /* Multisampled back-buffer rendering shifts the sample grid by half a pixel. */
     *recomp_memory_u32(DEVICE + 8u) = 0x8000u;
     *recomp_memory_u32(0x3554c0u) = 1u;
@@ -569,14 +608,14 @@ static int program_tests(void)
     *recomp_memory_u32(STAGES + 128u + 20u) = 1u;
     *recomp_memory_u32(STAGES + 128u + 24u) = 0xc0000000u;
     invoke(0x348240u, 5u, 3u, VERTICES, 32u);
-    CHECK(submits == 3u && !draw->program_alpha_mask);
+    CHECK(submits == 4u && !draw->program_alpha_mask);
     *recomp_memory_u32(DEVICE + 0xf8cu) = 0x7000u;
     invoke(0x348240u, 5u, 3u, VERTICES, 32u);
-    CHECK(submits == 4u && draw->program_alpha_mask && draw->reflection_bytes == ram + 0x8000u);
+    CHECK(submits == 5u && draw->program_alpha_mask && draw->reflection_bytes == ram + 0x8000u);
     CHECK(draw->program_mask_lod_bias == -2.0f);
     *recomp_memory_u32(STAGES + 48u) = 4u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
-    CHECK(submits == 4u && strncmp(stop_reason, "d3d8:vertex-program-stages", 26) == 0);
+    CHECK(submits == 5u && strncmp(stop_reason, "d3d8:vertex-program-stages", 26) == 0);
     *recomp_memory_u32(STAGES + 48u) = 2u;
     *recomp_memory_u32(PROGRAM + 0x38u) = 16u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }

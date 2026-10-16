@@ -289,6 +289,10 @@ static int check_frame_state(void)
     if (setjmp(stopped) == 0) { invoke(0x3443a0u, 0u, 0u); return 1; }
     CHECK(strcmp(stop_reason, "d3d8:material-pointer") == 0);
 
+    CHECK(invoke(0x346760u, 0x40000000u, 0u) == 0u);
+    CHECK(*recomp_memory_u32(0x3554d4u) == 0x40000000u);
+    if (setjmp(stopped) == 0) { invoke(0x346760u, 0xbf800000u, 0u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:unsupported-line-width:bf800000") == 0);
     CHECK(invoke(0x346760u, 0x3f800000u, 0u) == 0u);
     CHECK(*recomp_memory_u32(0x3554d4u) == 0x3f800000u);
     CHECK(invoke(0x346700u, 0xff123456u, 0u) == 0u);

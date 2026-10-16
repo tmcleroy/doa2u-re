@@ -446,8 +446,8 @@ static void line_width(void)
     const uint32_t value = kernel_arg(1u);
     float width;
     memcpy(&width, &value, sizeof width);
-    /* shortcut: the presenter currently supports the default one-pixel width. */
-    if (width != 1.0f) recomp_stop(2, "d3d8:unsupported-line-width:%08x", value);
+    /* The draw adapter widens pretransformed lines; the SDK clamps the width. */
+    if (!isfinite(width) || width < 0.0f) recomp_stop(2, "d3d8:unsupported-line-width:%08x", value);
     *recomp_memory_u32(0x3554d4u) = value;
     kernel_return(1u, 0u);
 }

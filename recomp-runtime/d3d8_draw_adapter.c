@@ -524,11 +524,18 @@ static void attach_program(uint32_t device, RecompD3dPresenterDrawCommand *draw)
     draw->program_count = words[2];
     recomp_guest_load(draw->program_constants, 0x354440u, sizeof draw->program_constants);
     RecompD3dViewport viewport;
-    float scale[2], offset[2], depth;
+    float scale[2], framebuffer[2], offset[2], depth;
     recomp_guest_load(&viewport, device + 0xee0u, sizeof viewport);
     recomp_guest_load(scale, device + 0x95cu, sizeof scale);
+    recomp_guest_load(framebuffer, device + 0x96cu, sizeof framebuffer);
     recomp_guest_load(&depth, device + 0x948u, sizeof depth);
     recomp_guest_load(offset, device + 0xef8u, sizeof offset);
+    /* The host draws the back buffer at its logical size, without the
+       supersample factor the SDK applies to the guest viewport transform. */
+    if (!draw->target.offscreen) {
+        scale[0] /= framebuffer[0];
+        scale[1] /= framebuffer[1];
+    }
     if ((*recomp_memory_u32(device + 8u) & 0x8000u) != 0u && *recomp_memory_u32(0x3554c0u) != 0u) {
         offset[0] -= 0.5f;
         offset[1] -= 0.5f;
@@ -591,24 +598,78 @@ static void program_stages(uint32_t device, RecompD3dPresenterDrawCommand *draw)
         recomp_stop(2, "d3d8:vertex-program-lod-bias");
 }
 
+/* D3D11 rasterizes one-pixel lines only. A wider line list becomes quads in
+   screen space, widened across the minor axis like aliased NV2A lines, with
+   the width the SDK programs (0x346760: 1/8-pixel steps, at most 0x1ff). */
+static uint8_t *widen_lines(bool transformed, RecompD3dPresenterDrawCommand *draw)
+{
+    float width;
+    recomp_guest_load(&width, 0x3554d4u, sizeof width);
+    width = fminf(floorf(width * 8.0f + 0.5f), 511.0f) / 8.0f;
+    if (width <= 1.0f) return NULL;
+    /* shortcut: only pretransformed lines widen; add a clip-space pass if a
+       transformed wide line appears. */
+    const uint32_t lines = draw->index_count / 2u, stride = draw->vertex_stride;
+    if (transformed || lines > 16384u) recomp_stop(2, "d3d8:draw-wide-lines:%u", lines);
+    uint8_t *storage = malloc((size_t)lines * (12u + 4u * stride));
+    if (storage == NULL) recomp_stop(2, "d3d8:draw-index-allocation");
+    uint16_t *indices = (uint16_t *)(void *)storage;
+    uint8_t *quads = storage + (size_t)lines * 12u;
+    const uint16_t *source = draw->index_bytes;
+    const uint8_t *vertices = draw->vertex_bytes;
+    static const uint16_t corner[6] = {0u, 1u, 3u, 0u, 3u, 2u};
+    for (uint32_t i = 0u; i < lines; ++i) {
+        float a[2], b[2];
+        memcpy(a, vertices + source[i * 2u] * stride, sizeof a);
+        memcpy(b, vertices + source[i * 2u + 1u] * stride, sizeof b);
+        const uint32_t axis = fabsf(b[0] - a[0]) >= fabsf(b[1] - a[1]) ? 1u : 0u;
+        for (uint32_t k = 0u; k < 4u; ++k) {
+            uint8_t *vertex = quads + (i * 4u + k) * stride;
+            float position;
+            memcpy(vertex, vertices + source[i * 2u + k / 2u] * stride, stride);
+            memcpy(&position, vertex + axis * 4u, sizeof position);
+            position += (k & 1u ? 0.5f : -0.5f) * width;
+            memcpy(vertex + axis * 4u, &position, sizeof position);
+        }
+        for (uint32_t k = 0u; k < 6u; ++k) indices[i * 6u + k] = (uint16_t)(i * 4u + corner[k]);
+    }
+    draw->vertex_bytes = quads;
+    draw->vertex_count = lines * 4u;
+    draw->index_bytes = indices;
+    draw->index_count = lines * 6u;
+    draw->primitive_type = 5u;
+    draw->triangle_count = lines * 2u;
+    draw->cull_mode = RECOMP_D3D_CULL_NONE;
+    return storage;
+}
+
 static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     uint32_t stride, uint32_t index_address)
 {
     const uint32_t device = recomp_d3d8_require_device();
     /* An even-count quad strip covers the triangles of a strip, in the same winding. */
     if (primitive == 9u) { primitive = 6u; count &= ~1u; }
+    /* A line list draws whole pairs; the presenter maps it to D3D11 lines. */
+    if (primitive == 2u) count &= ~1u;
     if (count == 0u) return;
     if (count > 65536u || vertices == 0u || stride == 0u)
         recomp_stop(2, "d3d8:draw-span");
-    const uint32_t triangles = recomp_d3d_draw_triangle_count(primitive, count);
-    if (primitive < 5u || primitive > 7u) recomp_stop(2, "d3d8:draw-primitive:%u", primitive);
+    const uint32_t triangles = primitive == 2u ? count / 2u : recomp_d3d_draw_triangle_count(primitive, count);
+    if (primitive != 2u && (primitive < 5u || primitive > 7u))
+        recomp_stop(2, "d3d8:draw-primitive:%u", primitive);
     if (triangles == 0u) return;
     RecompD3dPresenterCommand command = {0};
     RecompD3dPresenterDrawCommand *draw = &command.data.draw;
     draw->fvf = *recomp_memory_u32(device + 0x798u);
     const bool program = (draw->fvf & 1u) != 0u;
+    recomp_d3d8_target(&draw->target);
     if (program) attach_program(device, draw);
     RecompD3dVertexLayout layout;
+    /* With no stage-0 texture no texture coordinates are fetched: the menu
+       (0xb0600) draws 20-byte XYZRHW|DIFFUSE lines under its quads' FVF 0x144. */
+    if (!program && *recomp_memory_u32(device + 0xf88u) == 0u &&
+        recomp_d3d_fvf_layout(draw->fvf, &layout) && layout.stride > stride)
+        draw->fvf &= ~0xf00u;
     if ((draw->fvf & 1u) != 0u || !recomp_d3d_fvf_layout(draw->fvf, &layout) ||
         layout.stride > stride || (draw->fvf & ~0xfdfu) != 0u)
         recomp_stop(2, "d3d8:draw-vertex-layout:%08x:%u", draw->fvf, stride);
@@ -685,7 +746,6 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     draw->cull_mode = state->cull_mode == 0x900u ? RECOMP_D3D_CULL_CLOCKWISE :
         state->cull_mode == 0x901u ? RECOMP_D3D_CULL_COUNTER_CLOCKWISE : RECOMP_D3D_CULL_NONE;
     draw->texture_factor = state->texture_factor;
-    recomp_d3d8_target(&draw->target);
     attach_texture(device, 0u, draw);
     if (!program) attach_lighting(device, &layout, draw);
     if (program) {
@@ -698,8 +758,11 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
         fixed_stages(&layout, draw);
     }
     command.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
+    uint8_t *widened = NULL;
+    if (primitive == 2u) widened = widen_lines(program || !layout.pretransformed, draw);
     recomp_d3d8_submit(&command);
     free(sequential);
+    free(widened);
 }
 
 static void draw_up(void)
