@@ -120,7 +120,18 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
         }
         if (draw && error != RECOMP_D3D_PRESENTER_OK &&
             error != RECOMP_D3D_PRESENTER_CLOSED) {
-            ++thread.draw_declines;
+            const unsigned declines = ++thread.draw_declines;
+            // Report while running; the shutdown total is lost when a probe is killed.
+            if ((declines & (declines - 1u)) == 0u) {
+                const auto &d = packet.command(i).data.draw;
+                std::fprintf(stderr,
+                    "recomp d3d presenter: draw declines=%u error=%d fvf=0x%08X"
+                    " program=%u prim=%u target=0x%08X fmt=0x%02X %ux%u"
+                    " texture=%d fmt=0x%02X\n", declines, static_cast<int>(error),
+                    d.fvf, d.program_count, d.primitive_type, d.target.color.data,
+                    d.target.color.format_byte, d.target.color.width,
+                    d.target.color.height, d.has_texture ? 1 : 0, d.texture.format_byte);
+            }
         } else {
             if (error != RECOMP_D3D_PRESENTER_OK &&
                 status(thread) == RECOMP_D3D_PRESENTER_OK) {
