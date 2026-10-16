@@ -381,6 +381,101 @@ static uint8_t *distortion(uint32_t device, uint32_t stride, RecompD3dPresenterD
     return (uint8_t *)packed;
 }
 
+/* The stage effect's bump shader (definition built by FUN_0027ffc0, bound by
+   FUN_002807f0): t0 PROJECT2D, t1-t3 BUMPENVMAP of t0 (PSInputTexture 0).
+   Combiners 0-1 square T3.a twice, 2 sets r0 = t2 * (1 - t3.a), 3 sets
+   r0 *= v0; the final combiner is lerp(fog.rgb, r0, fog.a) with v0.a. T1 is
+   never read. 0x34f5f0 keeps these final words because they are nonzero. */
+static bool bump_shader(uint32_t device)
+{
+    static const uint32_t words[][2] = {
+        {0x00u, 0xdbdb1010u}, {0x04u, 0xdbdb1010u}, {0x08u, 0u}, {0x0cu, 0u},
+        {0x20u, 0x130c0300u}, {0x24u, 0x1480u}, {0x68u, 0xb0u}, {0x6cu, 0xb0u}, {0x70u, 0u},
+        {0x74u, 0u}, {0x88u, 0u}, {0x8cu, 0u}, {0x90u, 0xca3b0000u}, {0x94u, 0xccc40000u},
+        {0xa8u, 0u}, {0xb4u, 0u}, {0xb8u, 0u}, {0xbcu, 0xc0u}, {0xc0u, 0xc0u},
+        {0xd4u, 0x11104u}, {0xd8u, 0x318c1u}, {0xdcu, 0u}, {0xe0u, 0u},
+    };
+    const uint32_t handle = *recomp_memory_u32(device + PIXEL_HANDLE);
+    if (handle == 0u) return false;
+    const uint32_t data = definition(handle);
+    for (uint32_t i = 0u; i < sizeof words / sizeof words[0]; ++i)
+        if (*recomp_memory_u32(data + words[i][0]) != words[i][1]) return false;
+    return true;
+}
+
+/* FUN_002807f0 binds a 16-bit V8U8 (format 0x28) map on stage 0 with R/G/B
+   COLORSIGN (0x355088 = 0xe0000000), the scene on stage 2 and a mask on
+   stage 3, each with linear min/mag, and BUMPENVMAT00-11 on stages 1-3. */
+static void bump_stages(uint32_t device, RecompD3dPresenterDrawCommand *draw)
+{
+    uint32_t stage[4][32];
+    recomp_guest_load(stage, STAGES, sizeof stage);
+    const RecompD3dTextureDesc map = draw->texture;
+    const void *map_bytes = draw->texture_bytes;
+    const uint32_t map_byte_count = draw->texture_byte_count;
+    const bool has_map = draw->has_texture && draw->palette_bytes == NULL;
+    draw->has_texture = draw->texture_is_backbuffer = draw->texture_is_front_buffer = false;
+    attach_texture(device, 2u, draw);
+    RecompD3dPresenterDrawCommand mask = {0};
+    attach_texture(device, 3u, &mask);
+    bool admitted = has_map && draw->has_texture && mask.has_texture && map.format_byte == 0x28u &&
+        !map.linear && map.bits_per_pixel == 16u && !mask.texture.linear &&
+        draw->palette_bytes == NULL && mask.palette_bytes == NULL && stage[0][10] == 0xe0000000u;
+    static const uint32_t sampled[3] = {0u, 2u, 3u};
+    for (uint32_t i = 0u; i < 3u; ++i) {
+        const uint32_t *t = stage[sampled[i]];
+        admitted = admitted && t[3] == 2u && t[4] == 2u && t[9] == 0u && t[11] == 0u &&
+            (i == 0u || t[10] == 0u);
+    }
+    if (!admitted)
+        recomp_stop(2, "d3d8:stage-bump-inputs:%x:%u:%x:%u:%u", map.format_byte, map.bits_per_pixel,
+            stage[0][10], draw->has_texture, mask.has_texture);
+    draw->alpha_mask = map;
+    draw->alpha_mask_bytes = map_bytes;
+    draw->alpha_mask_byte_count = map_byte_count;
+    draw->bump_address_u = stage[0][0];
+    draw->bump_address_v = stage[0][1];
+    draw->point_mip_filter = stage[2][5] == 1u;
+    draw->mip_lod_bias = lod_bias(stage[2][6]);
+    draw->reflection_texture = mask.texture;
+    draw->reflection_bytes = mask.texture_bytes;
+    draw->reflection_byte_count = mask.texture_byte_count;
+    draw->reflection_address_u = mask.address_u;
+    draw->reflection_address_v = mask.address_v;
+    draw->reflection_point_mip_filter = stage[3][5] == 1u;
+    draw->reflection_mip_lod_bias = lod_bias(stage[3][6]);
+    for (uint32_t i = 0u; i < 2u; ++i) {
+        memcpy(draw->bump_matrices[i], &stage[2u + i][22], sizeof draw->bump_matrices[i]);
+        for (uint32_t k = 0u; k < 4u; ++k)
+            if (!isfinite(draw->bump_matrices[i][k])) recomp_stop(2, "d3d8:stage-bump-matrix");
+    }
+    /* 0x34f5f0 programs LINEAR (table mode 3) as bias end/(end - start) + 1
+       and scale -1/(end - start) (8192 for end == start), and mode 0 as bias
+       and scale 1 over the program's oFog. Both read as D3D fog only if the
+       fog unit subtracts 1 from the bias: f = bias - 1 + scale * oFog.
+       shortcut: the minus-one bias is inferred from D3D fog semantics, not
+       measured; compare against a capture if the effect fades wrongly. */
+    const uint32_t fog = *recomp_memory_u32(0x3553d0u), mode = *recomp_memory_u32(0x3553d4u);
+    float bias = 0.0f, scale = 1.0f;
+    if (fog != 0u && mode == 3u) {
+        float range[2];
+        recomp_guest_load(range, 0x3553d8u, sizeof range);
+        scale = range[1] != range[0] ? 1.0f / (range[1] - range[0]) : 8192.0f;
+        bias = range[1] * scale;
+        scale = -scale;
+    } else if (fog != 0u && mode != 0u) {
+        recomp_stop(2, "d3d8:stage-bump-fog:%u", mode);
+    }
+    if (!isfinite(bias) || !isfinite(scale)) recomp_stop(2, "d3d8:stage-bump-fog-range");
+    /* shortcut: FOG.a with FOG_ENABLE 0 is taken as 1 (no fog); check a
+       hardware capture if the effect should tint toward the fog color. */
+    draw->bump_fog[0] = bias;
+    draw->bump_fog[1] = scale;
+    draw->bump_fog[2] = fog != 0u ? 1.0f : 0.0f;
+    draw->fog_color = *recomp_memory_u32(0x355488u);
+    draw->bump_env = true;
+}
+
 /* Stage-0 color and alpha as products of texture and diffuse: the first
    stage's flag 0x10 (0x352aba) makes the arg mapper (0x3529c0) read CURRENT
    as V0, the diffuse color. With alpha_tfactor, alpha MODULATE may take
@@ -829,11 +924,13 @@ static void program_stages(uint32_t device, RecompD3dPresenterDrawCommand *draw)
     /* 5849's combiner compiler (0x352e46) compiles an op that reads a NULL
        texture as a CURRENT pass-through, so an unbound mask leaves alpha as is. */
     draw->program_alpha_mask = mask_combiner && *recomp_memory_u32(device + 0xf8cu) != 0u;
-    if (*recomp_memory_u32(device + PIXEL_HANDLE) != 0u || !draw->has_texture ||
+    const uint32_t pixel = *recomp_memory_u32(device + PIXEL_HANDLE);
+    if (pixel != 0u || !draw->has_texture ||
         !select_texture || stage[2][12] != 1u ||
         (args[1][0] != 1u && !mask_combiner))
-        recomp_stop(2, "d3d8:vertex-program-stages:%u:%u:%u:%u:%u:%u:%u", args[0][0], args[0][1],
-            args[0][3], args[0][4], args[0][5], args[1][0], stage[2][12]);
+        recomp_stop(2, "d3d8:vertex-program-stages:%u:%u:%u:%u:%u:%u:%u:ps=%08x:n=%u", args[0][0],
+            args[0][1], args[0][3], args[0][4], args[0][5], args[1][0], stage[2][12], pixel,
+            draw->program_count);
     if (draw->program_alpha_mask) {
         RecompD3dPresenterDrawCommand mask = {0};
         attach_texture(device, 1u, &mask);
@@ -1119,6 +1216,8 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
         recomp_stop(2, "d3d8:draw-points-unbound");
     } else if (points) {
         expanded = point_sprites(device, &layout, draw);
+    } else if (program && bump_shader(device)) {
+        bump_stages(device, draw);
     } else if (program) {
         program_stages(device, draw);
     } else if (*recomp_memory_u32(device + PIXEL_HANDLE) != 0u) {

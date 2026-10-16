@@ -112,11 +112,16 @@ constexpr char kDrawShaderPrologue[] =
     "    float4 filter_texel;\n"
     "    float4 filter_constants[4];\n"
     "    row_major float4x4 reflection_transform1;\n"
+    "    float4 bump_matrix[2];\n"
+    "    float4 bump_fog;\n"
+    "    float4 fog_color;\n"
     "}\n"
     "Texture2D guest_texture : register(t0);\n"
     "SamplerState guest_sampler : register(s0);\n"
     "Texture2D alpha_mask : register(t1);\n"
-    "SamplerState mask_sampler : register(s1);\n";
+    "SamplerState mask_sampler : register(s1);\n"
+    "Texture2D bump_map : register(t2);\n"
+    "SamplerState bump_sampler : register(s2);\n";
 
 /* Builds the draw shader for one decoded vertex layout. Only the components
    the layout actually carries appear in VSIn, so the input layout and the
@@ -1496,7 +1501,22 @@ bool drawShaderSource(
         compiled_source.insert(sample + pixel.size(),
             "\n    input.texcoord /= input.program_q.x;\n"
             "    if (reflection_flags.z > 0.5f) input.reflection_coord /= input.program_q.y;\n");
-
+        // The stage effect's bump combiner; see RecompD3dPresenterDrawCommand::bump_env.
+        const std::string shaded = "    float4 shaded = input.color;\n";
+        const auto branch = compiled_source.find(shaded);
+        if (branch == std::string::npos) return false;
+        compiled_source.insert(branch + shaded.size(),
+            "    if (bump_fog.w > 0.5f) {\n"
+            "        float2 n = bump_map.Sample(bump_sampler, input.texcoord).rg;\n"
+            "        float4 t2 = guest_texture.Sample(guest_sampler, (input.program_t23.xy +\n"
+            "            float2(dot(bump_matrix[0].xz, n), dot(bump_matrix[0].yw, n))) * texture_flags.xy);\n"
+            "        float4 t3 = alpha_mask.Sample(mask_sampler, input.program_t23.zw +\n"
+            "            float2(dot(bump_matrix[1].xz, n), dot(bump_matrix[1].yw, n)));\n"
+            "        float k = t3.a * t3.a; k *= k;\n"
+            "        float4 v0 = saturate(input.color);\n"
+            "        float f = bump_fog.z > 0.5f ? saturate(bump_fog.x + bump_fog.y * input.program_fog) : 1.0f;\n"
+            "        shaded = float4(lerp(fog_color.rgb, t2.rgb * (1.0f - k) * v0.rgb, f), v0.a);\n"
+            "    } else\n");
     }
     return true;
 }
@@ -1658,8 +1678,9 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
     /* WVP/blend transforms and draw flags (140 floats), vc[192], then lighting:
        normal transforms, material/base, directions/colors/flags, world transforms,
        point positions, attenuation/range and material-scaled ambient, then specular, view and stage (340 floats),
-       then post-filter flags, texel size and four constants (24 floats). */
-    constant_desc.ByteWidth = (140u + 192u * 4u + 380u) * sizeof(float);
+       then post-filter flags, texel size and four constants (24 floats), the
+       stage-1 texture matrix (16), and bump matrices, bump fog and fog color (16). */
+    constant_desc.ByteWidth = (140u + 192u * 4u + 396u) * sizeof(float);
     constant_desc.Usage = D3D11_USAGE_DYNAMIC;
     constant_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constant_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -2025,6 +2046,11 @@ DXGI_FORMAT hostTextureFormat(uint32_t format_byte)
         return DXGI_FORMAT_B8G8R8A8_UNORM;
     case RECOMP_D3D_TEXTURE_FORMAT_A8:
         return DXGI_FORMAT_A8_UNORM;
+    case 0x28u:
+        /* V8U8 (G8B8): U in the low byte, V in the high byte, read signed.
+           shortcut: SNORM scales by 1/127 and clamps -128 to -1; NV2A's signed
+           scale is unverified, so check bump offsets against a capture. */
+        return DXGI_FORMAT_R8G8_SNORM;
     default:
         return DXGI_FORMAT_UNKNOWN;
     }
@@ -2033,7 +2059,7 @@ DXGI_FORMAT hostTextureFormat(uint32_t format_byte)
 bool isSwizzledTextureFormat(uint32_t format_byte)
 {
     return format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8 ||
-        format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8;
+        format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8 || format_byte == 0x28u;
 }
 
 /* Draw-time tally of the formats a draw actually sampled, keyed by format
@@ -2232,6 +2258,8 @@ ID3D11ShaderResourceView *lookupTexture(
     const RecompD3dPresenterDrawCommand &draw)
 {
     const RecompD3dTextureDesc &desc = draw.texture;
+    // Only the bump pass reads 0x28, with COLORSIGN; its unsigned uses stay unsampled.
+    if (desc.format_byte == 0x28u && !draw.bump_env) return nullptr;
     const bool palettized = desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_P8;
     const bool linear_bgra = desc.format_byte == 0x12u;
     const bool compressed = desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT1 ||
@@ -2610,7 +2638,7 @@ RecompD3dPresenterError submitDraw(
     /* A second cache lookup can evict the first entry. Keep its view alive
        until the context takes its own reference. */
     const bool has_second_texture = draw.has_alpha_mask || draw.has_reflection ||
-        draw.program_alpha_mask || draw.distortion || draw.stage1_alpha_mask;
+        draw.program_alpha_mask || draw.distortion || draw.stage1_alpha_mask || draw.bump_env;
     if (has_second_texture && texture_view != nullptr) texture_view->AddRef();
     const auto release_view = [](ID3D11ShaderResourceView *view) { if (view) view->Release(); };
     std::unique_ptr<ID3D11ShaderResourceView, decltype(release_view)> retained(
@@ -2660,6 +2688,28 @@ RecompD3dPresenterError submitDraw(
         mask_view = lookupTexture(presenter, mask);
         if (mask_view == nullptr || texture_view == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
+    std::unique_ptr<ID3D11ShaderResourceView, decltype(release_view)> retained_mask(nullptr, release_view);
+    ID3D11ShaderResourceView *bump_view = nullptr;
+    if (draw.bump_env) {
+        if (!draw.program_count || draw.has_alpha_mask || draw.has_reflection || draw.program_alpha_mask ||
+            draw.distortion || draw.stage1_alpha_mask || draw.four_tap_filter || draw.bright_pass)
+            return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        RecompD3dPresenterDrawCommand mask{};
+        mask.texture = draw.reflection_texture;
+        mask.texture_bytes = draw.reflection_bytes;
+        mask.texture_byte_count = draw.reflection_byte_count;
+        mask_view = lookupTexture(presenter, mask);
+        if (mask_view != nullptr) mask_view->AddRef();
+        retained_mask.reset(mask_view);
+        RecompD3dPresenterDrawCommand map{};
+        map.bump_env = true;
+        map.texture = draw.alpha_mask;
+        map.texture_bytes = draw.alpha_mask_bytes;
+        map.texture_byte_count = draw.alpha_mask_byte_count;
+        bump_view = lookupTexture(presenter, map);
+        if (bump_view == nullptr || mask_view == nullptr || texture_view == nullptr)
+            return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    }
     if (draw.four_tap_filter && (texture_view == nullptr ||
             !std::isfinite(draw.four_tap_scale) || !std::isfinite(draw.four_tap_sum_scale))) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
@@ -2673,7 +2723,7 @@ RecompD3dPresenterError submitDraw(
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
     recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
-    float draw_constants[140 + 192 * 4 + 380]{};
+    float draw_constants[140 + 192 * 4 + 396]{};
     std::memcpy(draw_constants, draw.transform, sizeof draw.transform);
     std::memcpy(draw_constants + 16, draw.blend_transforms, sizeof draw.blend_transforms);
     if (layout.pretransformed || draw.program_count || screen_offset) {
@@ -2829,6 +2879,15 @@ RecompD3dPresenterError submitDraw(
     }
     if (draw.stage1_alpha_mask)
         draw_constants[138] = draw.stage1_kill_only ? 3.0f : draw.stage1_alpha_kill ? 2.0f : 1.0f;
+    if (draw.bump_env) {
+        float *bump = draw_constants + 140 + 192 * 4 + 380;
+        std::memcpy(bump, draw.bump_matrices, sizeof draw.bump_matrices);
+        std::memcpy(bump + 8, draw.bump_fog, sizeof draw.bump_fog);
+        bump[11] = 1.0f;
+        bump[12] = ((draw.fog_color >> 16u) & 0xffu) / 255.0f;
+        bump[13] = ((draw.fog_color >> 8u) & 0xffu) / 255.0f;
+        bump[14] = (draw.fog_color & 0xffu) / 255.0f;
+    }
 
     UINT index_offset = 0u;
     if (!uploadRing(presenter, &presenter->draw_index_buffer,
@@ -2855,8 +2914,8 @@ RecompD3dPresenterError submitDraw(
     presenter->context->PSSetShader(pipeline->pixel_shader, nullptr, 0u);
     presenter->context->PSSetConstantBuffers(
         0u, 1u, &presenter->draw_constant_buffer);
-    ID3D11ShaderResourceView *views[] = {texture_view, mask_view};
-    presenter->context->PSSetShaderResources(0u, 2u, views);
+    ID3D11ShaderResourceView *views[] = {texture_view, mask_view, bump_view};
+    presenter->context->PSSetShaderResources(0u, 3u, views);
     ID3D11SamplerState *sampler =
         draw.four_tap_filter || draw.has_alpha_mask ||
                 (draw.program_count && (!draw.address_u || !draw.address_v))
@@ -2867,12 +2926,17 @@ RecompD3dPresenterError submitDraw(
     // Bind before the next lookup, which may evict this cache entry.
     presenter->context->PSSetSamplers(0u, 1u, &sampler);
     sampler = draw.program_alpha_mask ? presenter->program_mask_sampler
-            : draw.has_reflection || draw.distortion || draw.stage1_alpha_mask
+            : draw.has_reflection || draw.distortion || draw.stage1_alpha_mask || draw.bump_env
             ? lookupDrawSampler(presenter, draw.reflection_address_u,
                 draw.reflection_address_v, draw.reflection_point_mip_filter, draw.reflection_mip_lod_bias)
             : presenter->filter_sampler;
     if (sampler == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     presenter->context->PSSetSamplers(1u, 1u, &sampler);
+    if (draw.bump_env) {
+        sampler = lookupDrawSampler(presenter, draw.bump_address_u, draw.bump_address_v, false, 0.0f);
+        if (sampler == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+        presenter->context->PSSetSamplers(2u, 1u, &sampler);
+    }
     presenter->context->RSSetState(presenter->draw_rasterizer_states[draw.cull_mode]);
     presenter->context->RSSetScissorRects(1u, &scissor);
     ID3D11DepthStencilState *depth_state = lookupDepthState(presenter, draw.depth);
@@ -3884,8 +3948,8 @@ RecompD3dPresenterError d3d11_backend_release_memory(
     }
     if (changed) {
         // The context also owns bound views. Every subsequent draw rebinds them.
-        ID3D11ShaderResourceView *none[2]{};
-        presenter->context->PSSetShaderResources(0u, 2u, none);
+        ID3D11ShaderResourceView *none[3]{};
+        presenter->context->PSSetShaderResources(0u, 3u, none);
         presenter->context->OMSetRenderTargets(0u, nullptr, nullptr);
     }
     if (colors != presenter->render_targets.size() || depths != presenter->depth_targets.size()) {

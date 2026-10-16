@@ -1200,6 +1200,108 @@ static bool testProgramLitSge()
     return passed;
 }
 
+// Stage-effect bump pass: t2 is read at oT2 + M2 n with n the signed V8U8 map
+// texel, masked by 1 - t3.a^4 and blended toward the fog color by oFog.
+static bool testStageBump()
+{
+    char folder[MAX_PATH], path[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "bmp", 0, path)) return false;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", path);
+    RecompD3dPresenter *presenter = nullptr;
+    bool passed = expect("create bump", d3d11_backend_create(&config, &presenter));
+    if (passed) {
+        auto clear = clearCommand();
+        clear.data.clear.color = 0xff000000u;
+        passed &= expect("bump clear", d3d11_backend_submit(presenter, &clear));
+        struct Vertex { float x, y, z; uint32_t color; float uv[8]; };
+        const uint16_t indices[] = {0, 1, 2, 3};
+        const uint32_t scene[2] = {0xffff0000u, 0xff00ff00u}, mask = 0x80ffffffu;
+        // U = +64 and V = -64: u moves from 0.25 to 0.75 (green) only if U is signed and first.
+        const uint8_t map[2] = {0x40u, 0xc0u};
+        const uint32_t xyzw = 0x1bu;
+        for (unsigned q = 0; q < 2 && passed; ++q) {
+            Vertex quad[4]{};
+            for (unsigned i = 0; i < 4; ++i)
+                quad[i] = {-1.0f + q + (i & 1), 1.0f - 2.0f * (i >> 1), 0.5f, 0xffffffffu,
+                    {0, 0, 0, 0, 0.25f, 0.5f, 0.5f, 0.5f}};
+            RecompD3dPresenterCommand command{RECOMP_D3D_PRESENTER_COMMAND_DRAW};
+            auto &draw = command.data.draw;
+            draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+            draw.index_count = draw.vertex_count = 4;
+            draw.triangle_count = 2;
+            draw.vertex_stride = sizeof(Vertex);
+            draw.fvf = 0x442u;
+            draw.vertex_bytes = quad;
+            draw.index_bytes = indices;
+            draw.blend.color_write_mask = 15;
+            draw.address_u = draw.address_v = 3;
+            draw.has_texture = true;
+            draw.texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
+            draw.texture.bits_per_pixel = 32;
+            draw.texture.width = 2;
+            draw.texture.height = 1;
+            draw.texture.mip_levels = 1;
+            draw.texture.data = 0x1000u;
+            draw.texture_bytes = scene;
+            draw.texture_byte_count = sizeof scene;
+            draw.reflection_texture = draw.texture;
+            draw.reflection_texture.width = 1;
+            draw.reflection_texture.data = 0x2000u;
+            draw.reflection_bytes = &mask;
+            draw.reflection_byte_count = sizeof mask;
+            draw.reflection_address_u = draw.reflection_address_v = 3;
+            draw.alpha_mask.format_byte = 0x28u;
+            draw.alpha_mask.bits_per_pixel = 16;
+            draw.alpha_mask.width = draw.alpha_mask.height = draw.alpha_mask.mip_levels = 1;
+            draw.alpha_mask.data = 0x3000u;
+            draw.alpha_mask_bytes = map;
+            draw.alpha_mask_byte_count = sizeof map;
+            draw.bump_address_u = draw.bump_address_v = 1;
+            draw.bump_env = true;
+            draw.bump_matrices[0][0] = 1.0f;
+            // Right quad: f = 0 + 1 * oFog = 0.25 toward blue fog.
+            draw.bump_fog[1] = 1.0f;
+            draw.bump_fog[2] = q ? 1.0f : 0.0f;
+            draw.fog_color = 0xff0000ffu;
+            // oPos = v0, oD0 = v3, oT0 = v9, oT2 = v11, oT3 = v12, oFog = c5.
+            const uint32_t moves[6][2] = {{0u, 0u}, {3u, 3u}, {9u, 9u}, {11u, 11u}, {12u, 12u}, {5u, 5u}};
+            draw.program_count = 6;
+            for (unsigned i = 0; i < 6; ++i) {
+                const bool constant = i == 5;
+                draw.program[i][1] = (1u << 21) | (constant ? moves[i][0] << 13 : moves[i][0] << 9) | xyzw;
+                draw.program[i][2] = (constant ? 3u : 2u) << 26;
+                draw.program[i][3] = (15u << 12) | (moves[i][1] << 3) | 2048u | (constant ? 1u : 0u);
+            }
+            draw.program_constants[5][0] = 0.25f;
+            draw.program_constants[58][0] = draw.program_constants[58][1] = draw.program_constants[58][2] = 1;
+            passed &= expect("bump draw", d3d11_backend_submit(presenter, &command));
+        }
+        RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
+        present.data.present = {5, 1};
+        passed &= expect("bump present", d3d11_backend_submit(presenter, &present));
+        passed &= expect("destroy bump", d3d11_backend_destroy(&presenter));
+        if (FILE *file = std::fopen(path, "rb")) {
+            // 1 - (128/255)^4 keeps 239 of 255; fog 0.25 leaves 60 green and 191 blue.
+            const unsigned xs[] = {80, 240}, blue[] = {0, 191}, green[] = {239, 60};
+            for (unsigned i = 0; i < 2; ++i) {
+                unsigned char bgr[3]{};
+                std::fseek(file, 54 + (239 - 120) * 960 + xs[i] * 3, SEEK_SET);
+                passed &= std::fread(bgr, 1, 3, file) == 3;
+                const bool pixel_ok = std::abs(bgr[0] - int(blue[i])) <= 3 &&
+                    std::abs(bgr[1] - int(green[i])) <= 3 && bgr[2] < 4;
+                if (!pixel_ok) std::fprintf(stderr, "FAIL stage bump pixel %u BGR=%u,%u,%u\n",
+                    i, bgr[0], bgr[1], bgr[2]);
+                passed &= pixel_ok;
+            }
+            std::fclose(file);
+        } else passed = false;
+    }
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
+    DeleteFileA(path);
+    if (passed) std::puts("PASS stage-effect bump: signed V8U8 offsets, t3.a^4 mask and linear fog");
+    return passed;
+}
+
 static bool testClose(bool idle)
 {
     RecompD3dPresenter *presenter = nullptr;
@@ -1304,6 +1406,7 @@ int main()
         !testScreenSpaceOffsetAndScissor() || !testBrightPass() || !testDistortion() || !testStageEffect() ||
         !testProgramMaxSlt() ||
         !testProgramLitSge() ||
+        !testStageBump() ||
         !testVisibility() ||
         !testClose(false) || !testClose(true)) return 1;
     std::puts("PASS presenter render thread");

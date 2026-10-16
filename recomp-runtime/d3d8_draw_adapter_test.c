@@ -962,11 +962,101 @@ static int effect_tests(void)
     return 0;
 }
 
+/* The stage effect's bump pass (FUN_0027ffc0 definition, FUN_002807f0 state). */
+static int bump_tests(void)
+{
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected bump stop: %s\n", stop_reason); return 1; }
+    initialize();
+    static const uint32_t shader[][2] = {
+        {0x00u, 0xdbdb1010u}, {0x04u, 0xdbdb1010u}, {0x20u, 0x130c0300u}, {0x24u, 0x1480u},
+        {0x68u, 0xb0u}, {0x6cu, 0xb0u}, {0x90u, 0xca3b0000u}, {0x94u, 0xccc40000u},
+        {0xbcu, 0xc0u}, {0xc0u, 0xc0u}, {0xd4u, 0x11104u}, {0xd8u, 0x318c1u},
+    };
+    for (uint32_t i = 0u; i < sizeof shader / sizeof shader[0]; ++i)
+        *recomp_memory_u32(INPUT + shader[i][0]) = shader[i][1];
+    invoke(0x349490u, INPUT, OUTPUT, 0u, 0u);
+    const uint32_t definition = *recomp_memory_u32(*recomp_memory_u32(OUTPUT) + 8u);
+    invoke(0x349520u, *recomp_memory_u32(OUTPUT), 0u, 0u, 0u);
+    /* Declaration 0x7afd0c: position, D3DCOLOR v3 at 12, v9-v12 at 16-40. */
+    enum { PROGRAM = 0x9000u };
+    for (uint32_t i = 0u; i < 16u; ++i) *recomp_memory_u32(PROGRAM + 0x1cu + i * 16u) = 2u;
+    *recomp_memory_u32(PROGRAM + 4u) = 0x10u;
+    *recomp_memory_u32(PROGRAM + 8u) = 1u;
+    *recomp_memory_u32(PROGRAM + 0xcu) = 5u;
+    *recomp_memory_u32(PROGRAM + 0x1cu) = 0x32u;
+    *recomp_memory_u32(PROGRAM + 0x48u) = 12u;
+    *recomp_memory_u32(PROGRAM + 0x4cu) = 0x40u;
+    for (uint32_t i = 0u; i < 4u; ++i) {
+        *recomp_memory_u32(PROGRAM + 0xa8u + i * 16u) = 16u + i * 8u;
+        *recomp_memory_u32(PROGRAM + 0xacu + i * 16u) = 0x22u;
+    }
+    const uint32_t upload[5] = {(4u << 18u) | 0xb00u, 1u, 2u, 3u, 4u};
+    recomp_guest_store(PROGRAM + 0x114u, upload, sizeof upload);
+    *recomp_memory_u32(DEVICE + 0x798u) = PROGRAM + 1u;
+    const float one = 1.0f;
+    recomp_guest_store(DEVICE + 0x95cu, &one, 4u);
+    recomp_guest_store(DEVICE + 0x960u, &one, 4u);
+    recomp_guest_store(DEVICE + 0x96cu, &one, 4u);
+    recomp_guest_store(DEVICE + 0x970u, &one, 4u);
+    recomp_guest_store(DEVICE + 0x948u, &one, 4u);
+    /* Stage 0: signed V8U8 map; stage 2: scene; stage 3: mask. */
+    texture.format_byte = 0x28u;
+    texture.bits_per_pixel = 16u;
+    *recomp_memory_u32(DEVICE + 0xf88u) = *recomp_memory_u32(DEVICE + 0xf90u) =
+        *recomp_memory_u32(DEVICE + 0xf94u) = 0x7000u;
+    set_stage(0u, 10u, 0xe0000000u);
+    set_stage(0u, 0u, 1u); set_stage(0u, 1u, 1u);
+    set_stage(3u, 0u, 3u); set_stage(3u, 1u, 3u);
+    const float m2[4] = {0.5f, 0.0f, 0.0f, -0.5f}, m3[4] = {0.25f, 0.125f, -0.125f, 0.25f};
+    recomp_guest_store(STAGES + 2u * 128u + 22u * 4u, m2, sizeof m2);
+    recomp_guest_store(STAGES + 3u * 128u + 22u * 4u, m3, sizeof m3);
+    /* LINEAR fog from 10 to 30 (0x34f5f0): bias 30/20, scale -1/20. */
+    const float range[2] = {10.0f, 30.0f};
+    *recomp_memory_u32(0x3553d0u) = 1u;
+    *recomp_memory_u32(0x3553d4u) = 3u;
+    recomp_guest_store(0x3553d8u, range, sizeof range);
+    *recomp_memory_u32(0x355488u) = 0xff112233u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 48u);
+    const RecompD3dPresenterDrawCommand *draw = &submitted.data.draw;
+    CHECK(submits == 1u && draw->bump_env && draw->fvf == 0x442u && draw->program_count == 1u);
+    CHECK(draw->alpha_mask.format_byte == 0x28u && draw->alpha_mask_bytes == ram + 0x8000u &&
+        !draw->has_alpha_mask && draw->bump_address_u == 1u && draw->has_texture);
+    CHECK(draw->reflection_bytes == ram + 0x8000u && draw->reflection_address_u == 3u);
+    CHECK(memcmp(draw->bump_matrices[0], m2, sizeof m2) == 0 && memcmp(draw->bump_matrices[1], m3, sizeof m3) == 0);
+    CHECK(draw->bump_fog[0] == 1.5f && draw->bump_fog[1] == -0.05f && draw->bump_fog[2] == 1.0f);
+    CHECK(draw->fog_color == 0xff112233u && !draw->directional.stage_mode);
+    /* The same shader under a position/normal/UV program (the 0x112 variant). */
+    *recomp_memory_u32(PROGRAM + 0x38u) = 12u;
+    *recomp_memory_u32(PROGRAM + 0x3cu) = 0x32u;
+    *recomp_memory_u32(PROGRAM + 0x48u) = 0u;
+    *recomp_memory_u32(PROGRAM + 0x4cu) = 2u;
+    *recomp_memory_u32(PROGRAM + 0xa8u) = 24u;
+    for (uint32_t i = 1u; i < 4u; ++i) *recomp_memory_u32(PROGRAM + 0xacu + i * 16u) = 2u;
+    *recomp_memory_u32(0x3553d0u) = 0u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    CHECK(submits == 2u && draw->bump_env && draw->fvf == 0x112u && draw->bump_fog[2] == 0.0f);
+    /* Exponential fog, an unsigned map or other shader words stay guarded. */
+    *recomp_memory_u32(0x3553d0u) = 1u;
+    *recomp_memory_u32(0x3553d4u) = 1u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
+    CHECK(submits == 2u && strcmp(stop_reason, "d3d8:stage-bump-fog:1") == 0);
+    *recomp_memory_u32(0x3553d0u) = 0u;
+    set_stage(0u, 10u, 0u);
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
+    CHECK(submits == 2u && strncmp(stop_reason, "d3d8:stage-bump-inputs:28:16:0:", 31) == 0);
+    set_stage(0u, 10u, 0xe0000000u);
+    *recomp_memory_u32(definition + 0xd8u) = 0x318c2u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
+    CHECK(submits == 2u && strncmp(stop_reason, "d3d8:vertex-program-stages:", 27) == 0 &&
+        strstr(stop_reason, ":n=1") != NULL);
+    return 0;
+}
+
 int main(void)
 {
     initialize();
     if (pixel_tests() || draw_tests() || point_tests() || lighting_tests() || filter_tests() || bright_tests() ||
-        distortion_tests() || effect_tests() || program_tests()) return 1;
+        distortion_tests() || effect_tests() || program_tests() || bump_tests()) return 1;
     puts("PASS D3D8 pixel lifecycle/constants and semantic draw ABI/snapshots");
     return 0;
 }

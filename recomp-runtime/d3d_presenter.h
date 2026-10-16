@@ -180,6 +180,17 @@ typedef struct RecompD3dPresenterDrawCommand {
     /* FVF 0x404 dependent read: n = signed reflection_texture texel at UV0,
        then the texture is sampled at (dot((uv1, uv2.x), n), dot((uv2.y, uv3), n)). */
     bool distortion;
+    /* Stage-effect bump pass (pixel shader built by FUN_0027ffc0): n is the
+       signed V8U8 alpha_mask texel at oT0 / q, t2 = texture at oT2.xy + M2 n,
+       t3 = reflection_texture at oT3.xy + M3 n and r0 = t2 (1 - t3.a^4) oD0.
+       Output is lerp(fog_color, r0, f) with oD0 alpha, where f is
+       saturate(bump_fog[0] + bump_fog[1] * oFog) when bump_fog[2] is set and
+       1 otherwise. bump_matrices hold BUMPENVMAT00, 01, 10, 11 of stages 2-3. */
+    bool bump_env;
+    float bump_matrices[2][4];
+    float bump_fog[3];
+    uint32_t fog_color;
+    uint32_t bump_address_u, bump_address_v;
     /* Stage-0 MODULATE(TEXTURE, TFACTOR) color over white vertices. */
     bool texture_factor_modulate;
     /* Stage-0 TCI_CAMERASPACEPOSITION with COUNT3|PROJECTED: (s, t, q) =

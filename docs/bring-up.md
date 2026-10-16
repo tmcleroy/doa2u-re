@@ -246,9 +246,28 @@ oT2/oT3. The translator follows D3D8 vs.1.1 LIT: y = max(x, 0), and z =
 pow(y, w) with w clamped to +-127.9961 only when x and y are positive. oD1 is
 computed and discarded; oFog and oT2/oT3 reach the pixel shader as separate
 fields. Program draws through the fixed-function stage path still ignore fog
-and specular, and both programs bind a pixel shader that this path stops on.
+and specular. 0x7add80 also binds a pixel shader, which that path stops on.
 The stage effect's declaration 0x7afd0c (position, D3DCOLOR at 12, v9-v12 as
 float2 at 16-40) binds as FVF 0x442, a 48-byte stride.
+
+FUN_002807f0 draws the stage effect with the pixel shader that FUN_0027ffc0
+builds: t0 PROJECT2D, t1-t3 BUMPENVMAP of t0 (texture modes 0x318c1, input
+texture 0). Combiners 0-1 square T3.a twice, combiner 2 sets r0 = t2 *
+(1 - T3.a), and combiner 3 multiplies by v0. The shader's own final combiner,
+which 0x34f5f0 keeps because its words are nonzero, outputs lerp(fog.rgb, r0,
+fog.a) with v0.a. T1 is never read, and stage 1 has no texture. The adapter
+matches those words exactly and passes stage 0 (one of 17 animated 128x128
+V8U8 maps, format 0x28 with COLORSIGN 0xe0000000), the stage-2 scene, the
+stage-3 mask, and the stage-2/3 BUMPENVMAT00-11. The presenter reads the map
+as R8G8_SNORM with U first and samples t2 and t3 at oT2/oT3 plus M n. Fog
+follows 0x34f5f0's parameters: LINEAR stores bias end/(end - start) + 1 and
+scale -1/(end - start), and mode 0 stores 1 and 1, so f = bias - 1 + scale *
+oFog. With FogEnable off, FOG.a is taken as 1. Exponential fog, other maps or
+signs, and other shader words stop. One session reached this draw on a stage
+transition with stage state that matches FUN_002807f0, but its bound program
+declared 0x112. Its 30-instruction pipeline fits 0x7af0f0 (FUN_002786e0), but
+why that handle was bound there is unverified. The host draws the bound
+program with this shader, and oT2/oT3 read as zero when it does not write them.
 BGRA8 offscreen color targets and D24S8 custom depth targets bind through the
 shared presenter; clears and draws
 snapshot their storage descriptors. Binding counts retain parent textures,
