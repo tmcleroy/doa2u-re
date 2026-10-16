@@ -159,6 +159,8 @@ uint32_t recomp_kernel_av_send_tv_encoder_option(
 
 /* Plain guest allocation operations shared by kernel models. */
 uint32_t recomp_kernel_allocate_pool(uint32_t size);
+uint32_t recomp_kernel_allocate_contiguous(
+    uint32_t size, uint32_t highest_address, uint32_t alignment, uint32_t protect);
 uint32_t recomp_kernel_query_memory_statistics(uint32_t *statistics);
 void recomp_kernel_free_pool(uint32_t base);
 

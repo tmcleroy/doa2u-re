@@ -7,6 +7,7 @@
 #include "d3d_frame_model.h"
 #include "d3d_tile_model.h"
 #include "d3d_vblank.h"
+#include "kernel_abi.h"
 #include "stop_report.h"
 
 #include <inttypes.h>
@@ -141,6 +142,14 @@ static void resolve_target(uint32_t color, uint32_t depth, RecompD3dPresenterTar
             target->depth.linear != main_depth.linear || target->depth.format_byte != main_depth.format_byte))
             recomp_stop(2, "d3d8:target-depth-alias-unbound");
     }
+    if (!target->offscreen) {
+        /* The host renders a supersampled back buffer at its logical (front
+           buffer) size; guest viewports and scissors use the same units. */
+        target->color.width /= device_state.scale[0];
+        target->color.height /= device_state.scale[1];
+        target->depth.width /= device_state.scale[0];
+        target->depth.height /= device_state.scale[1];
+    }
 }
 
 void recomp_d3d8_target(RecompD3dPresenterTarget *target)
@@ -149,7 +158,32 @@ void recomp_d3d8_target(RecompD3dPresenterTarget *target)
     resolve_target(*recomp_memory_u32(DEVICE + TARGET), *recomp_memory_u32(DEVICE + DEPTH), target);
 }
 
-static void write_initial_device(void)
+/* D3D_CommonSetMultiSampleModeAndScale (0x347130): only the back buffer
+   carries the supersample scale; the extent is in physical pixels. */
+static void write_target_scale(bool main, uint32_t width, uint32_t height)
+{
+    const uint32_t x = main ? device_state.scale[0] : 1u, y = main ? device_state.scale[1] : 1u;
+    const float scale[2] = {(float)x, (float)y};
+    *recomp_memory_u32(DEVICE + 0x954u) = width * x;
+    *recomp_memory_u32(DEVICE + 0x958u) = height * y;
+    store(DEVICE + 0x95cu, scale, sizeof scale);
+}
+
+/* CDevice_InitializeFrameBuffers (0x34be80) mode fields. Flag 0x4000 selects
+   Swap's filtered copy from the supersampled back buffer to the front buffer. */
+static void write_frame_buffer_mode(const RecompD3dPresentationParameters *presentation)
+{
+    const float scale[2] = {(float)device_state.scale[0], (float)device_state.scale[1]};
+    const bool supersampled = device_state.scale[0] != 1u || device_state.scale[1] != 1u;
+    store(DEVICE + 0x96cu, scale, sizeof scale);
+    *recomp_memory_u32(DEVICE + 0x196cu) = presentation->multi_sample_type;
+    *recomp_memory_u32(DEVICE + 0x1970u) = presentation->swap_effect;
+    *recomp_memory_u32(DEVICE + 0x8u) =
+        (*recomp_memory_u32(DEVICE + 0x8u) & ~0x4000u) | (supersampled ? 0x4000u : 0u);
+    write_target_scale(true, device_state.width, device_state.height);
+}
+
+static void write_initial_device(const RecompD3dPresentationParameters *presentation)
 {
     recomp_d3d8_state_reset();
     memset(recomp_memory(DEVICE, DEVICE_SIZE), 0, DEVICE_SIZE);
@@ -164,23 +198,16 @@ static void write_initial_device(void)
     *recomp_memory_u32(DEVICE + BUFFER_COUNT) = 2u;
     store(DEVICE + VIEWPORT, &device_state.viewport, sizeof device_state.viewport);
     *recomp_memory_u32(DEVICE + 0xef8u) = *recomp_memory_u32(DEVICE + 0xefcu) = 0x3f080000u;
-    *recomp_memory_u32(DEVICE + 0x954u) = device_state.width;
-    *recomp_memory_u32(DEVICE + 0x958u) = device_state.height;
-    for (uint32_t i = 0; i < 2u; ++i) {
-        *recomp_memory_u32(DEVICE + 0x95cu + i * 4u) = 0x3f800000u;
-        *recomp_memory_u32(DEVICE + 0x96cu + i * 4u) = 0x3f800000u;
-    }
     for (uint32_t slot = 0u; slot < 10u; ++slot) {
         for (uint32_t diagonal = 0u; diagonal < 4u; ++diagonal) {
             *recomp_memory_u32(DEVICE + 0xc60u + slot * 64u + diagonal * 20u) = 0x3f800000u;
         }
     }
     *recomp_memory_u32(DEVICE + 0x938u) = 1u;
-    *recomp_memory_u32(DEVICE + 0x196cu) = 0x11u;
-    *recomp_memory_u32(DEVICE + 0x1970u) = 1u;
     *recomp_memory_u32(DEVICE + 0x940u) = 0x3f800000u;
     *recomp_memory_u32(DEVICE + 0x944u) = 0x3f800000u;
     *recomp_memory_u32(DEVICE + 0x8u) = 2u;
+    write_frame_buffer_mode(presentation);
     for (uint32_t bank = 0u; bank < 2u; ++bank) {
         uint8_t *ramp = recomp_memory(DEVICE + 0x1e04u + bank * 0x300u, 0x300u);
         for (uint32_t plane = 0u; plane < 3u; ++plane) {
@@ -246,7 +273,7 @@ static void create_device(void)
         goto returned;
     }
     device_state = candidate;
-    write_initial_device();
+    write_initial_device(&request.presentation);
     if (recomp_d3d_frame_initialize(&frame_state, candidate.width, candidate.height) != RECOMP_D3D_FRAME_OK) {
         recomp_stop(2, "d3d8:frame-initialize");
     }
@@ -387,6 +414,7 @@ static void set_render_target(void)
         *recomp_memory_u32(DEVICE + 0x948u) = 0x4b7fffffu;
         *recomp_memory_u32(DEVICE + 0x94cu) = target.depth.linear ? target.depth.pitch : target.depth.width * 4u;
     }
+    write_target_scale(!target.offscreen, target.color.width, target.color.height);
     device_state.viewport = (RecompD3dViewport){0u, 0u, target.color.width, target.color.height, 0.0f, 1.0f};
     store(DEVICE + VIEWPORT, &device_state.viewport, sizeof device_state.viewport);
     *recomp_memory_u32(DEVICE + 0x1c00u) = *recomp_memory_u32(DEVICE + 0x1c04u) = 0u;
@@ -475,9 +503,29 @@ static void block_on_fence(void)
 
 static void persist_display(void)
 {
-    /* The native window retains its displayed front buffer across reset. */
+    /* The native window retains its displayed front buffer across reset. The
+       SDK (0x345d70) also publishes a contiguous front-buffer copy (header
+       built by 0x345cf0) that the game locks after Reset (0x2823f0). */
     flush(true);
-    recomp_runtime.registers.eax = RECOMP_D3D_OK;
+    const uint32_t previous = recomp_kernel_av_get_saved_data_address();
+    if (previous != 0u) {
+        recomp_kernel_free_pool(previous);
+        recomp_kernel_av_set_saved_data_address(0u);
+    }
+    const uint32_t pitch = (device_state.width * 4u + 63u) & ~63u;
+    const uint32_t surface = recomp_kernel_allocate_contiguous(
+        0x40u + pitch * device_state.height, 0x7ffffffu, 0x40u, 0x404u);
+    if (surface != 0u) {
+        /* shortcut: host pixels are not copied; the window keeps showing them.
+           Read them back if the game ever displays this surface itself. */
+        const RecompD3dSurfaceHeader header = {
+            0x81050001u, (surface + 0x40u) & 0x0fffffffu, 0u, device_state.color[1].format,
+            ((pitch / 64u - 1u) << 24u) | ((device_state.height - 1u) << 12u) | (device_state.width - 1u), 0u,
+        };
+        store(surface, &header, sizeof header);
+        recomp_kernel_av_set_saved_data_address(surface);
+    }
+    recomp_runtime.registers.eax = surface != 0u ? RECOMP_D3D_OK : RECOMP_D3D_FAIL;
     recomp_runtime.registers.esp += 4u;
 }
 
@@ -517,8 +565,13 @@ static void reset_device(void)
     store(DEVICE + VIEWPORT, &candidate.viewport, sizeof candidate.viewport);
     *recomp_memory_u32(DEVICE + 0x1c00u) = *recomp_memory_u32(DEVICE + 0x1c04u) = 0u;
     *recomp_memory_u32(0x35545cu) = request.presentation.full_screen_presentation_interval;
-    *recomp_memory_u32(DEVICE + 0x196cu) = request.presentation.multi_sample_type;
-    *recomp_memory_u32(DEVICE + 0x1970u) = request.presentation.swap_effect;
+    write_frame_buffer_mode(&request.presentation);
+    /* Reset rebinds the default depth buffer, whose pitch follows the mode. */
+    *recomp_memory_u32(DEVICE + 0x94cu) = ((candidate.depth.size >> 24u) + 1u) * 64u;
+    /* InitializeFrameBuffers also selects D3DRS_MULTISAMPLEMODE (0 without the
+       0x1000 multisample bit) and the linear swap filter (2). */
+    *recomp_memory_u32(0x3554c8u) = 0u;
+    *recomp_memory_u32(0x355458u) = 2u;
     RecompD3dFrameResult clear = recomp_d3d_frame_clear(&frame_state, 0u, 0u,
         RECOMP_D3D_CLEAR_DEPTH | RECOMP_D3D_CLEAR_STENCIL, 0u, 0x3f800000u, 0u);
     if (clear.error != RECOMP_D3D_FRAME_OK) recomp_stop(2, "d3d8:reset-clear");

@@ -19,14 +19,16 @@ bool recomp_d3d_create_request_supported(
         return false;
     }
     presentation = &request->presentation;
-    /* shortcut: only the verified startup mode, expand after API validation. */
+    /* shortcut: only the verified startup mode and its 2x horizontal
+       supersample Reset (0x2021), expand after API validation. */
     return request->adapter == 0u && request->device_type == 1u &&
         request->focus_window == 0u && request->behavior_flags == 0x40u &&
         presentation->back_buffer_width == 720u &&
         presentation->back_buffer_height == 480u &&
         presentation->back_buffer_format == 0x12u &&
         presentation->back_buffer_count == 1u &&
-        presentation->multi_sample_type == 0x11u &&
+        (presentation->multi_sample_type == 0x11u ||
+         presentation->multi_sample_type == 0x2021u) &&
         presentation->swap_effect == 1u &&
         presentation->device_window == 0u && presentation->windowed == 0u &&
         presentation->enable_auto_depth_stencil == 1u &&
@@ -169,16 +171,23 @@ RecompD3dDeviceError recomp_d3d_device_create(
     }
     created.width = request->presentation.back_buffer_width;
     created.height = request->presentation.back_buffer_height;
+    /* CDevice_InitializeFrameBuffers (0x34be80) decodes the factors this way. */
+    created.scale[0] = (request->presentation.multi_sample_type >> 4u) & 15u;
+    created.scale[1] = request->presentation.multi_sample_type & 15u;
     for (uint32_t i = 0u; i < 2u; ++i) {
-        error = validate_surface(
-            &color[i], created.width, created.height, 0x12u);
+        /* Buffer 0 is the (supersampled) back buffer, buffer 1 the front. */
+        const uint32_t scale_x = i == 0u ? created.scale[0] : 1u;
+        const uint32_t scale_y = i == 0u ? created.scale[1] : 1u;
+        error = validate_surface(&color[i], created.width * scale_x,
+            created.height * scale_y, 0x12u);
         if (error != RECOMP_D3D_DEVICE_OK) {
             return error;
         }
         created.color[i] = color[i];
         ++created.color[i].common;
     }
-    error = validate_surface(depth, created.width, created.height, 0x2eu);
+    error = validate_surface(depth, created.width * created.scale[0],
+        created.height * created.scale[1], 0x2eu);
     if (error != RECOMP_D3D_DEVICE_OK) {
         return error;
     }
@@ -243,6 +252,11 @@ RecompD3dDeviceError recomp_d3d_device_swap_buffers(
     }
     if (!state->created) {
         return RECOMP_D3D_DEVICE_NOT_CREATED;
+    }
+    /* Swap (0x34ac40) filters a supersampled back buffer into the single
+       front buffer; with two buffers no storage rotates. */
+    if (state->scale[0] != 1u || state->scale[1] != 1u) {
+        return RECOMP_D3D_DEVICE_OK;
     }
     data = state->color[0].data;
     lock = state->color[0].lock;

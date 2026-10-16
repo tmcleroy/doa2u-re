@@ -286,6 +286,32 @@ int recomp_d3d_device_model_test(void)
     passed &= expect("second swap restores storage",
         recomp_d3d_device_swap_buffers(&state) == RECOMP_D3D_DEVICE_OK &&
         memcmp(&state, &saved, sizeof state) == 0);
+    /* 0x2021: 2x horizontal supersample back and depth buffers, 720 front. */
+    changed_request = request;
+    changed_request.presentation.multi_sample_type = 0x2021u;
+    memcpy(changed_color, color, sizeof color);
+    surface = depth;
+    recomp_d3d_device_reset(&state);
+    passed &= expect("supersample rejects logical-size back buffer",
+        recomp_d3d_device_create(&state, &changed_request, changed_color, &surface) ==
+            RECOMP_D3D_DEVICE_INVALID_SURFACE && !state.created);
+    changed_color[0].size = 0x5f1df59fu;
+    passed &= expect("supersample rejects logical-size depth",
+        recomp_d3d_device_create(&state, &changed_request, changed_color, &surface) ==
+            RECOMP_D3D_DEVICE_INVALID_SURFACE && !state.created);
+    surface.size = 0x5f1df59fu;
+    passed &= expect("supersample keeps logical size and decodes scale",
+        recomp_d3d_device_create(&state, &changed_request, changed_color, &surface) ==
+            RECOMP_D3D_DEVICE_OK && state.width == 720u && state.height == 480u &&
+        state.scale[0] == 2u && state.scale[1] == 1u &&
+        state.presenter_config.width == 720u && state.viewport.width == 720u);
+    saved = state;
+    passed &= expect("supersample swap keeps the filtered front buffer",
+        recomp_d3d_device_swap_buffers(&state) == RECOMP_D3D_DEVICE_OK &&
+        memcmp(&state, &saved, sizeof state) == 0);
+    changed_request.presentation.multi_sample_type = 0x1021u;
+    passed &= expect("other multisample types stay unsupported",
+        !recomp_d3d_create_request_supported(&changed_request));
     recomp_d3d_device_reset(&state);
     passed &= expect("reset clears creation", !state.created);
     return passed;

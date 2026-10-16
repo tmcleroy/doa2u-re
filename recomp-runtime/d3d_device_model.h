@@ -78,6 +78,9 @@ typedef struct RecompD3dDeviceState {
     bool created;
     uint32_t width;
     uint32_t height;
+    /* Supersample factors from the multisample type (SDK +0x96c/+0x970):
+       the back and depth buffers are width*scale[0] by height*scale[1]. */
+    uint32_t scale[2];
     RecompD3dPresenterConfig presenter_config;
     RecompD3dSurfaceHeader color[2];
     RecompD3dSurfaceHeader depth;

@@ -163,6 +163,13 @@ PersistDisplay retains the native displayed image, and same-mode Reset replaces
 the guest surface headers, viewport and scissors while preserving other state
 and frame count. Reset clears depth/stencil only. Resizing and other display modes
 need further bindings. The lifter handles WBINVD over coherent host memory;
+Reset also accepts the 2x horizontal supersample type 0x2021 used by character
+select. The game supplies 1440-wide back and depth headers and a 720-wide front
+header; the guest device keeps the SDK's scale, physical size and swap-filter
+fields, while the host target and vertex-shader viewport constants stay in
+logical 720x480 units. PersistDisplay publishes an SDK-shaped saved surface
+without host pixels. Line lists draw natively; widths above one pixel become
+screen-space quads, and transformed wide lines stay guarded.
 there is no separate guest CPU cache or direct GPU consumer of guest bytes.
 
 Any SDK API that is still unreplaced reserves console push-buffer space and

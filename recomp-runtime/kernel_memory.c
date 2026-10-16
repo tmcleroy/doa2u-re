@@ -250,6 +250,12 @@ uint32_t recomp_kernel_allocate_pool(uint32_t size)
     return allocate_guest(size, 4u, PAGE_READWRITE, ALLOCATION_POOL);
 }
 
+uint32_t recomp_kernel_allocate_contiguous(
+    uint32_t size, uint32_t highest_address, uint32_t alignment, uint32_t protect)
+{
+    return allocate_contiguous_guest(size, 0u, highest_address, alignment, protect);
+}
+
 void recomp_kernel_free_pool(uint32_t base)
 {
     free_guest(base);

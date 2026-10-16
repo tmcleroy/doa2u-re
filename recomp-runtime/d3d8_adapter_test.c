@@ -172,6 +172,17 @@ RecompD3dPresenterError recomp_d3d_presenter_destroy(
     return RECOMP_D3D_PRESENTER_OK;
 }
 
+static uint32_t saved_display, freed_display;
+uint32_t recomp_kernel_av_get_saved_data_address(void) { return saved_display; }
+void recomp_kernel_av_set_saved_data_address(uint32_t address) { saved_display = address; }
+uint32_t recomp_kernel_allocate_contiguous(
+    uint32_t size, uint32_t highest_address, uint32_t alignment, uint32_t protect)
+{
+    return size == 0x40u + 2880u * 480u && highest_address == 0x7ffffffu &&
+        alignment == 0x40u && protect == 0x404u ? 0x7f0000u : 0u;
+}
+void recomp_kernel_free_pool(uint32_t base) { freed_display = base; }
+
 void recomp_d3d_vblank_reset(void)
 {
     ++vblank_reset_count;
@@ -573,6 +584,13 @@ int main(void)
     passed &= call(0x345d70u, arguments, 0u, NULL);
     passed &= expect("persist keeps native display after draining", flush_count == 3u &&
         flush_wait && recomp_runtime.registers.eax == 0u);
+    passed &= expect("persist publishes the SDK front-buffer copy header",
+        saved_display == 0x7f0000u && *recomp_memory_u32(0x7f0000u) == 0x81050001u &&
+        *recomp_memory_u32(0x7f0004u) == 0x7f0040u && *recomp_memory_u32(0x7f0008u) == 0u &&
+        *recomp_memory_u32(0x7f000cu) == 0x11229u && *recomp_memory_u32(0x7f0010u) == 0x2c1df2cfu);
+    passed &= call(0x345d70u, arguments, 0u, NULL);
+    passed &= expect("persist frees the previous copy", freed_display == 0x7f0000u &&
+        saved_display == 0x7f0000u && flush_count == 4u);
     *recomp_memory_u32(PARAMETERS + 48u) = 1u;
     *recomp_memory_u32(DEVICE + 0xf88u) = 0x12345678u;
     *recomp_memory_u32(DEVICE + 0xc60u) = 0x3f400000u;
@@ -580,7 +598,7 @@ int main(void)
     passed &= call(0x344720u, arguments, 1u, NULL);
     passed &= expect("reset retains native display, frame count and non-RT state",
         recomp_runtime.registers.eax == 0u && recomp_runtime.registers.esp == ENTRY_ESP + 8u &&
-        create_count == 1u && destroy_count == 0u && flush_count == 4u &&
+        create_count == 1u && destroy_count == 0u && flush_count == 5u &&
         *recomp_memory_u32(DEVICE + 0xf88u) == 0x12345678u &&
         *recomp_memory_u32(DEVICE + 0xc60u) == 0x3f400000u &&
         *recomp_memory_u32(DEVICE + 0x2478u) == 2u && *recomp_memory_u32(0x35545cu) == 1u &&
@@ -588,9 +606,66 @@ int main(void)
         *recomp_memory_u32(DEPTH_HEADER) == 0xd0002u &&
         submitted.type == RECOMP_D3D_PRESENTER_COMMAND_CLEAR &&
         !submitted.data.clear.clear_color && submitted.data.clear.clear_depth && submitted.data.clear.clear_stencil);
+    /* 0x2021 Reset: a 1440x480 back/depth pair filtered into a 720 front. */
+    const RecompD3dSurfaceHeader wide[3] = {
+        {0x50001u, 0x400000u, 0u, 0x11229u, 0x5f1df59fu, 0u},
+        {0x50001u, 0x100000u, 0u, 0x11229u, 0x2f1df2cfu, 0u},
+        {0x50001u, 0x520000u, 0u, 0x12e29u, 0x5f1df59fu, 0u},
+    };
+    *recomp_memory_u32(PARAMETERS + 16u) = 0x1021u;
+    passed &= call(0x344720u, arguments, 1u, "d3d8:reset-mode");
+    *recomp_memory_u32(PARAMETERS + 16u) = 0x2021u;
+    passed &= call(0x344720u, arguments, 1u, "d3d8:reset-surfaces");
+    memcpy(recomp_memory(COLOR_SOURCE, 2u * sizeof *wide), wide, 2u * sizeof *wide);
+    memcpy(recomp_memory(DEPTH_SOURCE, sizeof *wide), &wide[2], sizeof *wide);
+    passed &= call(0x344720u, arguments, 1u, NULL);
+    passed &= expect("supersampled reset writes SDK mode and back-buffer scale",
+        recomp_runtime.registers.eax == 0u &&
+        *recomp_memory_u32(DEVICE + 0x196cu) == 0x2021u &&
+        *recomp_memory_u32(DEVICE + 0x96cu) == 0x40000000u &&
+        *recomp_memory_u32(DEVICE + 0x970u) == 0x3f800000u &&
+        *recomp_memory_u32(DEVICE + 0x95cu) == 0x40000000u &&
+        *recomp_memory_u32(DEVICE + 0x960u) == 0x3f800000u &&
+        *recomp_memory_u32(DEVICE + 0x954u) == 1440u &&
+        *recomp_memory_u32(DEVICE + 0x958u) == 480u &&
+        (*recomp_memory_u32(DEVICE + 8u) & 0x4000u) != 0u &&
+        *recomp_memory_u32(DEVICE + 0x94cu) == 0x1800u &&
+        *recomp_memory_u32(0x3554c8u) == 0u && *recomp_memory_u32(0x355458u) == 2u &&
+        *recomp_memory_u32(COLOR_HEADER + 4u) == 0x400000u &&
+        *recomp_memory_u32(COLOR_HEADER + 16u) == 0x5f1df59fu);
+    viewport = (RecompD3dViewport){0u, 0u, 1440u, 480u, 0.0f, 1.0f};
+    memcpy(recomp_memory(VIEWPORT_OUTPUT, sizeof viewport), &viewport, sizeof viewport);
+    arguments[0] = VIEWPORT_OUTPUT;
+    passed &= call(0x344e10u, arguments, 1u, NULL);
+    passed &= expect("supersampled viewport clamps to the front buffer",
+        *recomp_memory_u32(DEVICE + 0xee8u) == 720u && *recomp_memory_u32(DEVICE + 0xeecu) == 480u);
+    arguments[0] = 0u; arguments[1] = 0u; arguments[2] = 0xf3u;
+    passed &= call(0x347920u, arguments, 6u, NULL);
+    passed &= expect("supersampled clear targets the logical host buffer",
+        !submitted.data.clear.target.offscreen && !submitted.data.clear.target.custom_depth &&
+        submitted.data.clear.target.color.width == 720u &&
+        submitted.data.clear.target.depth.width == 720u &&
+        submitted.data.clear.target.color.data == 0x400000u);
+    memcpy(before, recomp_memory(COLOR_HEADER, sizeof before), sizeof before);
+    arguments[0] = 0u;
+    passed &= call(0x34af80u, arguments, 1u, NULL);
+    passed &= expect("supersampled swap keeps back and front storage",
+        memcmp(before, recomp_memory(COLOR_HEADER, sizeof before), sizeof before) == 0);
+    arguments[0] = OFFSCREEN; arguments[1] = 0u;
+    passed &= call(0x3447d0u, arguments, 2u, NULL);
+    passed &= expect("offscreen target drops the supersample scale",
+        *recomp_memory_u32(DEVICE + 0x95cu) == 0x3f800000u &&
+        *recomp_memory_u32(DEVICE + 0x954u) == 240u);
+    arguments[0] = COLOR_HEADER; arguments[1] = DEPTH_HEADER;
+    passed &= call(0x3447d0u, arguments, 2u, NULL);
+    passed &= expect("back buffer restores the supersample scale and logical viewport",
+        *recomp_memory_u32(DEVICE + 0x95cu) == 0x40000000u &&
+        *recomp_memory_u32(DEVICE + 0x954u) == 1440u &&
+        *recomp_memory_u32(DEVICE + 0xee8u) == 720u);
+    arguments[0] = PARAMETERS;
     *recomp_memory_u32(DEVICE + 0x2cu) = 2u;
     passed &= call(0x3445f0u, arguments, 0u, NULL);
-    passed &= expect("insert completes queued work before returning fence", flush_count == 5u &&
+    passed &= expect("insert completes queued work before returning fence", flush_count == 7u &&
         flush_wait && recomp_runtime.registers.eax == 2u &&
         recomp_runtime.registers.esp == ENTRY_ESP + 4u &&
         *recomp_memory_u32(DEVICE + 0x2cu) == 4u);
@@ -599,7 +674,7 @@ int main(void)
         *recomp_memory_u32(DEVICE + 0x2cu) == 6u);
     arguments[0] = 2u;
     passed &= call(0x344430u, arguments, 1u, NULL);
-    passed &= expect("fence wait drains and preserves void ABI", flush_count == 7u &&
+    passed &= expect("fence wait drains and preserves void ABI", flush_count == 9u &&
         flush_wait && recomp_runtime.registers.eax == EAX_SENTINEL &&
         recomp_runtime.registers.esp == ENTRY_ESP + 8u);
     recomp_d3d8_shutdown();
