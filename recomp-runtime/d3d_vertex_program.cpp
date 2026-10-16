@@ -12,9 +12,11 @@ std::string source(uint32_t mux, uint32_t reg, uint32_t swizzle,
                    bool negate, uint32_t attribute, uint32_t constant, uint32_t fvf)
 {
     std::string s;
+    const uint32_t texcoords = (fvf >> 8u) & 15u;
     if (mux == 1 && reg <= 12) s = "r" + std::to_string(reg);
     else if (mux == 2 && (attribute == 0 || (attribute == 2 && (fvf & 0x10u)) ||
-                          (attribute == 3 && (fvf & 0x40u)) || (attribute == 9 && (fvf & 0x100u))))
+                          (attribute == 3 && (fvf & 0x40u)) ||
+                          (attribute >= 9 && attribute < 9 + texcoords)))
         s = "v" + std::to_string(attribute);
     else if (mux == 3 && constant < 192) s = "vc[" + std::to_string(constant) + "]";
     else return {};
@@ -41,9 +43,11 @@ bool recomp_d3d_vertex_program_source(
     std::string s = "float4 v0=float4(input.position,1);\n";
     if (fvf & 0x10u) s += "float4 v2=float4(input.normal,1);\n";
     if (fvf & 0x40u) s += "float4 v3=input.diffuse;\n";
-    if (fvf & 0x100u) s += "float4 v9=float4(input.texcoord,0,1);\n";
+    static const char *const coords[4] = {"texcoord", "texcoord1", "texcoord2", "texcoord3"};
+    for (uint32_t i = 0; i < ((fvf >> 8u) & 15u) && i < 4u; ++i)
+        s += "float4 v" + std::to_string(9u + i) + "=float4(input." + coords[i] + ",0,1);\n";
     for (unsigned i=0;i<13;++i) s += "float4 r"+std::to_string(i)+"=0;\n";
-    s += "float4 o3=0,o5=0,o9=0,o10=0;\n";
+    s += "float4 o3=0,o4=0,o5=0,o9=0,o10=0,o11=0,o12=0;\n";
     for (uint32_t i=0;i<count;++i) {
         const auto a=tokens[i][1], b=tokens[i][2], c=tokens[i][3];
         const auto mac=(a>>21)&15u, ilu=(a>>25)&7u;
@@ -56,6 +60,7 @@ bool recomp_d3d_vertex_program_source(
         if (mac) {
             if (x.empty()) return false;
             if ((mac==2 || mac==4 || mac==5 || mac==7 || mac==10 || mac==11) && y.empty()) return false;
+            if (mac==12 && y.empty()) return false;
             if ((mac==3 || mac==4) && z.empty()) return false;
             switch(mac) {
             case 1:m=x;break;
@@ -66,6 +71,7 @@ bool recomp_d3d_vertex_program_source(
             case 7:m="dot("+x+","+y+").xxxx";break;
             case 10:m="max("+x+","+y+")";break;
             case 11:m="float4("+x+"<"+y+")";break;
+            case 12:m="float4("+x+">="+y+")";break;
             default:return false;
             }
         }
@@ -76,6 +82,9 @@ bool recomp_d3d_vertex_program_source(
             case 2:l="(1.0/("+z+").x).xxxx";break;
             case 3:l="((("+z+").x<0?-1.0:1.0)*clamp(abs(1.0/("+z+").x),5.42101e-20,1.884467e19)).xxxx";break;
             case 4:l="rsqrt(abs(("+z+").x)).xxxx";break;
+            // D3D8 vs.1.1 lit: power clamps to +-127.9961; z needs x > 0 and y > 0.
+            case 7:l="float4(1,max(("+z+").x,0),(("+z+").x>0&&("+z+").y>0)?pow(("+z+").y,"
+                "clamp(("+z+").w,-127.9961,127.9961)):0,1)";break;
             default:return false;
             }
         }
@@ -90,13 +99,14 @@ bool recomp_d3d_vertex_program_source(
         const auto om=(c>>12)&15u, out=(c>>3)&255u;
         if (om) {
             if (!(c&2048u)) return false; // Constant writes need a separate API contract.
-            std::string dest=out==0 ? "r12" : (out==3 || out==5 || out==9 || out==10) ? "o"+std::to_string(out) : "";
+            std::string dest=out==0 ? "r12" : ((out>=3 && out<=5) || (out>=9 && out<=12)) ? "o"+std::to_string(out) : "";
             if (!write(s,dest,om,(c&4u)?"l":"m")) return false;
         }
         s += "}\n";
     }
     s += "output.position=mul(float4(r12.xyz,1),wvp[0])*r12.w;\n"
-         "output.color=o3; output.texcoord=o9.xy; output.reflection_coord=o10.xy; output.program_q=float2(o9.w,o10.w);\n";
+         "output.color=o3; output.texcoord=o9.xy; output.reflection_coord=o10.xy; output.program_q=float2(o9.w,o10.w);\n"
+         "output.program_fog=o5.x; output.program_t23=float4(o11.xy,o12.xy);\n";
     body=std::move(s);
     return true;
 }

@@ -1473,7 +1473,7 @@ bool drawShaderSource(
         compiled_source.insert(uv, lighting);
     }
     if (pipeline.program_count) {
-        if (fvf != 0x112u && fvf != 0x012u && fvf != 0x142u) return false;
+        if (fvf != 0x112u && fvf != 0x012u && fvf != 0x142u && fvf != 0x442u) return false;
         std::string body;
         if (!recomp_d3d_vertex_program_source(pipeline.program, pipeline.program_count, fvf, body)) {
             std::fprintf(stderr, "recomp d3d presenter: vertex program untranslated fvf=%03x count=%u\n",
@@ -1488,7 +1488,8 @@ bool drawShaderSource(
         const std::string declaration = "struct VSOut {";
         const auto fields = compiled_source.find(declaration);
         if (fields == std::string::npos) return false;
-        compiled_source.insert(fields + declaration.size(), "\n    float2 program_q : TEXCOORD5;\n");
+        compiled_source.insert(fields + declaration.size(), "\n    float2 program_q : TEXCOORD5;\n"
+            "    float program_fog : TEXCOORD8;\n    float4 program_t23 : TEXCOORD9;\n");
         const std::string pixel = "float4 ps_main(VSOut input) : SV_TARGET {";
         const auto sample = compiled_source.find(pixel);
         if (sample == std::string::npos) return false;

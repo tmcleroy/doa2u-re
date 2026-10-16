@@ -1109,6 +1109,97 @@ static bool testProgramMaxSlt()
     return passed;
 }
 
+// Vertex-program LIT and SGE over the stage effect's four-UV stream (FVF 0x442):
+// oT0 = lit(v10).zwxx * sge(v11, c3).yyyy, so x = v10.y only when v10.x > 0.
+static bool testProgramLitSge()
+{
+    char folder[MAX_PATH], path[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "vpl", 0, path)) return false;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", path);
+    RecompD3dPresenter *presenter = nullptr;
+    bool passed = expect("create lit", d3d11_backend_create(&config, &presenter));
+    if (passed) {
+        auto clear = clearCommand();
+        clear.data.clear.color = 0xff000000u;
+        passed &= expect("lit clear", d3d11_backend_submit(presenter, &clear));
+        struct Vertex { float x, y, z; uint32_t color; float uv[8]; };
+        const uint16_t indices[] = {0, 1, 2, 3};
+        const uint32_t texels[2] = {0xffff0000u, 0xff00ff00u};
+        const uint32_t xyzw = 0x1bu;
+        // Left quad: v10.x > 0, so lit.z = 0.75 picks green. Right: lit.z = 0 keeps red.
+        const float lit_x[2] = {0.5f, -0.5f};
+        for (unsigned q = 0; q < 2 && passed; ++q) {
+            Vertex quad[4]{};
+            for (unsigned i = 0; i < 4; ++i)
+                quad[i] = {-1.0f + q + (i & 1), 1.0f - 2.0f * (i >> 1), 0.5f, 0xffffffffu,
+                    {0, 0, lit_x[q], 0.75f, 0.25f, 0.75f, 0, 0}};
+            RecompD3dPresenterCommand command{RECOMP_D3D_PRESENTER_COMMAND_DRAW};
+            auto &draw = command.data.draw;
+            draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+            draw.index_count = draw.vertex_count = 4;
+            draw.triangle_count = 2;
+            draw.vertex_stride = sizeof(Vertex);
+            draw.fvf = 0x442u;
+            draw.vertex_bytes = quad;
+            draw.index_bytes = indices;
+            draw.blend.color_write_mask = 15;
+            draw.address_u = draw.address_v = 3;
+            draw.has_texture = true;
+            draw.texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
+            draw.texture.bits_per_pixel = 32;
+            draw.texture.width = 2;
+            draw.texture.height = 1;
+            draw.texture.mip_levels = 1;
+            draw.texture.data = 0x1000u;
+            draw.texture_bytes = texels;
+            draw.texture_byte_count = sizeof texels;
+            draw.program_count = 5;
+            // oPos = v0; oD0 = v3; r0 = lit(v10); r2 = sge(v11, c3); oT0 = r0.zwxx * r2.yyyy.
+            draw.program[0][1] = (1u << 21) | xyzw;
+            draw.program[0][2] = 2u << 26;
+            draw.program[0][3] = (15u << 12) | 2048u;
+            draw.program[1][1] = (1u << 21) | (3u << 9) | xyzw;
+            draw.program[1][2] = 2u << 26;
+            draw.program[1][3] = (15u << 12) | (3u << 3) | 2048u;
+            draw.program[2][1] = (7u << 25) | (10u << 9);
+            draw.program[2][2] = xyzw << 2;
+            draw.program[2][3] = (2u << 28) | (15u << 16);
+            draw.program[3][1] = (12u << 21) | (11u << 9) | (3u << 13) | xyzw;
+            draw.program[3][2] = (2u << 26) | (3u << 11) | (xyzw << 17);
+            draw.program[3][3] = (2u << 20) | (15u << 24);
+            draw.program[4][1] = (2u << 21) | 0xb0u;
+            draw.program[4][2] = (1u << 26) | (1u << 11) | (2u << 13) | (0x55u << 17);
+            draw.program[4][3] = (15u << 12) | (9u << 3) | 2048u | 1u;
+            const float c3[4] = {0.5f, 0.5f, 0.5f, 0.5f};
+            std::memcpy(draw.program_constants[3], c3, sizeof c3);
+            draw.program_constants[58][0] = draw.program_constants[58][1] = draw.program_constants[58][2] = 1;
+            passed &= expect("lit program draw", d3d11_backend_submit(presenter, &command));
+        }
+        RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
+        present.data.present = {5, 1};
+        passed &= expect("lit present", d3d11_backend_submit(presenter, &present));
+        passed &= expect("destroy lit", d3d11_backend_destroy(&presenter));
+        if (FILE *file = std::fopen(path, "rb")) {
+            const unsigned xs[] = {80, 240};
+            for (unsigned i = 0; i < 2; ++i) {
+                unsigned char bgr[3]{};
+                std::fseek(file, 54 + (239 - 120) * 960 + xs[i] * 3, SEEK_SET);
+                passed &= std::fread(bgr, 1, 3, file) == 3;
+                const bool pixel_ok = bgr[0] < 4 && (i == 0 ? bgr[1] > 250 && bgr[2] < 4
+                    : bgr[2] > 250 && bgr[1] < 4);
+                if (!pixel_ok) std::fprintf(stderr, "FAIL program lit/sge pixel %u BGR=%u,%u,%u\n",
+                    i, bgr[0], bgr[1], bgr[2]);
+                passed &= pixel_ok;
+            }
+            std::fclose(file);
+        } else passed = false;
+    }
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
+    DeleteFileA(path);
+    if (passed) std::puts("PASS vertex-program LIT/SGE over a four-UV stream");
+    return passed;
+}
+
 static bool testClose(bool idle)
 {
     RecompD3dPresenter *presenter = nullptr;
@@ -1212,6 +1303,7 @@ int main()
         !testReflectionAddress(false, false, true) || !testReflectionAddress(true, false, false, true) ||
         !testScreenSpaceOffsetAndScissor() || !testBrightPass() || !testDistortion() || !testStageEffect() ||
         !testProgramMaxSlt() ||
+        !testProgramLitSge() ||
         !testVisibility() ||
         !testClose(false) || !testClose(true)) return 1;
     std::puts("PASS presenter render thread");

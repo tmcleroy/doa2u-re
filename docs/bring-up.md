@@ -241,8 +241,14 @@ c96-c99, oD0 = c112 and oT0 = v9. Program draws now select stage 0 per
 channel, as fixed function does. This draw uses MODULATE(TEXTURE, oD0) for color,
 MODULATE(TEXTURE, TFACTOR) for alpha, and its mipped texture's own mip filter
 and LOD bias. The other program on that declaration (0x7add80, FUN_0026bd20)
-needs LIT, SGE, oD1, oFog and oT3. The presenter logs it as untranslated, and
-the runner stops.
+and the stage effect's 0x7afb48 (FUN_0027ffc0) use LIT, SGE, oD1, oFog and
+oT2/oT3. The translator follows D3D8 vs.1.1 LIT: y = max(x, 0), and z =
+pow(y, w) with w clamped to +-127.9961 only when x and y are positive. oD1 is
+computed and discarded; oFog and oT2/oT3 reach the pixel shader as separate
+fields. Program draws through the fixed-function stage path still ignore fog
+and specular, and both programs bind a pixel shader that this path stops on.
+The stage effect's declaration 0x7afd0c (position, D3DCOLOR at 12, v9-v12 as
+float2 at 16-40) binds as FVF 0x442, a 48-byte stride.
 BGRA8 offscreen color targets and D24S8 custom depth targets bind through the
 shared presenter; clears and draws
 snapshot their storage descriptors. Binding counts retain parent textures,

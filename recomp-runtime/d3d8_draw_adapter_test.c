@@ -842,6 +842,24 @@ static int program_tests(void)
     *recomp_memory_u32(PROGRAM + 0x38u) = 16u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
     CHECK(strncmp(stop_reason, "d3d8:vertex-program-declaration:00009001:2:", 43) == 0);
+    /* The stage effect's declaration (0x7afd0c): position, D3DCOLOR v3 at 12
+       and four UV sets v9-v12 at 16-40 draw as FVF 0x442. */
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected four-UV stop: %s\n", stop_reason); return 1; }
+    *recomp_memory_u32(PROGRAM + 0x38u) = 0u;
+    *recomp_memory_u32(PROGRAM + 0x3cu) = 2u;
+    *recomp_memory_u32(PROGRAM + 0x48u) = 12u;
+    *recomp_memory_u32(PROGRAM + 0x4cu) = 0x40u;
+    for (uint32_t i = 0u; i < 4u; ++i) {
+        *recomp_memory_u32(PROGRAM + 0xa8u + i * 16u) = 16u + i * 8u;
+        *recomp_memory_u32(PROGRAM + 0xacu + i * 16u) = 0x22u;
+    }
+    const uint32_t before = submits;
+    invoke(0x348240u, 5u, 3u, VERTICES, 48u);
+    CHECK(submits == before + 1u && draw->fvf == 0x442u && draw->vertex_stride == 48u);
+    /* A gap in the UV sets is not an FVF layout. */
+    *recomp_memory_u32(PROGRAM + 0xccu) = 2u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 48u); return 1; }
+    CHECK(strncmp(stop_reason, "d3d8:vertex-program-declaration:00009001:0:", 43) == 0);
     return 0;
 }
 

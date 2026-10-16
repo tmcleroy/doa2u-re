@@ -739,22 +739,26 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
    written by SetVertexShaderConstant1/4 (0x348de0/0x348e40). c58/c59 hold the
    viewport scale and offset as GetViewportOffsetAndScale (0x3462d0) computes
    them. shortcut: only the observed declarations, as FVFs: position/normal/UV
-   (0x112), the projected shadow's position/normal (0x7af4d0, 0x012) and
-   position/color/UV (0x7ae238, 0x142); admit others when a run reaches them. */
+   (0x112), the projected shadow's position/normal (0x7af4d0, 0x012),
+   position/color/UV (0x7ae238, 0x142) and the stage effect's position/color
+   with four UV sets v9-v12 (0x7afd0c, 0x442); admit others when a run
+   reaches them. */
 static void attach_program(uint32_t device, RecompD3dPresenterDrawCommand *draw)
 {
     const uint32_t handle = draw->fvf;
     uint32_t words[0x114u / 4u];
     recomp_guest_load(words, handle - 1u, sizeof words);
     const bool normal = words[5u + 2u * 4u + 2u] != 2u, color = words[5u + 3u * 4u + 2u] != 2u;
-    const bool texcoord = words[5u + 9u * 4u + 2u] != 2u;
-    const uint32_t fvf = 0x002u | (normal ? 0x010u : 0u) | (color ? 0x040u : 0u) | (texcoord ? 0x100u : 0u);
+    uint32_t texcoords = 0u;
+    while (texcoords < 4u && words[5u + (9u + texcoords) * 4u + 2u] != 2u) ++texcoords;
+    const uint32_t fvf = 0x002u | (normal ? 0x010u : 0u) | (color ? 0x040u : 0u) | texcoords << 8u;
     for (uint32_t i = 0u; i < 16u; ++i) {
         const uint32_t *slot = words + 5u + i * 4u;
         const uint32_t type = i == 0u || (i == 2u && normal) ? 0x32u : i == 3u && color ? 0x40u :
-            i == 9u && texcoord ? 0x22u : 2u;
-        const uint32_t offset = i == 0u ? 0u : i == 9u ? 12u + (normal ? 12u : 0u) + (color ? 4u : 0u) : 12u;
-        if ((fvf != 0x112u && fvf != 0x012u && fvf != 0x142u) || slot[2] != type ||
+            i >= 9u && i < 9u + texcoords ? 0x22u : 2u;
+        const uint32_t offset = i == 0u ? 0u :
+            i >= 9u ? 12u + (normal ? 12u : 0u) + (color ? 4u : 0u) + (i - 9u) * 8u : 12u;
+        if ((fvf != 0x112u && fvf != 0x012u && fvf != 0x142u && fvf != 0x442u) || slot[2] != type ||
             (type != 2u && (slot[0] != 0u || slot[1] != offset))) {
             char bound[16u * 20u] = "";
             size_t used = 0u;
