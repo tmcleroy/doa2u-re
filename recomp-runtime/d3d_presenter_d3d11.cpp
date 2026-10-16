@@ -108,6 +108,9 @@ constexpr char kDrawShaderPrologue[] =
     "    float4 light_specular[8];\n"
     "    float4 light_view;\n"
     "    float4 light_stage;\n"
+    "    float4 filter_flags;\n"
+    "    float4 filter_texel;\n"
+    "    float4 filter_constants[4];\n"
     "}\n"
     "Texture2D guest_texture : register(t0);\n"
     "SamplerState guest_sampler : register(s0);\n"
@@ -209,7 +212,8 @@ void buildDrawShaderSource(
         "        shaded.a = blend_flags.w > 2.5f ? input.color.a\n"
             "            : blend_flags.w > 1.5f ? sampled.a\n"
             "            : blend_flags.w > 0.5f ? blend_flags.z : shaded.a * blend_flags.z;\n"
-        "        if (blend_flags.y > 1.5f) shaded *= texture_factor;\n"
+        "        if (blend_flags.y > 2.5f) shaded.rgb = saturate(2.0f * shaded.rgb * texture_factor.rgb);\n"
+        "        else if (blend_flags.y > 1.5f) shaded *= texture_factor;\n"
         "    }\n"
         /* Fixed function adds specular after the texture stages, textured or not. */
         "    if (directional_flags.w > 0.5f) shaded.rgb += input.lit_specular;\n"
@@ -282,14 +286,26 @@ void buildDrawShaderSource(
               "        float4 t1 = guest_texture.Sample(guest_sampler, input.texcoord1 * texture_flags.xy);\n"
               "        float4 t2 = guest_texture.Sample(guest_sampler, input.texcoord2 * texture_flags.xy);\n"
               "        float4 t3 = guest_texture.Sample(guest_sampler, input.texcoord3 * texture_flags.xy);\n"
-              "        shaded = 0.5f * (saturate((128.0f / 255.0f) * (t0 + t1))\n"
-              "                        + saturate((128.0f / 255.0f) * (t2 + t3)));\n"
+              "        shaded = saturate(filter_flags.z *\n"
+              "            (saturate(filter_flags.y * (filter_constants[0] * t0 + filter_constants[1] * t1))\n"
+              "           + saturate(filter_flags.y * (filter_constants[2] * t2 + filter_constants[3] * t3))));\n"
               "    } else\n"
             : layout.texcoord_count == 2u
             ? "    if (texture_flags.w > 0.5f) {\n"
               "        float3 rgb = guest_texture.Sample(guest_sampler, input.texcoord1 * texture_flags.xy).rgb;\n"
               "        float alpha = alpha_mask.Sample(mask_sampler, input.texcoord * lighting_flags.zw).a;\n"
               "        shaded = input.color * float4(rgb, alpha);\n"
+              "    } else\n"
+            : has_texcoord
+            /* NV2A Gaussian-cubic: nine level-0 taps at one guest texel, 1-2-1 weights. */
+            ? "    if (filter_flags.x > 0.5f) {\n"
+              "        float2 uv = input.texcoord * texture_flags.xy;\n"
+              "        float4 t0 = 0.0f;\n"
+              "        [unroll] for (int y = -1; y <= 1; ++y)\n"
+              "            [unroll] for (int x = -1; x <= 1; ++x)\n"
+              "                t0 += (2 - abs(x)) * (2 - abs(y)) / 16.0f *\n"
+              "                    guest_texture.SampleLevel(guest_sampler, uv + float2(x, y) * filter_texel.xy, 0);\n"
+              "        shaded = saturate(2.0f * (t0 - filter_constants[0]) - 1.0f);\n"
               "    } else\n" : "",
         /* The fixed-function diffuse default is white. Preserve texture alpha
            before the shared alpha test and SRC_ALPHA blending. */
@@ -1579,8 +1595,9 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
     D3D11_BUFFER_DESC constant_desc{};
     /* WVP/blend transforms and draw flags (140 floats), vc[192], then lighting:
        normal transforms, material/base, directions/colors/flags, world transforms,
-       point positions, attenuation/range and material-scaled ambient, then specular, view and stage (340 floats). */
-    constant_desc.ByteWidth = (140u + 192u * 4u + 340u) * sizeof(float);
+       point positions, attenuation/range and material-scaled ambient, then specular, view and stage (340 floats),
+       then post-filter flags, texel size and four constants (24 floats). */
+    constant_desc.ByteWidth = (140u + 192u * 4u + 364u) * sizeof(float);
     constant_desc.Usage = D3D11_USAGE_DYNAMIC;
     constant_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constant_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -2557,14 +2574,20 @@ RecompD3dPresenterError submitDraw(
         mask_view = lookupTexture(presenter, reflection);
         if (mask_view == nullptr || texture_view == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
-    if (draw.four_tap_filter && texture_view == nullptr) {
+    if (draw.four_tap_filter && (texture_view == nullptr ||
+            !std::isfinite(draw.four_tap_scale) || !std::isfinite(draw.four_tap_sum_scale))) {
+        return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    }
+    if (draw.bright_pass && (texture_view == nullptr || draw.four_tap_filter ||
+            draw.has_alpha_mask || draw.has_reflection || draw.program_count ||
+            layout.texcoord_count != 1u || draw.texture.width == 0u || draw.texture.height == 0u)) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
     if (draw.program_count) dumpProgramTexture(presenter, texture_view, draw.program_alpha_mask);
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
     recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
-    float draw_constants[140 + 192 * 4 + 340]{};
+    float draw_constants[140 + 192 * 4 + 364]{};
     std::memcpy(draw_constants, draw.transform, sizeof draw.transform);
     std::memcpy(draw_constants + 16, draw.blend_transforms, sizeof draw.blend_transforms);
     if (layout.pretransformed || draw.program_count || screen_offset) {
@@ -2649,7 +2672,7 @@ RecompD3dPresenterError submitDraw(
     draw_constants[67] = static_cast<float>(draw.depth.alpha_ref);
     draw_constants[68] = draw.blend_weight_count != 0u ? 1.0f : 0.0f;
     draw_constants[69] = draw.use_texture_factor ? 1.0f
-        : (draw.modulate_texture_factor ? 2.0f : 0.0f);
+        : draw.modulate_texture_factor ? 2.0f : draw.texture_factor_modulate2x ? 3.0f : 0.0f;
     draw_constants[70] = draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_NONE
         ? 1.0f : draw.material_alpha;
     draw_constants[71] = draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_SELECT_VERTEX_DIFFUSE
@@ -2674,6 +2697,26 @@ RecompD3dPresenterError submitDraw(
     draw_constants[79] = draw.alpha_mask.linear && draw.alpha_mask.height
         ? 1.0f / draw.alpha_mask.height : 1.0f;
     draw_constants[83] = draw.has_alpha_mask ? 1.0f : 0.0f;
+    {
+        float *filter = draw_constants + 140 + 192 * 4 + 340;
+        const auto unpack = [](uint32_t argb, float *rgba) {
+            rgba[0] = ((argb >> 16u) & 0xffu) / 255.0f;
+            rgba[1] = ((argb >> 8u) & 0xffu) / 255.0f;
+            rgba[2] = (argb & 0xffu) / 255.0f;
+            rgba[3] = (argb >> 24u) / 255.0f;
+        };
+        if (draw.bright_pass) {
+            filter[0] = 1.0f;
+            filter[4] = 1.0f / draw.texture.width;
+            filter[5] = 1.0f / draw.texture.height;
+            unpack(draw.bright_pass_threshold, filter + 8);
+        }
+        if (draw.four_tap_filter) {
+            filter[1] = draw.four_tap_scale;
+            filter[2] = draw.four_tap_sum_scale;
+            for (unsigned i = 0u; i < 4u; ++i) unpack(draw.four_tap_factors[i], filter + 8 + i * 4);
+        }
+    }
     if (draw.has_reflection) {
         std::memcpy(draw_constants + 84, draw.reflection_world_view, 64u);
         std::memcpy(draw_constants + 100, draw.reflection_normal, 64u);

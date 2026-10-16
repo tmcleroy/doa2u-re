@@ -277,6 +277,10 @@ static int draw_tests(void)
     CHECK(submits == before);
     if (setjmp(stopped) == 0) { invoke(0x348240u, 4u, 3u, VERTICES, 28u); return 1; }
     CHECK(strncmp(stop_reason, "d3d8:draw-primitive", 19u) == 0);
+    const uint32_t quads = submits;
+    invoke(0x348240u, 9u, 5u, VERTICES, 28u);
+    CHECK(submits == quads + 1u && submitted.data.draw.primitive_type == 6u &&
+        submitted.data.draw.index_count == 4u && submitted.data.draw.triangle_count == 2u);
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 65537u, VERTICES, 28u); return 1; }
     CHECK(strcmp(stop_reason, "d3d8:draw-span") == 0);
     *recomp_memory_u32(DEVICE + 0x798u) = 3u;
@@ -444,16 +448,87 @@ static int filter_tests(void)
     *recomp_memory_u32(DEVICE + 0x798u) = 0x404u;
     invoke(0x348240u, 5u, 3u, VERTICES, 48u);
     CHECK(submits == 1u && submitted.data.draw.four_tap_filter);
+    CHECK(submitted.data.draw.four_tap_factors[0] == 0x40404040u &&
+        submitted.data.draw.four_tap_factors[3] == 0x40404040u &&
+        submitted.data.draw.four_tap_scale == 2.0f && submitted.data.draw.four_tap_sum_scale == 0.5f);
+    /* Identity-scale variant with unsigned stage-2 inputs, disabled mips and live factors. */
+    static const uint32_t identity[][2] = {
+        {0x08u, 0x1c301d30u}, {0x68u, 0xc00u}, {0x6cu, 0xd00u}, {0x70u, 0xc00u},
+        {0x90u, 0x0c200d20u}, {0xb4u, 0xc00u}, {0xb8u, 0xd00u}, {0xbcu, 0xc00u},
+    };
+    for (uint32_t i = 0u; i < sizeof identity / sizeof identity[0]; ++i)
+        *recomp_memory_u32(0x355260u + identity[i][0]) = identity[i][1];
+    CHECK(recomp_d3d8_state_set_simple(0x40a60u, 0x55555555u));
+    CHECK(recomp_d3d8_state_set_simple(0x40a84u, 0x2b2b2b2bu));
+    for (uint32_t stage = 0u; stage < 4u; ++stage) *recomp_memory_u32(STAGES + stage * 128u + 20u) = 0u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 48u);
+    CHECK(submits == 2u && submitted.data.draw.four_tap_filter &&
+        submitted.data.draw.four_tap_factors[0] == 0x55555555u &&
+        submitted.data.draw.four_tap_factors[3] == 0x2b2b2b2bu &&
+        submitted.data.draw.four_tap_scale == 1.0f && submitted.data.draw.four_tap_sum_scale == 1.0f);
+    *recomp_memory_u32(STAGES + 20u) = 2u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 48u); return 1; }
+    CHECK(submits == 2u && strcmp(stop_reason, "d3d8:draw-pixel-shader-unsupported") == 0);
+    *recomp_memory_u32(STAGES + 20u) = 0u;
     *recomp_memory_u32(0x355268u) ^= 1u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 48u); return 1; }
-    CHECK(submits == 1u && strcmp(stop_reason, "d3d8:draw-pixel-shader-unsupported") == 0);
+    CHECK(submits == 2u && strcmp(stop_reason, "d3d8:draw-pixel-shader-unsupported") == 0);
+    return 0;
+}
+
+static int bright_tests(void)
+{
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected stop: %s\n", stop_reason); return 1; }
+    initialize();
+    static const uint32_t shader[][2] = {
+        {0x00u, 0xd830d150u}, {0x04u, 0x5d301010u}, {0x20u, 0xcu}, {0x24u, 0x1c80u},
+        {0x28u, 0x1a1a1a1au}, {0x68u, 0xd00u}, {0x6cu, 0xc0u}, {0x88u, 0xc820c140u},
+        {0x8cu, 0x4d200000u}, {0xb4u, 0xd00u}, {0xb8u, 0xc0u}, {0xd4u, 0x11102u}, {0xd8u, 1u},
+    };
+    for (uint32_t i = 0u; i < sizeof shader / sizeof shader[0]; ++i)
+        *recomp_memory_u32(INPUT + shader[i][0]) = shader[i][1];
+    invoke(0x349490u, INPUT, OUTPUT, 0u, 0u);
+    invoke(0x349520u, *recomp_memory_u32(OUTPUT), 0u, 0u, 0u);
+    *recomp_memory_u32(DEVICE + 0xf88u) = 0x7000u;
+    *recomp_memory_u32(STAGES + 12u) = *recomp_memory_u32(STAGES + 16u) = 5u;
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x104u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 24u);
+    CHECK(submits == 1u && submitted.data.draw.bright_pass && !submitted.data.draw.four_tap_filter);
+    CHECK(submitted.data.draw.bright_pass_threshold == 0x1a1a1a1au);
+    /* SetPixelShaderConstant(0) reaches stage-0 C0 through the zero C0 mapping. */
+    const float threshold[4] = {0.2f, 0.2f, 0.2f, 0.2f};
+    recomp_guest_store(INPUT + 0x100u, threshold, sizeof threshold);
+    invoke(0x349720u, 0u, INPUT + 0x100u, 1u, 0u);
+    invoke(0x348240u, 5u, 3u, VERTICES, 24u);
+    CHECK(submits == 2u && submitted.data.draw.bright_pass_threshold == 0x33333333u);
+    *recomp_memory_u32(STAGES + 16u) = 2u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 24u); return 1; }
+    CHECK(submits == 2u && strcmp(stop_reason, "d3d8:draw-pixel-shader-unsupported") == 0);
+    *recomp_memory_u32(STAGES + 16u) = 5u;
+    CHECK(recomp_d3d8_state_set_simple(0x40ac4u, 0x4d200001u));
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 24u); return 1; }
+    CHECK(submits == 2u && strcmp(stop_reason, "d3d8:draw-pixel-shader-unsupported") == 0);
+    /* Bloom composite: MODULATE2X(TEXTURE, TFACTOR) with stage-0 alpha disabled. */
+    initialize();
+    *recomp_memory_u32(DEVICE + 0xf88u) = 0x7000u;
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x104u;
+    *recomp_memory_u32(STAGES + 48u) = 5u;
+    *recomp_memory_u32(STAGES + 60u) = 3u;
+    *recomp_memory_u32(STAGES + 64u) = 1u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 24u);
+    CHECK(submits == 1u && submitted.data.draw.texture_factor_modulate2x &&
+        submitted.data.draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE &&
+        submitted.data.draw.material_alpha == 1.0f);
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x144u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 28u); return 1; }
+    CHECK(submits == 1u && strcmp(stop_reason, "d3d8:draw-texture-combine") == 0);
     return 0;
 }
 
 int main(void)
 {
     initialize();
-    if (pixel_tests() || draw_tests() || lighting_tests() || filter_tests()) return 1;
+    if (pixel_tests() || draw_tests() || lighting_tests() || filter_tests() || bright_tests()) return 1;
     puts("PASS D3D8 pixel lifecycle/constants and semantic draw ABI/snapshots");
     return 0;
 }

@@ -106,8 +106,13 @@ Supported combinations include texture/diffuse modulation, white diffuse alpha
 selection, texture alpha selection and texture factors. Linear min/mag filters
 support point or linear mip selection with finite native-range LOD bias.
 Pixel-shader creation, deletion, binding and
-constants retain the 5849 layout; native custom shading currently supports the
-sister presenter's exact four-tap filter. The fixed-function draw snapshot
+constants retain the 5849 layout; native custom shading supports the sister
+presenter's four-tap filter in its doubled and identity-scale variants, with
+live C0/C1 factors, and the post-process bright pass. The bright pass matches
+its exact combiner words and Gaussian-cubic stage-0 filtering, then computes
+saturate(2 * (gauss3x3(t0) - c0) - 1) with the 1-2-1 kernel at level 0. The
+bloom composite binds stage-0 MODULATE2X of texture and texture factor over
+white vertices; quad strips draw as triangle strips. The fixed-function draw snapshot
 binds up to eight directional/point light slots, front material and ambient,
 normalization, blended world/normal transforms and infinite-view specular.
 Missing vertex colors resolve material sources as the SDK does. Native pixel

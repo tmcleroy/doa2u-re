@@ -527,6 +527,136 @@ static bool testScreenSpaceOffsetAndScissor()
     return passed;
 }
 
+static bool testBrightPass()
+{
+    char folder[MAX_PATH], path[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "brt", 0, path)) return false;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", path);
+    RecompD3dPresenter *presenter = nullptr;
+    bool passed = expect("create bright pass", d3d11_backend_create(&config, &presenter));
+    if (passed) {
+        // 3x3 tiles: red 0.75 with a 1.0 centre, green 0.9, blue 0.5 (below threshold).
+        uint32_t texels[9 * 9];
+        for (unsigned y = 0; y < 9; ++y)
+            for (unsigned x = 0; x < 9; ++x)
+                texels[y * 9 + x] = (x % 3 == 1 && y % 3 == 1 ? 0xffff0000u : 0xffbf0000u) | 0xe580u;
+        struct Vertex { float x, y, z, rhw, u, v; };
+        const Vertex vertices[] = {{40, 40, 0, 1, 0, 0}, {43, 40, 0, 1, 9, 0},
+            {40, 43, 0, 1, 0, 9}, {43, 43, 0, 1, 9, 9}};
+        const uint16_t indices[] = {0, 1, 2, 3};
+        auto clear = clearCommand();
+        clear.data.clear.color = 0xff000000u;
+        passed &= expect("bright clear", d3d11_backend_submit(presenter, &clear));
+        RecompD3dPresenterCommand command{RECOMP_D3D_PRESENTER_COMMAND_DRAW};
+        auto &draw = command.data.draw;
+        draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+        draw.index_count = draw.vertex_count = 4;
+        draw.triangle_count = 2;
+        draw.vertex_stride = sizeof(Vertex);
+        draw.fvf = 0x104u;
+        draw.vertex_bytes = vertices;
+        draw.index_bytes = indices;
+        draw.blend.color_write_mask = 15;
+        // The game's -0.5 offset puts each output centre on its tile's middle texel.
+        draw.screen_space_offset[0] = draw.screen_space_offset[1] = -0.5f;
+        draw.address_u = draw.address_v = 3;
+        draw.has_texture = true;
+        draw.texture.format_byte = 0x12u;
+        draw.texture.linear = true;
+        draw.texture.bits_per_pixel = 32;
+        draw.texture.width = draw.texture.height = 9;
+        draw.texture.pitch = 36;
+        draw.texture.mip_levels = 1;
+        draw.texture.data = 0x2000u;
+        draw.texture_bytes = texels;
+        draw.texture_byte_count = sizeof texels;
+        draw.bright_pass = true;
+        draw.bright_pass_threshold = 0x1a1a1a1au;
+        passed &= expect("bright pass draw", d3d11_backend_submit(presenter, &command));
+        draw.four_tap_filter = true;
+        passed &= expect("bright pass excludes four tap", d3d11_backend_submit(presenter, &command),
+            RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
+        // Four texel-centred taps of a 2x2 texture: red 0.6, 0.3, 0.9, 0; green 1.
+        const uint32_t taps[] = {0xff99ff00u, 0xff4dff00u, 0xffe6ff00u, 0xff00ff00u};
+        struct TapVertex { float x, y, z, rhw, uv[8]; };
+        TapVertex quad[4]{};
+        for (unsigned i = 0; i < 4; ++i) {
+            quad[i] = {100.0f + (i & 1) * 8, 40.0f + (i >> 1) * 8, 0, 1,
+                {0.5f, 0.5f, 1.5f, 0.5f, 0.5f, 1.5f, 1.5f, 1.5f}};
+        }
+        RecompD3dPresenterCommand tap{RECOMP_D3D_PRESENTER_COMMAND_DRAW};
+        auto &filter = tap.data.draw;
+        filter.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+        filter.index_count = filter.vertex_count = 4;
+        filter.triangle_count = 2;
+        filter.vertex_stride = sizeof(TapVertex);
+        filter.fvf = 0x404u;
+        filter.vertex_bytes = quad;
+        filter.index_bytes = indices;
+        filter.blend.color_write_mask = 15;
+        filter.has_texture = true;
+        filter.texture = draw.texture;
+        filter.texture.width = filter.texture.height = 2;
+        filter.texture.pitch = 8;
+        filter.texture.data = 0x3000u;
+        filter.texture_bytes = taps;
+        filter.texture_byte_count = sizeof taps;
+        filter.four_tap_filter = true;
+        // Identity variant: 1/3 and 1/6 weights; doubled variant: 0x40 weights, x2 then /2.
+        const uint32_t weights[2][2] = {{0x55555555u, 0x2b2b2b2bu}, {0x40404040u, 0x40404040u}};
+        for (unsigned v = 0; v < 2 && passed; ++v) {
+            for (unsigned i = 0; i < 4; ++i) filter.four_tap_factors[i] = weights[v][i & 1];
+            filter.four_tap_scale = v ? 2.0f : 1.0f;
+            filter.four_tap_sum_scale = v ? 0.5f : 1.0f;
+            passed &= expect("four tap draw", d3d11_backend_submit(presenter, &tap));
+            for (auto &vertex : quad) vertex.x += 20;
+        }
+        // Composite: 2 * texture * 0.8, saturating at red 0.75 and keeping green 0.5 -> 0.8.
+        const uint32_t composite_texel = 0xffbf8000u;
+        RecompD3dPresenterCommand composite = command;
+        auto &mod = composite.data.draw;
+        mod.bright_pass = mod.four_tap_filter = false;
+        mod.texture.width = mod.texture.height = 1;
+        mod.texture.pitch = 4;
+        mod.texture.data = 0x4000u;
+        mod.texture_bytes = &composite_texel;
+        mod.texture_byte_count = sizeof composite_texel;
+        mod.texture_factor = 0xccccccccu;
+        mod.texture_factor_modulate2x = true;
+        mod.material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE;
+        mod.material_alpha = 1.0f;
+        Vertex composite_quad[4];
+        std::memcpy(composite_quad, vertices, sizeof vertices);
+        for (auto &vertex : composite_quad) { vertex.x += 100; vertex.u = vertex.v = 0.5f; }
+        mod.vertex_bytes = composite_quad;
+        passed &= expect("modulate2x draw", d3d11_backend_submit(presenter, &composite));
+        RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
+        present.data.present = {5, 1};
+        passed &= expect("bright present", d3d11_backend_submit(presenter, &present));
+        passed &= expect("destroy bright pass", d3d11_backend_destroy(&presenter));
+        if (FILE *file = std::fopen(path, "rb")) {
+            // Gaussian red 0.8125 -> 107; linear 1.0 would give 203, a box filter 90.
+            const unsigned pixels[][5] = {{40, 40, 107, 152, 0}, {42, 41, 107, 152, 0}, {43, 43, 0, 0, 0},
+                {104, 44, 141, 255, 0}, {124, 44, 115, 255, 0}, {141, 41, 255, 204, 0}};
+            for (const auto &pixel : pixels) {
+                unsigned char bgr[3]{};
+                std::fseek(file, 54 + (239 - pixel[1]) * 960 + pixel[0] * 3, SEEK_SET);
+                passed &= std::fread(bgr, 1, 3, file) == 3;
+                const bool pixel_ok = std::abs(bgr[2] - static_cast<int>(pixel[2])) <= 2 &&
+                    std::abs(bgr[1] - static_cast<int>(pixel[3])) <= 2 && bgr[0] == pixel[4];
+                if (!pixel_ok) std::fprintf(stderr, "FAIL bright pixel (%u,%u) BGR=%u,%u,%u\n",
+                    pixel[0], pixel[1], bgr[0], bgr[1], bgr[2]);
+                passed &= pixel_ok;
+            }
+            std::fclose(file);
+        } else passed = false;
+    }
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
+    DeleteFileA(path);
+    if (passed) std::puts("PASS Gaussian-cubic bright pass, weighted four-tap filters and MODULATE2X composite");
+    return passed;
+}
+
 static bool testClose(bool idle)
 {
     RecompD3dPresenter *presenter = nullptr;
@@ -560,7 +690,7 @@ int main()
 {
     recomp_d3d_presenter_set_immediate_present(false);
     if (!testTicks() || !testCapturedDraw() || !testMipSampler() || !testLighting() ||
-        !testScreenSpaceOffsetAndScissor() || !testClose(false) || !testClose(true)) return 1;
+        !testScreenSpaceOffsetAndScissor() || !testBrightPass() || !testClose(false) || !testClose(true)) return 1;
     std::puts("PASS presenter render thread");
     return 0;
 }

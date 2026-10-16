@@ -207,21 +207,28 @@ static void attach_texture(uint32_t device, uint32_t stage, RecompD3dPresenterDr
 
 static bool four_tap(uint32_t device, RecompD3dPresenterDrawCommand *draw)
 {
-    /* Reuse the committed sister presenter only for its exact combiner/filter contract. */
+    /* Weighted four-source combiner: r0 = c0*t0 + c1*t1 and r1 = c0*t2 + c1*t3 with
+       unique per-stage factors, then r0 + r1. The stage sums are nonnegative, so the
+       signed and unsigned stage-2 inputs of the two measured variants agree. */
     static const uint32_t expected[][2] = {
-        {0x08u, 0xdc30dd30u}, {0x20u, 0xcu}, {0x24u, 0x1c80u},
-        {0x68u, 0x10c00u}, {0x6cu, 0x10d00u}, {0x70u, 0x30c00u},
-        {0x90u, 0xcc20cd20u}, {0xb4u, 0x10c00u}, {0xb8u, 0x10d00u},
-        {0xbcu, 0x30c00u}, {0xd4u, 0x11103u}, {0xd8u, 0x8421u},
+        {0x20u, 0xcu}, {0x24u, 0x1c80u}, {0xd4u, 0x11103u}, {0xd8u, 0x8421u},
+    };
+    static const uint32_t offsets[8] = {0x08u, 0x68u, 0x6cu, 0x70u, 0x90u, 0xb4u, 0xb8u, 0xbcu};
+    /* Doubled stages with a halved sum (the DOA3 contract), or identity scales. */
+    static const struct { uint32_t words[8]; float scale, sum_scale; } variants[] = {
+        {{0xdc30dd30u, 0x10c00u, 0x10d00u, 0x30c00u, 0xcc20cd20u, 0x10c00u, 0x10d00u, 0x30c00u},
+            2.0f, 0.5f},
+        {{0x1c301d30u, 0xc00u, 0xd00u, 0xc00u, 0x0c200d20u, 0xc00u, 0xd00u, 0xc00u}, 1.0f, 1.0f},
     };
     static const uint32_t simple[][2] = {
         {0x40260u, 0xd1d8d2d9u}, {0x40264u, 0xd1dad2dbu},
-        {0x40a60u, 0x40404040u}, {0x40a64u, 0x40404040u},
-        {0x40a80u, 0x40404040u}, {0x40a84u, 0x40404040u},
         {0x40ac0u, 0xc1c8c2c9u}, {0x40ac4u, 0xc1cac2cbu},
     };
+    /* C0/C1 of stage 0 weight t0/t1; C0/C1 of stage 1 weight t2/t3. */
+    static const uint32_t factors[4] = {0x40a60u, 0x40a80u, 0x40a64u, 0x40a84u};
+    /* Single-level sources make point and disabled mip filtering equivalent. */
     static const uint32_t sampler[][2] = {
-        {0u, 3u}, {1u, 3u}, {3u, 2u}, {4u, 2u}, {5u, 1u},
+        {0u, 3u}, {1u, 3u}, {3u, 2u}, {4u, 2u},
         {7u, 0u}, {9u, 0u}, {10u, 0u}, {11u, 0u}, {21u, 0u},
     };
     if (!draw->has_texture || ((draw->fvf >> 8u) & 15u) != 4u ||
@@ -231,10 +238,21 @@ static bool four_tap(uint32_t device, RecompD3dPresenterDrawCommand *draw)
     for (uint32_t i = 0u; i < sizeof expected / sizeof expected[0]; ++i) {
         if (*recomp_memory_u32(PIXEL_SHADOW + expected[i][0]) != expected[i][1]) return false;
     }
+    uint32_t variant = 0u;
+    for (; variant < 2u; ++variant) {
+        uint32_t i = 0u;
+        while (i < 8u && *recomp_memory_u32(PIXEL_SHADOW + offsets[i]) == variants[variant].words[i]) ++i;
+        if (i == 8u) break;
+    }
+    if (variant == 2u) return false;
     const RecompD3dRenderStateModel *state = recomp_d3d8_state_model();
     for (uint32_t i = 0u; i < sizeof simple / sizeof simple[0]; ++i) {
         uint32_t value;
         if (!recomp_d3d_get_simple_render_state(state, simple[i][0], &value) || value != simple[i][1])
+            return false;
+    }
+    for (uint32_t i = 0u; i < 4u; ++i) {
+        if (!recomp_d3d_get_simple_render_state(state, factors[i], &draw->four_tap_factors[i]))
             return false;
     }
     for (uint32_t stage = 0u; stage < 4u; ++stage) {
@@ -247,11 +265,45 @@ static bool four_tap(uint32_t device, RecompD3dPresenterDrawCommand *draw)
             if (*recomp_memory_u32(STAGES + stage * 128u + sampler[i][0] * 4u) != sampler[i][1])
                 return false;
         }
+        if (*recomp_memory_u32(STAGES + stage * 128u + 20u) > 1u) return false;
         float bias;
         recomp_guest_load(&bias, STAGES + stage * 128u + 24u, sizeof bias);
         if (!isfinite(bias) || *recomp_memory_u32(STAGES + stage * 128u + 112u) != stage) return false;
     }
     draw->four_tap_filter = true;
+    draw->four_tap_scale = variants[variant].scale;
+    draw->four_tap_sum_scale = variants[variant].sum_scale;
+    return true;
+}
+
+static bool bright_pass(uint32_t device, RecompD3dPresenterDrawCommand *draw)
+{
+    /* Verified combiner: r1 = t0 - c0; r0 = 2 * max(0, r1) - 1; out = max(0, r0).
+       Two stages, unique C0/C1, MSB mux; only stage 0 samples (PROJECT2D). */
+    static const uint32_t simple[][2] = {
+        {0x40260u, 0xd830d150u}, {0x40264u, 0x5d301010u},
+        {0x40ac0u, 0xc820c140u}, {0x40ac4u, 0x4d200000u},
+        {0x40aa0u, 0xd00u}, {0x40aa4u, 0xc0u}, {0x41e40u, 0xd00u}, {0x41e44u, 0xc0u},
+        {0x41e60u, 0x11102u}, {0x40288u, 0xcu}, {0x4028cu, 0x1c80u},
+    };
+    /* Gaussian-cubic min/mag, no mips, UV0, no color key, sign, kill or transform. */
+    static const uint32_t sampler[][2] = {
+        {3u, 5u}, {4u, 5u}, {5u, 0u}, {9u, 0u}, {10u, 0u}, {11u, 0u}, {21u, 0u}, {28u, 0u},
+    };
+    if (!draw->has_texture || ((draw->fvf >> 8u) & 15u) != 1u ||
+        *recomp_memory_u32(device + 0x790u) != 1u) return false;
+    const RecompD3dRenderStateModel *state = recomp_d3d8_state_model();
+    uint32_t value;
+    for (uint32_t i = 0u; i < sizeof simple / sizeof simple[0]; ++i) {
+        if (!recomp_d3d_get_simple_render_state(state, simple[i][0], &value) || value != simple[i][1])
+            return false;
+    }
+    for (uint32_t i = 0u; i < sizeof sampler / sizeof sampler[0]; ++i) {
+        if (*recomp_memory_u32(STAGES + sampler[i][0] * 4u) != sampler[i][1]) return false;
+    }
+    if (!recomp_d3d_get_simple_render_state(state, 0x40a60u, &value)) return false;
+    draw->bright_pass = true;
+    draw->bright_pass_threshold = value;
     return true;
 }
 
@@ -413,6 +465,17 @@ static void fixed_stages(const RecompD3dVertexLayout *layout, RecompD3dPresenter
             ((stage[0][16] == 2u && stage[0][18] <= 1u) ||
              (stage[0][16] == 3u && stage[0][19] <= 1u));
         if (vertex_alpha) draw->material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_SELECT_VERTEX_DIFFUSE;
+        /* shortcut: stage-0 ALPHAOP DISABLE passes diffuse alpha, an unverified SDK rule;
+           its observed ONE/ONE composite only adds into ignored back-buffer alpha. */
+        const bool diffuse_alpha = stage[0][16] == 1u;
+        if (diffuse_alpha) {
+            draw->material_alpha_mode = white ? RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE
+                : RECOMP_D3D_MATERIAL_ALPHA_SELECT_VERTEX_DIFFUSE;
+            draw->material_alpha = 1.0f;
+        }
+        /* MODULATE2X(TEXTURE, TFACTOR) reads no diffuse, so admit it only for white vertices. */
+        draw->texture_factor_modulate2x = white && stage[0][12] == 5u &&
+            stage[0][14] == 2u && stage[0][15] == 3u;
         const bool white_alpha = white && layout->pretransformed &&
             recomp_d3d_texture_material_alpha_mode(stage[0][12], stage[0][14], stage[0][15],
                 stage[0][16], stage[0][18], stage[0][19]) == RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE;
@@ -421,8 +484,9 @@ static void fixed_stages(const RecompD3dVertexLayout *layout, RecompD3dPresenter
             draw->material_alpha = 1.0f;
         }
         if (!draw->directional.enabled && !draw->has_reflection &&
-            (!(color_modulate || (white && stage[0][12] == 2u && stage[0][14] == 2u)) ||
-             !(alpha_modulate || white_alpha || texture_alpha || vertex_alpha)))
+            (!(color_modulate || draw->texture_factor_modulate2x ||
+               (white && stage[0][12] == 2u && stage[0][14] == 2u)) ||
+             !(alpha_modulate || white_alpha || texture_alpha || vertex_alpha || diffuse_alpha)))
             recomp_stop(2, "d3d8:draw-texture-combine");
         if (stage[0][20] != 0u || stage[0][21] != 0u || stage[0][28] != 0u)
             recomp_stop(2, "d3d8:draw-texture-coordinates");
@@ -438,6 +502,8 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     uint32_t stride, uint32_t index_address)
 {
     const uint32_t device = recomp_d3d8_require_device();
+    /* An even-count quad strip covers the triangles of a strip, in the same winding. */
+    if (primitive == 9u) { primitive = 6u; count &= ~1u; }
     if (count == 0u) return;
     if (count > 65536u || vertices == 0u || stride == 0u)
         recomp_stop(2, "d3d8:draw-span");
@@ -525,7 +591,8 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     attach_texture(device, 0u, draw);
     attach_lighting(device, &layout, draw);
     if (*recomp_memory_u32(device + PIXEL_HANDLE) != 0u) {
-        if (!four_tap(device, draw)) recomp_stop(2, "d3d8:draw-pixel-shader-unsupported");
+        if (!four_tap(device, draw) && !bright_pass(device, draw))
+            recomp_stop(2, "d3d8:draw-pixel-shader-unsupported");
     } else {
         attach_reflection(device, &layout, draw);
         fixed_stages(&layout, draw);

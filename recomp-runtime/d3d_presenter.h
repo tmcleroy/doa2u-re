@@ -137,14 +137,24 @@ typedef struct RecompD3dPresenterDrawCommand {
     bool use_texture_factor;
     /* Stage 1 multiplies the sampled result by this factor. */
     bool modulate_texture_factor;
+    /* Stage 0 color is saturate(2 * texture * factor); alpha keeps its own selection. */
+    bool texture_factor_modulate2x;
     uint32_t texture_factor;
     /* Measured stage-0 selection or modulation of material alpha. */
     RecompD3dMaterialAlphaMode material_alpha_mode;
     float material_alpha;
     /* ponytail: exact zero illumination; full lighting needs light evaluation. */
     bool zero_diffuse_rgb;
-    /* Exact four-source register-combiner filter; uses all four UV sets. */
+    /* Four-source register-combiner filter over all four UV sets:
+       sum_scale * (sat(scale * (f0*t0 + f1*t1)) + sat(scale * (f2*t2 + f3*t3))),
+       with packed ARGB factors. */
     bool four_tap_filter;
+    uint32_t four_tap_factors[4];
+    float four_tap_scale, four_tap_sum_scale;
+    /* Exact two-stage bright pass: saturate(2 * (gaussian3x3(t0) - c0) - 1).
+       The threshold is stage-0 C0 in packed ARGB; UV0 is the only coordinate. */
+    bool bright_pass;
+    uint32_t bright_pass_threshold;
     /* Stage 0 texture for this draw. `texture_bytes` is a host-readable view
        of guest pixel memory, valid only for the duration of the submit. */
     RecompD3dTextureDesc texture;

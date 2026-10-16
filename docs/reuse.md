@@ -120,3 +120,7 @@ the same WVP path; SDK raster bias stays in the guest shadow. Native tests
 cover perspective, blended transforms, subviewports and pretransformed draws.
 One allowed scissor rectangle follows the same target scaling; native pixels
 check its edges and restoration without changing geometry or viewport clipping.
+The four-tap filter now reads its factors from the live constants and accepts
+a second, identity-scale combiner variant. The bright pass and MODULATE2X bloom
+composite extend the same filter block in the shared constant buffer; native
+pixels distinguish the Gaussian kernel from linear and box sampling.
