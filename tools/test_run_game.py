@@ -10,6 +10,32 @@ from run_game import prepare_disc, run
 
 
 class DiscTests(unittest.TestCase):
+    def test_isolated_probe_uses_separate_saves_and_scripted_input(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "private/program").mkdir(parents=True)
+            selected = root / "private/import/game.input"
+            selected.parent.mkdir()
+            selected.write_bytes(b"synthetic input")
+            receipt = dict(recipe=dict(xbe_sha256="hash"), manifest_sha256="hash",
+                           ebp_count=0, runner_sha256="hash")
+            (root / "private/program/receipt.json").write_text(json.dumps(receipt))
+            save = root / "private/play-disc/.recomp-storage/profile"
+            save.parent.mkdir(parents=True)
+            save.write_text("user save")
+            with patch("run_game.ROOT", root), patch("run_game.selected_xbe", return_value=selected), \
+                    patch("run_game.program_manifest", return_value=("hash", 0)), \
+                    patch("run_game.sha256", return_value="hash"), \
+                    patch("run_game.subprocess.run") as execute:
+                execute.return_value.returncode = 0
+                self.assertEqual(run(1, [30, 100], [200], isolated=True), 0)
+                command = execute.call_args.args[0]
+                self.assertEqual(command[command.index("--disc-root") + 1],
+                                 str(root / "private/probe-disc"))
+                self.assertIn("--input-script-only", command)
+            self.assertEqual(save.read_text(), "user save")
+            self.assertFalse((root / "private/probe-disc/.recomp-storage").exists())
+
     def test_rejects_invalid_start_polls_before_reading_inputs(self):
         for polls in ([0], [-1], [2**64], [1, 2, 3, 4, 5]):
             with self.assertRaisesRegex(ValueError, "Start polls"):

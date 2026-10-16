@@ -30,7 +30,7 @@ def prepare_disc(source, disc):
     staging.rename(disc)
 
 
-def run(seconds, start_polls=(), a_polls=()):
+def run(seconds, start_polls=(), a_polls=(), isolated=False):
     if seconds <= 0:
         raise ValueError("Probe duration must be positive")
     if len(start_polls) > 4 or any(poll <= 0 or poll > 2**64 - 1 for poll in start_polls):
@@ -46,7 +46,7 @@ def run(seconds, start_polls=(), a_polls=()):
     runner = ROOT / "build/recomp-program/Release/recomp_program_runner.exe"
     if sha256(runner) != receipt["runner_sha256"]:
         raise ValueError("Runner differs from its successful build receipt")
-    disc = ROOT / "private/play-disc"
+    disc = ROOT / ("private/probe-disc" if isolated else "private/play-disc")
     prepare_disc(selected.parent, disc)
     xbe = disc / selected.name
     if sha256(xbe) != sha256(selected):
@@ -59,6 +59,8 @@ def run(seconds, start_polls=(), a_polls=()):
         log.flush()
         try:
             command = [str(runner), "--xbe", str(xbe), "--disc-root", str(disc)]
+            if isolated:
+                command.append("--input-script-only")
             for poll in start_polls:
                 command.extend(["--input-start-pulse-at", str(poll)])
             for poll in a_polls:
@@ -78,9 +80,12 @@ if __name__ == "__main__":
     parser.add_argument("--seconds", type=int, default=30)
     parser.add_argument("--input-start-pulse-at", type=int, action="append", default=[])
     parser.add_argument("--input-a-pulse-at", type=int, action="append", default=[])
+    parser.add_argument("--isolated", action="store_true",
+                        help="Use separate probe saves and ignore physical input")
     args = parser.parse_args()
     try:
-        raise SystemExit(run(args.seconds, args.input_start_pulse_at, args.input_a_pulse_at))
+        raise SystemExit(run(args.seconds, args.input_start_pulse_at,
+                             args.input_a_pulse_at, args.isolated))
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         print(f"Cannot run boot probe: {error}", file=sys.stderr)
         raise SystemExit(1)

@@ -23,10 +23,11 @@ RecompFunction recomp_program_lookup(std::uint32_t address);
 #include <charconv>
 
 static RecompInputPulseSource inputPulses;
+static bool scriptedInputOnly;
 
 static bool sampleInput(std::uint32_t port, RecompInputGamepad *gamepad)
 {
-    if (port != 0u) return recomp_input_host_sample(port, gamepad);
+    if (port != 0u) return !scriptedInputOnly && recomp_input_host_sample(port, gamepad);
     const bool sampled = recomp_input_pulse_source_sample(&inputPulses, gamepad);
     static bool startHeld;
     const bool start = sampled && (gamepad->buttons & RECOMP_INPUT_BUTTON_START) != 0u;
@@ -45,6 +46,11 @@ int main(int argc, char **argv)
     recomp_input_pulse_source_init(&inputPulses, recomp_input_host_sample, 0u);
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
+        if (argument == "--input-script-only") {
+            scriptedInputOnly = true;
+            inputPulses.base = nullptr;
+            continue;
+        }
         if (argument == "--input-start-pulse-at" && i + 1 < argc) {
             const std::string value = argv[++i];
             std::uint64_t poll = 0u;
@@ -71,7 +77,8 @@ int main(int argc, char **argv)
              argument != "--expect-stop" && argument != "--milestone-log") || i + 1 >= argc) {
             std::cerr << "usage: recomp_program_runner --xbe <path> [--disc-root <path>]"
                 " [--expect-stop <id>] [--milestone-log <path>]"
-                " [--input-start-pulse-at <poll>] [--input-a-pulse-at <poll>]\n";
+                " [--input-start-pulse-at <poll>] [--input-a-pulse-at <poll>]"
+                " [--input-script-only]\n";
             return 64;
         }
         const std::string value = argv[++i];
@@ -124,7 +131,7 @@ int main(int argc, char **argv)
     recomp_runtime_set_lookup(recomp_program_lookup);
     recomp_input_adapter_reset();
     recomp_input_adapter_set_source(sampleInput);
-    recomp_input_adapter_set_feedback_sink(recomp_input_host_set_vibration);
+    if (!scriptedInputOnly) recomp_input_adapter_set_feedback_sink(recomp_input_host_set_vibration);
     std::atexit(recomp_input_host_stop_vibration);
     std::atexit(recomp_d3d8_shutdown);
     std::atexit(recomp_dsound_api_shutdown);
