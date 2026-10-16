@@ -233,6 +233,12 @@ respectively; both use the same eye and normal inputs. The queued draw owns
 the third texture's bytes. Native pixels cover its alpha endpoints and midpoint,
 its independent matrix and CLAMP addressing, and the final diffuse RGB/alpha.
 Other third-stage combiners and coordinate sources remain guarded.
+Vertex records may overlap: SetStateUP (0x3506f0) and DrawVerticesUP copy the
+full declaration and advance by the caller's stride, even when it is smaller
+than that declaration. The adapter checks the final record's complete extent
+and repacks these records before queuing the draw. Regression cases cover the
+four-UV layout with a 24-byte stride, reordered indices, and a final record
+exactly at the guest-RAM boundary; extending it beyond RAM still stops.
 Other fight chrome
 (draw 0x28708b, FVF 0x112) swaps the coordinate sources: stage 0 samples the
 environment through camera-space reflection texgen (TEXTURE0 matrix) and

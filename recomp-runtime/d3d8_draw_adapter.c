@@ -1224,8 +1224,10 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
         recomp_d3d_fvf_layout(draw->fvf, &layout) && layout.stride > stride)
         draw->fvf &= ~0xf00u;
     if ((draw->fvf & 1u) != 0u || !recomp_d3d_fvf_layout(draw->fvf, &layout) ||
-        layout.stride > stride || (draw->fvf & ~0xfdfu) != 0u)
-        recomp_stop(2, "d3d8:draw-vertex-layout:%08x:%u", draw->fvf, stride);
+        (draw->fvf & ~0xfdfu) != 0u)
+        recomp_stop(2, "d3d8:draw-vertex-layout:%08x:%u:raw=%08x:program=%u:ret=%08x:prim=%u:n=%u", draw->fvf, stride,
+            *recomp_memory_u32(device + 0x798u), draw->program_count,
+            *recomp_memory_u32(recomp_runtime.registers.esp), primitive, count);
     for (uint32_t i = 1u; i < 16u; ++i) {
         if (*recomp_memory_u32(STREAMS + i * 12u + 8u) != 0u)
             recomp_stop(2, "d3d8:draw-multiple-streams");
@@ -1259,11 +1261,23 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     }
     draw->vertex_count = largest + 1u;
     const uint32_t bytes = recomp_d3d_draw_vertex_bytes(stride, largest);
-    if (bytes == 0u) recomp_stop(2, "d3d8:draw-vertex-span");
-    draw->vertex_bytes = recomp_memory(vertices, bytes);
+    const uint32_t tail = layout.stride > stride ? layout.stride - stride : 0u;
+    if (bytes == 0u || bytes > RECOMP_XBOX_RAM_SIZE - tail) recomp_stop(2, "d3d8:draw-vertex-span");
+    draw->vertex_bytes = recomp_memory(vertices, bytes + tail);
     draw->index_bytes = indices;
     draw->index_count = count;
     draw->vertex_stride = stride;
+    uint8_t *packed = NULL;
+    if (tail != 0u) {
+        /* SetStateUP (0x3506f0) and DrawVerticesUP copy each declaration, then
+           add stride - declaration size; overlapping records are valid. */
+        packed = malloc((size_t)layout.stride * draw->vertex_count);
+        if (packed == NULL) recomp_stop(2, "d3d8:draw-vertex-allocation");
+        for (uint32_t i = 0u; i < draw->vertex_count; ++i)
+            memcpy(packed + i * layout.stride, (const uint8_t *)draw->vertex_bytes + i * stride, layout.stride);
+        draw->vertex_bytes = packed;
+        draw->vertex_stride = layout.stride;
+    }
     draw->primitive_type = primitive;
     draw->triangle_count = triangles;
     if (!layout.pretransformed && !program) {
@@ -1344,6 +1358,7 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     recomp_d3d8_submit(&command);
     free(sequential);
     free(expanded);
+    free(packed);
 }
 
 static void draw_up(void)

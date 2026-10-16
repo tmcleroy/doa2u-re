@@ -305,11 +305,13 @@ static int draw_tests(void)
     invoke(0x348240u, 2u, 5u, VERTICES, 28u);
     CHECK(submits == quads + 2u && submitted.data.draw.primitive_type == 2u &&
         submitted.data.draw.index_count == 4u && submitted.data.draw.triangle_count == 2u);
-    if (setjmp(stopped) == 0) { invoke(0x348240u, 2u, 2u, VERTICES, 20u); return 1; }
-    CHECK(strncmp(stop_reason, "d3d8:draw-vertex-layout:00000144:20", 35u) == 0);
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected overlapping line stop: %s\n", stop_reason); return 1; }
+    invoke(0x348240u, 2u, 2u, VERTICES, 20u);
+    CHECK(submits == quads + 3u && submitted.data.draw.fvf == 0x144u &&
+        submitted.data.draw.vertex_stride == 28u && submitted.data.draw.has_texture);
     *recomp_memory_u32(DEVICE + 0xf88u) = 0u;
     invoke(0x348240u, 2u, 2u, VERTICES, 20u);
-    CHECK(submits == quads + 3u && submitted.data.draw.fvf == 0x44u && !submitted.data.draw.has_texture);
+    CHECK(submits == quads + 4u && submitted.data.draw.fvf == 0x44u && !submitted.data.draw.has_texture);
     /* Width 2 widens an x-major line by one pixel above and below. */
     const float line[10] = {10.0f, 20.0f, 0.0f, 1.0f, 0.0f, 50.0f, 24.0f, 0.0f, 1.0f, 0.0f};
     const float wide = 2.0f;
@@ -1006,6 +1008,25 @@ static int program_tests(void)
         }
     }
     CHECK(submits == before + 10u);
+    /* SetStateUP copies each declaration-sized record, then advances by stride;
+       a smaller stride makes records overlap, including the final record tail. */
+    const uint32_t overlap = (uint32_t)sizeof ram - 96u;
+    for (uint32_t i = 0u; i < 24u; ++i) *recomp_memory_u32(overlap + i * 4u) = 0x3f000000u + i;
+    invoke(0x348240u, 5u, 3u, overlap, 24u);
+    CHECK(draw->vertex_stride == 48u && draw->vertex_count == 3u);
+    for (uint32_t i = 0u; i < 3u; ++i)
+        CHECK(memcmp(captured_vertices + i * 12u, ram + overlap + i * 24u, 48u) == 0);
+    const uint16_t reordered[] = {2u, 0u, 1u};
+    recomp_guest_store(INDICES, reordered, sizeof reordered);
+    *recomp_memory_u32(0x3579a8u) = 24u;
+    *recomp_memory_u32(BUFFER + 4u) = overlap;
+    invoke(0x348450u, 5u, 3u, INDICES, 0u);
+    CHECK(draw->vertex_stride == 48u && draw->vertex_count == 3u &&
+        memcmp(captured_indices, reordered, sizeof reordered) == 0);
+    for (uint32_t i = 0u; i < 3u; ++i)
+        CHECK(memcmp(captured_vertices + i * 12u, ram + overlap + i * 24u, 48u) == 0);
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, overlap + 4u, 24u); return 1; }
+    CHECK(strcmp(stop_reason, "test:guest-span") == 0);
     /* A gap in the UV sets is not an FVF layout. */
     *recomp_memory_u32(PROGRAM + 0xccu) = 2u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 48u); return 1; }
