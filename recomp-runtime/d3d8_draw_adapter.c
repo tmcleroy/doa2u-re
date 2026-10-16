@@ -325,6 +325,87 @@ static bool bright_pass(uint32_t device, RecompD3dPresenterDrawCommand *draw)
     return true;
 }
 
+/* Stage distortion pass (FUN_0027b070, definition 0x7af5d8): t0 PROJECT2D,
+   t1 DOTPRODUCT and t2 DOT_ST with MINUS1_TO_1_D3D dot mapping, one combiner
+   r0 = t2 and zero final-combiner words. 0x34f5f0 then pushes D = r0 and
+   G = r0.a only with FogEnable (0x3553d0) and specular (0x3553fc) off. */
+static bool distortion_shader(uint32_t device)
+{
+    static const uint32_t words[][2] = {
+        {0x00u, 0xda301010u}, {0x20u, 0u}, {0x24u, 0u}, {0x68u, 0xc0u}, {0x88u, 0xca200000u},
+        {0xa8u, 0u}, {0xb4u, 0xc0u}, {0xd4u, 0x00011101u}, {0xd8u, 0x2621u}, {0xdcu, 0x11u},
+        {0xe0u, 0u},
+    };
+    const uint32_t handle = *recomp_memory_u32(device + PIXEL_HANDLE);
+    if (handle == 0u) return false;
+    const uint32_t data = definition(handle);
+    for (uint32_t i = 0u; i < sizeof words / sizeof words[0]; ++i)
+        if (*recomp_memory_u32(data + words[i][0]) != words[i][1]) return false;
+    return *recomp_memory_u32(0x3553d0u) == 0u && *recomp_memory_u32(0x3553fcu) == 0u;
+}
+
+/* DOT_ST samples t2 at (dot(tc1.str, n), dot(tc2.str, n)) with n the signed
+   t0 texel. The presenter draws it as FVF 0x404: t2 becomes the primary
+   texture, t0 the second, and the 56-byte vertices (UV0, two STR sets, unused
+   UV3) pack into four float2 sets: UV0, tc1.st, (tc1.r, tc2.s), tc2.tr. */
+static uint8_t *distortion(uint32_t device, uint32_t stride, RecompD3dPresenterDrawCommand *draw)
+{
+    RecompD3dPresenterDrawCommand scene = {0};
+    attach_texture(device, 2u, &scene);
+    if (stride != 56u || !draw->has_texture || !scene.has_texture || draw->palette_bytes != NULL ||
+        scene.palette_bytes != NULL || draw->texture.linear)
+        recomp_stop(2, "d3d8:distortion-inputs");
+    draw->reflection_texture = draw->texture;
+    draw->reflection_bytes = draw->texture_bytes;
+    draw->reflection_byte_count = draw->texture_byte_count;
+    draw->reflection_address_u = draw->address_u;
+    draw->reflection_address_v = draw->address_v;
+    draw->reflection_point_mip_filter = *recomp_memory_u32(STAGES + 20u) == 1u;
+    draw->reflection_mip_lod_bias = lod_bias(*recomp_memory_u32(STAGES + 24u));
+    draw->texture = scene.texture;
+    draw->texture_bytes = scene.texture_bytes;
+    draw->texture_byte_count = scene.texture_byte_count;
+    draw->address_u = scene.address_u;
+    draw->address_v = scene.address_v;
+    draw->point_mip_filter = *recomp_memory_u32(STAGES + 256u + 20u) == 1u;
+    draw->mip_lod_bias = lod_bias(*recomp_memory_u32(STAGES + 256u + 24u));
+    draw->texture_is_backbuffer = scene.texture_is_backbuffer;
+    draw->texture_is_front_buffer = scene.texture_is_front_buffer;
+    float *packed = malloc((size_t)draw->vertex_count * 48u);
+    if (packed == NULL) recomp_stop(2, "d3d8:draw-index-allocation");
+    for (uint32_t i = 0u; i < draw->vertex_count; ++i)
+        memcpy(packed + i * 12u, (const uint8_t *)draw->vertex_bytes + i * 56u, 48u);
+    draw->vertex_bytes = packed;
+    draw->vertex_stride = 48u;
+    draw->distortion = true;
+    return (uint8_t *)packed;
+}
+
+/* Stage-0 color and alpha as products of texture and diffuse: the first
+   stage's flag 0x10 (0x352aba) makes the arg mapper (0x3529c0) read CURRENT
+   as V0, the diffuse color. With alpha_tfactor, alpha MODULATE may take
+   TFACTOR as one argument, which the presenter applies as a factor. */
+static bool stage0_select(const uint32_t *stage, float select[4], bool *alpha_tfactor)
+{
+    for (uint32_t channel = 0u; channel < 2u; ++channel) {
+        uint32_t op = stage[12u + channel * 4u];
+        uint32_t arg1 = stage[14u + channel * 4u], arg2 = stage[15u + channel * 4u];
+        if (arg1 == 1u) arg1 = 0u;
+        if (arg2 == 1u) arg2 = 0u;
+        if (alpha_tfactor != NULL && channel == 1u && op == 4u && (arg1 == 3u || arg2 == 3u)) {
+            op = arg1 == 3u ? 3u : 2u;
+            *alpha_tfactor = true;
+        }
+        const bool first = op == 2u || op == 4u, second = op == 3u || op == 4u;
+        if ((!first && !second) || (first && arg1 != 0u && arg1 != 2u) ||
+            (second && arg2 != 0u && arg2 != 2u))
+            return false;
+        select[channel * 2u] = (first && arg1 == 2u) || (second && arg2 == 2u);
+        select[channel * 2u + 1u] = (first && arg1 == 0u) || (second && arg2 == 0u);
+    }
+    return true;
+}
+
 static void attach_lighting(uint32_t device, const RecompD3dVertexLayout *layout,
     RecompD3dPresenterDrawCommand *draw)
 {
@@ -343,20 +424,9 @@ static void attach_lighting(uint32_t device, const RecompD3dVertexLayout *layout
         recomp_stop(2, "d3d8:lighting-shade-mode");
     RecompD3dDirectionalLighting result = {0};
     const uint32_t *stage = recomp_memory_u32(STAGES);
-    for (uint32_t channel = 0u; draw->has_texture && channel < 2u; ++channel) {
-        const uint32_t op = stage[12u + channel * 4u];
-        uint32_t arg1 = stage[14u + channel * 4u], arg2 = stage[15u + channel * 4u];
-        /* The first stage's flag 0x10 (0x352aba) makes the arg mapper (0x3529c0)
-           read CURRENT as V0, the diffuse color. */
-        if (arg1 == 1u) arg1 = 0u;
-        if (arg2 == 1u) arg2 = 0u;
-        const bool first = op == 2u || op == 4u, second = op == 3u || op == 4u;
-        if ((!first && !second) || (first && arg1 != 0u && arg1 != 2u) ||
-            (second && arg2 != 0u && arg2 != 2u))
-            recomp_stop(2, "d3d8:lighting-stage:%u:%u,%u,%u", channel, op, arg1, arg2);
-        result.stage[channel * 2u] = (first && arg1 == 2u) || (second && arg2 == 2u);
-        result.stage[channel * 2u + 1u] = (first && arg1 == 0u) || (second && arg2 == 0u);
-    }
+    if (draw->has_texture && !stage0_select(stage, result.stage, NULL))
+        recomp_stop(2, "d3d8:lighting-stage:%u,%u,%u/%u,%u,%u", stage[12], stage[14], stage[15],
+            stage[16], stage[18], stage[19]);
     float material[17];
     recomp_guest_load(material, device + 0xf00u, sizeof material);
     const bool specular = *recomp_memory_u32(0x3553fcu) != 0u || (*recomp_memory_u32(device + 8u) & 0x40u) != 0u;
@@ -455,24 +525,29 @@ static void attach_reflection(uint32_t device, const RecompD3dVertexLayout *layo
     uint32_t stages[4][32];
     recomp_guest_load(stages, STAGES, sizeof stages);
     if (!recomp_d3d_reflection_material(stages)) return;
-    /* shortcut: generated reflection coordinates need blended world/view inputs before admitting skinning. */
+    /* shortcut: generated reflection coordinates need blended world/view inputs before admitting skinning.
+       Without a normal stream the presenter's zero inline normal applies: no SDK
+       path writes v2 inline data (only 0x34aac0's v0/v9 via SetVertexData2f). */
     if (layout->pretransformed || layout->blend_weight_count != 0u || layout->texcoord_count == 0u ||
-        ((stages[0][28] | stages[1][28]) != 0u && layout->normal_offset == RECOMP_D3D_FVF_ABSENT) ||
         !draw->has_texture ||
         draw->texture.linear || draw->texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8 ||
         draw->palette_bytes != NULL)
         recomp_stop(2, "d3d8:reflection-layout:fvf=%x:gen=%x,%x:tex=%u,%u,%x,%u", draw->fvf,
             stages[0][28], stages[1][28], draw->has_texture, draw->texture.linear,
             draw->texture.format_byte, draw->palette_bytes != NULL);
-    /* Both reflection samplers take the stage-0 mip filter and LOD bias. */
-    if (stages[0][5] != stages[1][5] || stages[0][6] != stages[1][6] ||
-        stages[0][7] != 0u || stages[1][7] != 0u)
-        recomp_stop(2, "d3d8:reflection-sampler");
+    /* Each stage samples with its own mip filter and LOD bias (FUN_002807f0
+       writes a stage-0 bias alone). shortcut: MAXMIPLEVEL needs a sampler MinLOD. */
+    if (stages[0][7] != 0u || stages[1][7] != 0u)
+        recomp_stop(2, "d3d8:reflection-sampler:maxmip=%u,%u", stages[0][7], stages[1][7]);
     RecompD3dPresenterDrawCommand texture = {0};
     attach_texture(device, 1u, &texture);
     if (!texture.has_texture || texture.texture.linear || texture.palette_bytes != NULL ||
         texture.texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8)
         recomp_stop(2, "d3d8:reflection-texture");
+    if (texture.texture.mip_levels > 1u && stages[1][5] != 1u && stages[1][5] != 2u)
+        recomp_stop(2, "d3d8:reflection-sampler:mip=%u", stages[1][5]);
+    draw->reflection_point_mip_filter = stages[1][5] == 1u;
+    draw->reflection_mip_lod_bias = lod_bias(stages[1][6]);
     draw->reflection_texture = texture.texture;
     draw->reflection_address_u = texture.address_u;
     draw->reflection_address_v = texture.address_v;
@@ -484,7 +559,38 @@ static void attach_reflection(uint32_t device, const RecompD3dVertexLayout *layo
         if (!isfinite(draw->reflection_diffuse[i])) recomp_stop(2, "d3d8:reflection-material");
     draw->reflection_mesh_uv = stages[1][28] == 0u;
     draw->reflection_premultiplied = stages[1][12] == 16u;
+    /* shortcut: a bound stage-2 texture needs a third sampler; admit it when a run reaches it. */
+    draw->reflection_skip_diffuse = stages[2][14] == 2u;
+    if (draw->reflection_skip_diffuse && *recomp_memory_u32(device + 0xf90u) != 0u)
+        recomp_stop(2, "d3d8:reflection-stage2-texture");
     draw->has_reflection = true;
+}
+
+/* Stage-1 alpha mask over UV1. An op that reads an empty texture slot
+   compiles to a CURRENT pass-through (0x352e46), so an unbound mask is a no-op. */
+static void stage1_mask(uint32_t device, const RecompD3dVertexLayout *layout, uint32_t stage[][32],
+    RecompD3dPresenterDrawCommand *draw)
+{
+    RecompD3dPresenterDrawCommand mask = {0};
+    attach_texture(device, 1u, &mask);
+    if (!mask.has_texture) return;
+    if (layout->texcoord_count != 2u || stage[1][28] != 1u || stage[1][21] != 0u || stage[1][20] != 0u ||
+        mask.texture.linear || mask.palette_bytes != NULL || stage[1][3] != 2u || stage[1][4] != 2u ||
+        stage[1][9] != 0u || stage[1][10] != 0u || (stage[1][11] != 0u && stage[1][11] != 4u) ||
+        (mask.texture.mip_levels > 1u && stage[1][5] != 1u && stage[1][5] != 2u))
+        recomp_stop(2, "d3d8:stage1-mask:tc=%u:tci=%x:ttf=%x:fmt=%x,%u,%u:filter=%u,%u,%u:kill=%u",
+            layout->texcoord_count, stage[1][28], stage[1][21], mask.texture.format_byte,
+            mask.texture.linear, mask.palette_bytes != NULL, stage[1][3], stage[1][4], stage[1][5],
+            stage[1][11]);
+    draw->reflection_texture = mask.texture;
+    draw->reflection_bytes = mask.texture_bytes;
+    draw->reflection_byte_count = mask.texture_byte_count;
+    draw->reflection_address_u = mask.address_u;
+    draw->reflection_address_v = mask.address_v;
+    draw->reflection_point_mip_filter = stage[1][5] == 1u;
+    draw->reflection_mip_lod_bias = lod_bias(stage[1][6]);
+    draw->stage1_alpha_mask = true;
+    draw->stage1_alpha_kill = stage[1][11] == 4u;
 }
 
 static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
@@ -529,6 +635,9 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
         /* MODULATE2X(TEXTURE, TFACTOR) reads no diffuse, so admit it only for white vertices. */
         draw->texture_factor_modulate2x = white && stage[0][12] == 5u &&
             stage[0][14] == 2u && stage[0][15] == 3u;
+        /* The trail strips (setup 0x23a42d, draw 0x23ca7e) use 1x MODULATE. */
+        draw->texture_factor_modulate = white && stage[0][12] == 4u &&
+            ((stage[0][14] == 2u && stage[0][15] == 3u) || (stage[0][14] == 3u && stage[0][15] == 2u));
         const bool white_alpha = white && layout->pretransformed &&
             recomp_d3d_texture_material_alpha_mode(stage[0][12], stage[0][14], stage[0][15],
                 stage[0][16], stage[0][18], stage[0][19]) == RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE;
@@ -536,8 +645,19 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
             draw->material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE;
             draw->material_alpha = 1.0f;
         }
-        if (!draw->directional.enabled && !draw->has_reflection &&
-            (!(color_modulate || draw->texture_factor_modulate2x ||
+        /* Unlit SELECTARG1(TEXTURE) color over a vertex color (the stage
+           effect's FUN_0027be10 and FUN_0027c400) selects texture and diffuse
+           per channel as the lit path does. */
+        bool alpha_tfactor = false;
+        const bool unlit_select = !draw->directional.enabled && !draw->has_reflection && !white &&
+            stage[0][12] == 2u && stage[0][14] == 2u &&
+            stage0_select(stage[0], draw->directional.stage, &alpha_tfactor);
+        if (unlit_select) {
+            draw->directional.stage_mode = true;
+            draw->material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_NONE;
+        } else alpha_tfactor = false;
+        if (!draw->directional.enabled && !draw->has_reflection && !unlit_select &&
+            (!(color_modulate || draw->texture_factor_modulate2x || draw->texture_factor_modulate ||
                (white && stage[0][12] == 2u && stage[0][14] == 2u)) ||
              !(alpha_modulate || white_alpha || texture_alpha || vertex_alpha || diffuse_alpha)))
             recomp_stop(2, "d3d8:draw-texture-combine:%u,%u,%u/%u,%u,%u:fvf=%x:ret=%08x",
@@ -552,11 +672,17 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
            emits s = (m00, m10, 0, m20), t = (m01, m11, 0, m21) and q = 1. */
         const bool uv_transform = stage[0][21] == 2u && stage[0][28] == 0u &&
             !draw->has_reflection && !layout->pretransformed;
-        if (stage[0][20] != 0u || (!texgen && !uv_transform && (stage[0][21] != 0u || stage[0][28] != 0u)))
+        /* COUNT3|PROJECTED over TCI_CAMERASPACEPOSITION: 0x34f7d0 (case 0x331)
+           uploads S, T and Q as TEXTURE0 columns 0, 1 and 2. */
+        const bool projected = stage[0][21] == 0x103u && stage[0][28] == 0x20000u &&
+            !draw->has_reflection && !layout->pretransformed && layout->blend_weight_count == 0u;
+        if (stage[0][20] != 0u ||
+            (!texgen && !uv_transform && !projected && (stage[0][21] != 0u || stage[0][28] != 0u)))
             recomp_stop(2, "d3d8:draw-texture-coordinates");
-        if (texgen) {
+        if (texgen || projected) {
             reflection_inputs(device, 0xce0u, draw);
-            draw->texgen_reflection = true;
+            draw->texgen_reflection = texgen;
+            draw->texgen_projected = projected;
         }
         if (uv_transform) {
             recomp_guest_load(draw->reflection_transform, device + 0xce0u, sizeof draw->reflection_transform);
@@ -567,11 +693,29 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
         const uint32_t final[6] = {stage[1][12], stage[1][14], stage[1][15],
             stage[1][16], stage[1][18], stage[1][19]};
         draw->modulate_texture_factor = recomp_d3d_texture_factor_modulate_selected(final, stage[2][12]);
-        if (stage[1][12] != 1u && !draw->modulate_texture_factor && !draw->has_reflection)
-            recomp_stop(2, "d3d8:draw-texture-stages:%u,%u,%u/%u,%u,%u:%u,%u,%u/%u,%u,%u:%u,%u",
+        /* Stage 1 keeps CURRENT color and modulates its alpha by TFACTOR or
+           by its own texture (FUN_0027be10, FUN_0027c400). */
+        const bool stage1_alpha = !draw->has_reflection && stage[1][12] == 2u && stage[1][14] == 1u &&
+            stage[1][16] == 4u && stage[1][19] == 1u && stage[2][12] == 1u &&
+            ((stage[1][18] == 3u && !alpha_tfactor &&
+              (stage[1][11] == 0u || *recomp_memory_u32(device + 0xf8cu) == 0u)) || stage[1][18] == 2u);
+        if (stage1_alpha && stage[1][18] == 3u) alpha_tfactor = true;
+        if (stage1_alpha && stage[1][18] == 2u) stage1_mask(device, layout, stage, draw);
+        draw->modulate_texture_factor_alpha = alpha_tfactor;
+        /* The presenter applies one texture-factor mode per draw. */
+        if ((alpha_tfactor && (draw->modulate_texture_factor || draw->texture_factor_modulate ||
+                draw->texture_factor_modulate2x)) ||
+            (draw->modulate_texture_factor && draw->texture_factor_modulate))
+            recomp_stop(2, "d3d8:texture-factor-twice");
+        if (stage[1][12] != 1u && !draw->modulate_texture_factor && !draw->has_reflection && !stage1_alpha)
+            recomp_stop(2, "d3d8:draw-texture-stages:%u,%u,%u/%u,%u,%u:%u,%u,%u/%u,%u,%u:%u,%u:"
+                "s2=%u,%u/%u,%u:s3=%u:t2=%u:addr=%u,%u,%u,%u:kill=%u,%u:tc=%x,%x,%x,%x",
                 stage[0][12], stage[0][14], stage[0][15], stage[0][16], stage[0][18], stage[0][19],
                 stage[1][12], stage[1][14], stage[1][15], stage[1][16], stage[1][18], stage[1][19],
-                stage[2][12], stage[2][16]);
+                stage[2][12], stage[2][16], stage[2][14], stage[2][15], stage[2][18], stage[2][19],
+                stage[3][12], *recomp_memory_u32(device + 0xf90u) != 0u, stage[0][0], stage[0][1],
+                stage[1][0], stage[1][1], stage[0][11], stage[1][11], stage[0][21], stage[0][28],
+                stage[1][21], stage[1][28]);
     }
 }
 
@@ -579,18 +723,24 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
    CreateVertexShader object, constants from the 192-entry shadow 0x354440
    written by SetVertexShaderConstant1/4 (0x348de0/0x348e40). c58/c59 hold the
    viewport scale and offset as GetViewportOffsetAndScale (0x3462d0) computes
-   them. shortcut: only the observed position/normal/UV declaration (as FVF
-   0x112); admit other declarations when a run reaches them. */
+   them. shortcut: only the observed declarations, as FVFs: position/normal/UV
+   (0x112), the projected shadow's position/normal (0x7af4d0, 0x012) and
+   position/color/UV (0x7ae238, 0x142); admit others when a run reaches them. */
 static void attach_program(uint32_t device, RecompD3dPresenterDrawCommand *draw)
 {
     const uint32_t handle = draw->fvf;
     uint32_t words[0x114u / 4u];
     recomp_guest_load(words, handle - 1u, sizeof words);
+    const bool normal = words[5u + 2u * 4u + 2u] != 2u, color = words[5u + 3u * 4u + 2u] != 2u;
+    const bool texcoord = words[5u + 9u * 4u + 2u] != 2u;
+    const uint32_t fvf = 0x002u | (normal ? 0x010u : 0u) | (color ? 0x040u : 0u) | (texcoord ? 0x100u : 0u);
     for (uint32_t i = 0u; i < 16u; ++i) {
         const uint32_t *slot = words + 5u + i * 4u;
-        const uint32_t type = i == 0u || i == 2u ? 0x32u : i == 9u ? 0x22u : 2u;
-        if (slot[2] != type || (type != 2u &&
-                (slot[0] != 0u || slot[1] != (i == 0u ? 0u : i == 2u ? 12u : 24u)))) {
+        const uint32_t type = i == 0u || (i == 2u && normal) ? 0x32u : i == 3u && color ? 0x40u :
+            i == 9u && texcoord ? 0x22u : 2u;
+        const uint32_t offset = i == 0u ? 0u : i == 9u ? 12u + (normal ? 12u : 0u) + (color ? 4u : 0u) : 12u;
+        if ((fvf != 0x112u && fvf != 0x012u && fvf != 0x142u) || slot[2] != type ||
+            (type != 2u && (slot[0] != 0u || slot[1] != offset))) {
             char bound[16u * 20u] = "";
             size_t used = 0u;
             for (uint32_t r = 0u; r < 16u && used < sizeof bound - 20u; ++r) {
@@ -636,7 +786,7 @@ static void attach_program(uint32_t device, RecompD3dPresenterDrawCommand *draw)
     o[3] = 0.0f;
     for (uint32_t i = 0u; i < 3u; ++i)
         if (!isfinite(s[i]) || !isfinite(o[i])) recomp_stop(2, "d3d8:vertex-program-viewport");
-    draw->fvf = 0x112u;
+    draw->fvf = fvf;
 }
 
 /* The presenter's program path samples stage 0 and optionally masks alpha
@@ -645,21 +795,26 @@ static void program_stages(uint32_t device, RecompD3dPresenterDrawCommand *draw)
 {
     uint32_t stage[3][32];
     recomp_guest_load(stage, STAGES, sizeof stage);
-    const uint32_t select_texture[6] = {2u, 2u, 0u, 2u, 2u, 0u};
     const uint32_t alpha_mask[6] = {2u, 1u, 0u, 4u, 1u, 2u};
     const uint32_t fields[6] = {12u, 14u, 15u, 16u, 18u, 19u};
     uint32_t args[2][6];
     for (uint32_t i = 0u; i < 2u; ++i)
         for (uint32_t k = 0u; k < 6u; ++k) args[i][k] = stage[i][fields[k]];
     const bool mask_combiner = memcmp(args[1], alpha_mask, sizeof args[1]) == 0;
+    /* Stage 0 selects texture and oD0 per channel; alpha may MODULATE by
+       TFACTOR (the projected shadow FUN_0027a760, the effect FUN_002718e0). */
+    bool alpha_tfactor = false;
+    const bool select_texture = stage0_select(stage[0], draw->directional.stage, &alpha_tfactor);
+    draw->directional.stage_mode = true;
+    draw->modulate_texture_factor_alpha = alpha_tfactor;
     /* 5849's combiner compiler (0x352e46) compiles an op that reads a NULL
        texture as a CURRENT pass-through, so an unbound mask leaves alpha as is. */
     draw->program_alpha_mask = mask_combiner && *recomp_memory_u32(device + 0xf8cu) != 0u;
     if (*recomp_memory_u32(device + PIXEL_HANDLE) != 0u || !draw->has_texture ||
-        memcmp(args[0], select_texture, sizeof args[0]) != 0 || stage[2][12] != 1u ||
+        !select_texture || stage[2][12] != 1u ||
         (args[1][0] != 1u && !mask_combiner))
-        recomp_stop(2, "d3d8:vertex-program-stages:%u:%u:%u:%u:%u", args[0][0], args[0][1],
-            args[0][3], args[1][0], stage[2][12]);
+        recomp_stop(2, "d3d8:vertex-program-stages:%u:%u:%u:%u:%u:%u:%u", args[0][0], args[0][1],
+            args[0][3], args[0][4], args[0][5], args[1][0], stage[2][12]);
     if (draw->program_alpha_mask) {
         RecompD3dPresenterDrawCommand mask = {0};
         attach_texture(device, 1u, &mask);
@@ -668,16 +823,19 @@ static void program_stages(uint32_t device, RecompD3dPresenterDrawCommand *draw)
         draw->reflection_bytes = mask.texture_bytes;
         draw->reflection_byte_count = mask.texture_byte_count;
     }
-    /* Admitted: linear min/mag, point mip, no color key, sign, kill or transform. */
+    /* Admitted: linear min/mag, point mip on the mask, point or linear mip on
+       stage 0, no color key, sign, kill or transform. */
     for (uint32_t i = 0u; i < (draw->program_alpha_mask ? 2u : 1u); ++i) {
         const uint32_t *t = stage[i];
         if (t[0] != t[1] || t[0] < 1u || t[0] > 3u || t[3] != 2u || t[4] != 2u ||
-            t[5] != 1u || t[7] != 0u || t[9] != 0u || t[10] != 0u || t[11] != 0u ||
-            t[21] != 0u || (i == 0u && draw->texture.mip_levels != 1u))
+            (i == 1u && t[5] != 1u) || t[7] != 0u || t[9] != 0u || t[10] != 0u || t[11] != 0u ||
+            t[21] != 0u || (i == 0u && draw->texture.mip_levels != 1u && t[5] != 1u && t[5] != 2u))
             recomp_stop(2, "d3d8:vertex-program-sampler:%u:%u:%u:%u:%u:%u", i, t[0], t[3],
                 t[4], t[5], t[21]);
         if (i == 1u) memcpy(&draw->program_mask_lod_bias, &t[6], sizeof draw->program_mask_lod_bias);
     }
+    draw->point_mip_filter = stage[0][5] == 1u;
+    draw->mip_lod_bias = lod_bias(stage[0][6]);
     if (!isfinite(draw->program_mask_lod_bias) || draw->program_mask_lod_bias < -16.0f ||
         draw->program_mask_lod_bias > 15.99f)
         recomp_stop(2, "d3d8:vertex-program-lod-bias");
@@ -850,6 +1008,9 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     recomp_d3d8_target(&draw->target);
     if (program) attach_program(device, draw);
     RecompD3dVertexLayout layout;
+    /* The distortion pass's STR coordinate sets (TEXCOORDSIZE3 for sets 1-2). */
+    const bool distorted = !program && draw->fvf == 0x140404u && distortion_shader(device);
+    if (distorted) draw->fvf = 0x404u;
     /* With no stage-0 texture no texture coordinates are fetched: the menu
        (0xb0600) draws 20-byte XYZRHW|DIFFUSE lines under its quads' FVF 0x144. */
     if (!program && *recomp_memory_u32(device + 0xf88u) == 0u &&
@@ -942,7 +1103,8 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     } else if (program) {
         program_stages(device, draw);
     } else if (*recomp_memory_u32(device + PIXEL_HANDLE) != 0u) {
-        if (!four_tap(device, draw) && !bright_pass(device, draw))
+        if (distorted) expanded = distortion(device, stride, draw);
+        else if (!four_tap(device, draw) && !bright_pass(device, draw))
             recomp_stop(2, "d3d8:draw-pixel-shader-unsupported");
     } else {
         attach_reflection(device, &layout, draw);

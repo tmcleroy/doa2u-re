@@ -9,11 +9,12 @@ std::string mask(uint32_t bits)
 }
 
 std::string source(uint32_t mux, uint32_t reg, uint32_t swizzle,
-                   bool negate, uint32_t attribute, uint32_t constant)
+                   bool negate, uint32_t attribute, uint32_t constant, uint32_t fvf)
 {
     std::string s;
     if (mux == 1 && reg <= 12) s = "r" + std::to_string(reg);
-    else if (mux == 2 && (attribute == 0 || attribute == 2 || attribute == 9))
+    else if (mux == 2 && (attribute == 0 || (attribute == 2 && (fvf & 0x10u)) ||
+                          (attribute == 3 && (fvf & 0x40u)) || (attribute == 9 && (fvf & 0x100u))))
         s = "v" + std::to_string(attribute);
     else if (mux == 3 && constant < 192) s = "vc[" + std::to_string(constant) + "]";
     else return {};
@@ -33,11 +34,14 @@ bool write(std::string &s, const std::string &dest, uint32_t bits, const char *v
 }
 
 bool recomp_d3d_vertex_program_source(
-    const uint32_t (*tokens)[4], uint32_t count, std::string &body)
+    const uint32_t (*tokens)[4], uint32_t count, uint32_t fvf, std::string &body)
 {
     body.clear();
     if (!tokens || !count || count > 136) return false;
-    std::string s = "float4 v0=float4(input.position,1), v2=float4(input.normal,1), v9=float4(input.texcoord,0,1);\n";
+    std::string s = "float4 v0=float4(input.position,1);\n";
+    if (fvf & 0x10u) s += "float4 v2=float4(input.normal,1);\n";
+    if (fvf & 0x40u) s += "float4 v3=input.diffuse;\n";
+    if (fvf & 0x100u) s += "float4 v9=float4(input.texcoord,0,1);\n";
     for (unsigned i=0;i<13;++i) s += "float4 r"+std::to_string(i)+"=0;\n";
     s += "float4 o3=0,o5=0,o9=0,o10=0;\n";
     for (uint32_t i=0;i<count;++i) {
@@ -45,13 +49,13 @@ bool recomp_d3d_vertex_program_source(
         const auto mac=(a>>21)&15u, ilu=(a>>25)&7u;
         const auto attr=(a>>9)&15u, constant=(a>>13)&255u;
         if ((c&2u) || bool(c&1u)!=(i+1==count)) return false;
-        auto x=source((b>>26)&3u,(b>>28)&15u,a&255u,(a&256u)!=0,attr,constant);
-        auto y=source((b>>11)&3u,(b>>13)&15u,(b>>17)&255u,(b&(1u<<25))!=0,attr,constant);
-        auto z=source((c>>28)&3u,((b&3u)<<2)|(c>>30),(b>>2)&255u,(b&1024u)!=0,attr,constant);
+        auto x=source((b>>26)&3u,(b>>28)&15u,a&255u,(a&256u)!=0,attr,constant,fvf);
+        auto y=source((b>>11)&3u,(b>>13)&15u,(b>>17)&255u,(b&(1u<<25))!=0,attr,constant,fvf);
+        auto z=source((c>>28)&3u,((b&3u)<<2)|(c>>30),(b>>2)&255u,(b&1024u)!=0,attr,constant,fvf);
         std::string m="0", l="0";
         if (mac) {
             if (x.empty()) return false;
-            if ((mac==2 || mac==4 || mac==5 || mac==7) && y.empty()) return false;
+            if ((mac==2 || mac==4 || mac==5 || mac==7 || mac==10 || mac==11) && y.empty()) return false;
             if ((mac==3 || mac==4) && z.empty()) return false;
             switch(mac) {
             case 1:m=x;break;
@@ -60,6 +64,8 @@ bool recomp_d3d_vertex_program_source(
             case 4:m=x+"*"+y+"+"+z;break;
             case 5:m="dot("+x+".xyz,"+y+".xyz).xxxx";break;
             case 7:m="dot("+x+","+y+").xxxx";break;
+            case 10:m="max("+x+","+y+")";break;
+            case 11:m="float4("+x+"<"+y+")";break;
             default:return false;
             }
         }

@@ -177,6 +177,21 @@ typedef struct RecompD3dPresenterDrawCommand {
     /* Stage-0 COUNT2 over mesh UV0: UV0 becomes (u, v, 1, 0) times
        reflection_transform (TEXTURE0), so the third row translates. */
     bool texture_transform_uv;
+    /* FVF 0x404 dependent read: n = signed reflection_texture texel at UV0,
+       then the texture is sampled at (dot((uv1, uv2.x), n), dot((uv2.y, uv3), n)). */
+    bool distortion;
+    /* Stage-0 MODULATE(TEXTURE, TFACTOR) color over white vertices. */
+    bool texture_factor_modulate;
+    /* Stage-0 TCI_CAMERASPACEPOSITION with COUNT3|PROJECTED: (s, t, q) =
+       (world-view position, 1) times reflection_transform columns 0-2, with
+       the sample at (s, t) / q per pixel. */
+    bool texgen_projected;
+    /* A later stage's MODULATE(TFACTOR, CURRENT) on alpha alone. */
+    bool modulate_texture_factor_alpha;
+    /* Stage 1 MODULATE(TEXTURE, CURRENT) alpha: reflection_texture at UV1
+       multiplies alpha; with ALPHAKILL a zero texel alpha discards. */
+    bool stage1_alpha_mask;
+    bool stage1_alpha_kill;
     /* Storage aliases the current guest backbuffer, whose pixels are host-owned. */
     bool texture_is_backbuffer;
     /* GetBackBuffer(-1): the frame Present last showed, not the one in progress. */
@@ -198,9 +213,15 @@ typedef struct RecompD3dPresenterDrawCommand {
     bool reflection_normalize;
     bool reflection_mesh_uv;
     bool reflection_premultiplied;
+    /* Stage 2 MODULATE(TEXTURE, CURRENT) without a stage-2 texture: the 5849
+       compiler (0x352e46) passes CURRENT through, so no final diffuse. */
+    bool reflection_skip_diffuse;
     RecompD3dTextureDesc reflection_texture;
     /* Stage-1 D3DTADDRESS U/V for reflection_texture; 0 (unknown) wraps. */
     uint32_t reflection_address_u, reflection_address_v;
+    /* reflection_texture's own stage mip filter and LOD bias. */
+    bool reflection_point_mip_filter;
+    float reflection_mip_lod_bias;
     const void *reflection_bytes;
     uint32_t reflection_byte_count;
     float reflection_world_view[16];

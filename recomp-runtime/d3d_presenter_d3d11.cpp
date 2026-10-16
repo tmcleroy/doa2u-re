@@ -172,6 +172,7 @@ void buildDrawShaderSource(
         "    float2 texcoord : TEXCOORD0;\n"
         "    float2 reflection_coord : TEXCOORD4;\n"
         "    float3 lit_specular : TEXCOORD6;\n"
+        "    float projected_q : TEXCOORD7;\n"
         "%s"
         "};\n"
         "VSOut vs_main(VSIn input) {\n"
@@ -182,9 +183,12 @@ void buildDrawShaderSource(
         "%s"
         "    output.reflection_coord = float2(0, 0);\n"
         "%s"
+        "%s"
         "    return output;\n"
         "}\n"
         "float4 ps_main(VSOut input) : SV_TARGET {\n"
+        /* Projective texgen divides after interpolation, as NV2A does. */
+        "    if (filter_texel.z > 2.5f) input.texcoord /= input.projected_q;\n"
         "    float4 shaded = input.color;\n"
         "    if (reflection_flags.x > 0.5f) {\n"
         "        float4 diffuse = %s;\n"
@@ -192,8 +196,10 @@ void buildDrawShaderSource(
         "        float4 base = guest_texture.Sample(guest_sampler, input.texcoord);\n"
         "        base.a *= diffuse.a;\n"
         "        float4 env = alpha_mask.Sample(mask_sampler, input.reflection_coord);\n"
-        "        shaded = (reflection_flags.w > 0.5f\n"
-        "            ? saturate(env + base * (1.0f - env.a)) : lerp(base, env, env.a)) * diffuse;\n"
+        /* w: bit 0 premultiplied blend, bit 1 stage-2 pass-through (no diffuse). */
+        "        shaded = (fmod(reflection_flags.w, 2.0f) > 0.5f\n"
+        "            ? saturate(env + base * (1.0f - env.a)) : lerp(base, env, env.a)) *\n"
+        "            (reflection_flags.w > 1.5f ? 1.0f : diffuse);\n"
         "    } else\n"
         "%s"
         "    if (blend_flags.y == 1.0f) {\n"
@@ -213,12 +219,19 @@ void buildDrawShaderSource(
         "        shaded.a = blend_flags.w > 2.5f ? input.color.a\n"
             "            : blend_flags.w > 1.5f ? sampled.a\n"
             "            : blend_flags.w > 0.5f ? blend_flags.z : shaded.a * blend_flags.z;\n"
-        "        if (blend_flags.y > 2.5f) shaded.rgb = saturate(2.0f * shaded.rgb * texture_factor.rgb);\n"
+        "        if (blend_flags.y > 4.5f) shaded.rgb *= texture_factor.rgb;\n"
+        "        else if (blend_flags.y > 3.5f) shaded.a *= texture_factor.a;\n"
+        "        else if (blend_flags.y > 2.5f) shaded.rgb = saturate(2.0f * shaded.rgb * texture_factor.rgb);\n"
         "        else if (blend_flags.y > 1.5f) shaded *= texture_factor;\n"
         "    }\n"
         /* Fixed function adds specular after the texture stages, textured or not. */
         "    if (directional_flags.w > 0.5f) shaded.rgb += input.lit_specular;\n"
-        "    if (reflection_flags.z > 0.5f) shaded.a *= alpha_mask.SampleBias(mask_sampler, input.reflection_coord, reflection_flags.w).a;\n"
+        /* A stage-1 mask; z > 1.5 adds its ALPHAKILL. */
+        "    if (reflection_flags.z > 0.5f) {\n"
+        "        float mask = alpha_mask.SampleBias(mask_sampler, input.reflection_coord, reflection_flags.w).a;\n"
+        "        if (reflection_flags.z > 1.5f && mask == 0.0f) discard;\n"
+        "        shaded.a *= mask;\n"
+        "    }\n"
         /* NV2A compares rounded 8-bit alpha. Function values follow
            RecompD3dCompareFunc, from NEVER (0) to ALWAYS (7). */
         "    if (draw_flags.y > 0.5f) {\n"
@@ -261,11 +274,17 @@ void buildDrawShaderSource(
               "    output.texcoord2 = input.texcoord2;\n"
               "    output.texcoord3 = input.texcoord3;\n"
             : layout.texcoord_count == 2u ? "    output.texcoord1 = input.texcoord1;\n" : "",
+        layout.texcoord_count == 2u ? "    if (reflection_flags.z > 0.5f) output.reflection_coord = input.texcoord1;\n" : "",
         has_texcoord && !layout.pretransformed
             ? (has_normal
                 /* Mesh-UV reflections (x == 2) may pair with stage-0 texgen. */
                 ? "    if (reflection_flags.x > 1.5f) output.reflection_coord = input.texcoord;\n"
-                  "    if (filter_texel.z > 1.5f) output.texcoord = mul(float4(input.texcoord, 1, 0), reflection_transform).xy;\n"
+                  "    if (abs(filter_texel.z - 2.0f) < 0.5f) output.texcoord = mul(float4(input.texcoord, 1, 0), reflection_transform).xy;\n"
+                  "    if (filter_texel.z > 2.5f) {\n"
+                  "        float3 g = mul(mul(float4(input.position, 1), reflection_world_view), reflection_transform).xyz;\n"
+                  "        output.texcoord = g.xy;\n"
+                  "        output.projected_q = g.z;\n"
+                  "    }\n"
                   "    if (abs(reflection_flags.x - 1.0f) < 0.5f || abs(filter_texel.z - 1.0f) < 0.5f) {\n"
                   "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
                   "        float3 n = mul(float4(input.normal, 0), reflection_normal).xyz;\n"
@@ -278,7 +297,12 @@ void buildDrawShaderSource(
                 /* shortcut: without a normal stream NV2A reads a zero inline normal, so
                    r is the eye direction; check the inline register if env maps look wrong. */
                 : "    if (reflection_flags.x > 1.5f) output.reflection_coord = input.texcoord;\n"
-                  "    if (filter_texel.z > 1.5f) output.texcoord = mul(float4(input.texcoord, 1, 0), reflection_transform).xy;\n"
+                  "    if (abs(filter_texel.z - 2.0f) < 0.5f) output.texcoord = mul(float4(input.texcoord, 1, 0), reflection_transform).xy;\n"
+                  "    if (filter_texel.z > 2.5f) {\n"
+                  "        float3 g = mul(mul(float4(input.position, 1), reflection_world_view), reflection_transform).xyz;\n"
+                  "        output.texcoord = g.xy;\n"
+                  "        output.projected_q = g.z;\n"
+                  "    }\n"
                   "    if (abs(reflection_flags.x - 1.0f) < 0.5f || abs(filter_texel.z - 1.0f) < 0.5f) {\n"
                   "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
                   "        float3 r = normalize(eye);\n"
@@ -289,7 +313,13 @@ void buildDrawShaderSource(
             : "",
         has_diffuse ? "input.color" : "reflection_diffuse",
         four_coords
-            ? "    if (texture_flags.z > 0.5f) {\n"
+            /* MINUS1_TO_1_D3D maps a texel byte b to (b - 128) / 127. */
+            ? "    if (filter_texel.w > 0.5f) {\n"
+              "        float3 n = (round(alpha_mask.Sample(mask_sampler, input.texcoord).rgb * 255.0f) - 128.0f) / 127.0f;\n"
+              "        float2 st = float2(dot(float3(input.texcoord1, input.texcoord2.x), n),\n"
+              "            dot(float3(input.texcoord2.y, input.texcoord3), n));\n"
+              "        shaded = guest_texture.Sample(guest_sampler, st * texture_flags.xy);\n"
+              "    } else if (texture_flags.z > 0.5f) {\n"
               "        float4 t0 = guest_texture.Sample(guest_sampler, input.texcoord * texture_flags.xy);\n"
               "        float4 t1 = guest_texture.Sample(guest_sampler, input.texcoord1 * texture_flags.xy);\n"
               "        float4 t2 = guest_texture.Sample(guest_sampler, input.texcoord2 * texture_flags.xy);\n"
@@ -1437,9 +1467,13 @@ bool drawShaderSource(
         compiled_source.insert(uv, lighting);
     }
     if (pipeline.program_count) {
-        if (fvf != 0x112u) return false;
+        if (fvf != 0x112u && fvf != 0x012u && fvf != 0x142u) return false;
         std::string body;
-        if (!recomp_d3d_vertex_program_source(pipeline.program, pipeline.program_count, body)) return false;
+        if (!recomp_d3d_vertex_program_source(pipeline.program, pipeline.program_count, fvf, body)) {
+            std::fprintf(stderr, "recomp d3d presenter: vertex program untranslated fvf=%03x count=%u\n",
+                fvf, pipeline.program_count);
+            return false;
+        }
         const auto begin = compiled_source.find("VSOut vs_main(");
         const auto end = compiled_source.find("float4 ps_main(", begin);
         if (begin == std::string::npos || end == std::string::npos) return false;
@@ -2456,7 +2490,10 @@ RecompD3dPresenterError submitDraw(
         (screen_offset && draw.program_count) ||
         !std::isfinite(draw.mip_lod_bias) ||
         draw.mip_lod_bias < D3D11_MIP_LOD_BIAS_MIN ||
-        draw.mip_lod_bias > D3D11_MIP_LOD_BIAS_MAX) {
+        draw.mip_lod_bias > D3D11_MIP_LOD_BIAS_MAX ||
+        !std::isfinite(draw.reflection_mip_lod_bias) ||
+        draw.reflection_mip_lod_bias < D3D11_MIP_LOD_BIAS_MIN ||
+        draw.reflection_mip_lod_bias > D3D11_MIP_LOD_BIAS_MAX) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
     const bool sub_viewport = draw.has_transform && !draw.program_count && draw.viewport[2] > 0.0f;
@@ -2565,7 +2602,8 @@ RecompD3dPresenterError submitDraw(
         draw.has_texture ? lookupTexture(presenter, draw) : nullptr;
     /* A second cache lookup can evict the first entry. Keep its view alive
        until the context takes its own reference. */
-    const bool has_second_texture = draw.has_alpha_mask || draw.has_reflection || draw.program_alpha_mask;
+    const bool has_second_texture = draw.has_alpha_mask || draw.has_reflection ||
+        draw.program_alpha_mask || draw.distortion || draw.stage1_alpha_mask;
     if (has_second_texture && texture_view != nullptr) texture_view->AddRef();
     const auto release_view = [](ID3D11ShaderResourceView *view) { if (view) view->Release(); };
     std::unique_ptr<ID3D11ShaderResourceView, decltype(release_view)> retained(
@@ -2592,6 +2630,26 @@ RecompD3dPresenterError submitDraw(
         reflection.texture_bytes = draw.reflection_bytes;
         reflection.texture_byte_count = draw.reflection_byte_count;
         mask_view = lookupTexture(presenter, reflection);
+        if (mask_view == nullptr || texture_view == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    }
+    if (draw.distortion) {
+        if (draw.has_alpha_mask || draw.has_reflection || draw.program_alpha_mask ||
+            draw.four_tap_filter || layout.texcoord_count != 4u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        RecompD3dPresenterDrawCommand normal{};
+        normal.texture = draw.reflection_texture;
+        normal.texture_bytes = draw.reflection_bytes;
+        normal.texture_byte_count = draw.reflection_byte_count;
+        mask_view = lookupTexture(presenter, normal);
+        if (mask_view == nullptr || texture_view == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    }
+    if (draw.stage1_alpha_mask) {
+        if (draw.has_alpha_mask || draw.has_reflection || draw.program_count || draw.distortion ||
+            draw.four_tap_filter || layout.texcoord_count != 2u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        RecompD3dPresenterDrawCommand mask{};
+        mask.texture = draw.reflection_texture;
+        mask.texture_bytes = draw.reflection_bytes;
+        mask.texture_byte_count = draw.reflection_byte_count;
+        mask_view = lookupTexture(presenter, mask);
         if (mask_view == nullptr || texture_view == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
     if (draw.four_tap_filter && (texture_view == nullptr ||
@@ -2685,13 +2743,19 @@ RecompD3dPresenterError submitDraw(
         std::memcpy(constants+300, light.specular, sizeof light.specular);
         std::memcpy(constants+332, light.view, sizeof light.view);
         std::memcpy(constants+336, light.stage, sizeof light.stage);
+    } else if (draw.directional.stage_mode) {
+        // Unlit stage-0 selection: input.color is the vertex diffuse or a program's oD0.
+        float *constants = draw_constants + 140 + 192 * 4;
+        constants[139] = 1.0f;
+        std::memcpy(constants + 336, draw.directional.stage, sizeof draw.directional.stage);
     }
     draw_constants[64] = texture_view != nullptr ? 1.0f : 0.0f;
     draw_constants[65] = draw.depth.alpha_test_enable ? 1.0f : 0.0f;
     draw_constants[66] = static_cast<float>(draw.depth.alpha_func);
     draw_constants[67] = static_cast<float>(draw.depth.alpha_ref);
     draw_constants[68] = draw.blend_weight_count != 0u ? 1.0f : 0.0f;
-    draw_constants[69] = draw.use_texture_factor ? 1.0f
+    draw_constants[69] = draw.use_texture_factor ? 1.0f : draw.texture_factor_modulate ? 5.0f
+        : draw.modulate_texture_factor_alpha ? 4.0f
         : draw.modulate_texture_factor ? 2.0f : draw.texture_factor_modulate2x ? 3.0f : 0.0f;
     draw_constants[70] = draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_NONE
         ? 1.0f : draw.material_alpha;
@@ -2732,14 +2796,16 @@ RecompD3dPresenterError submitDraw(
             unpack(draw.bright_pass_threshold, filter + 8);
         }
         filter[3] = draw.alpha_kill ? 1.0f : 0.0f;
-        filter[6] = draw.texgen_reflection ? 1.0f : draw.texture_transform_uv ? 2.0f : 0.0f;
+        filter[6] = draw.texgen_reflection ? 1.0f : draw.texture_transform_uv ? 2.0f
+            : draw.texgen_projected ? 3.0f : 0.0f;
+        filter[7] = draw.distortion ? 1.0f : 0.0f;
         if (draw.four_tap_filter) {
             filter[1] = draw.four_tap_scale;
             filter[2] = draw.four_tap_sum_scale;
             for (unsigned i = 0u; i < 4u; ++i) unpack(draw.four_tap_factors[i], filter + 8 + i * 4);
         }
     }
-    if (draw.has_reflection || draw.texgen_reflection || draw.texture_transform_uv) {
+    if (draw.has_reflection || draw.texgen_reflection || draw.texture_transform_uv || draw.texgen_projected) {
         std::memcpy(draw_constants + 84, draw.reflection_world_view, 64u);
         std::memcpy(draw_constants + 100, draw.reflection_normal, 64u);
         std::memcpy(draw_constants + 116, draw.reflection_transform, 64u);
@@ -2748,8 +2814,10 @@ RecompD3dPresenterError submitDraw(
     if (draw.has_reflection) {
         std::memcpy(draw_constants + 132, draw.reflection_diffuse, 16u);
         draw_constants[136] = draw.reflection_mesh_uv ? 2.0f : 1.0f;
-        draw_constants[139] = draw.reflection_premultiplied ? 1.0f : 0.0f;
+        draw_constants[139] = (draw.reflection_premultiplied ? 1.0f : 0.0f) +
+            (draw.reflection_skip_diffuse ? 2.0f : 0.0f);
     }
+    if (draw.stage1_alpha_mask) draw_constants[138] = draw.stage1_alpha_kill ? 2.0f : 1.0f;
 
     UINT index_offset = 0u;
     if (!uploadRing(presenter, &presenter->draw_index_buffer,
@@ -2788,8 +2856,9 @@ RecompD3dPresenterError submitDraw(
     // Bind before the next lookup, which may evict this cache entry.
     presenter->context->PSSetSamplers(0u, 1u, &sampler);
     sampler = draw.program_alpha_mask ? presenter->program_mask_sampler
-            : draw.has_reflection ? lookupDrawSampler(presenter, draw.reflection_address_u,
-                draw.reflection_address_v, draw.point_mip_filter, draw.mip_lod_bias)
+            : draw.has_reflection || draw.distortion || draw.stage1_alpha_mask
+            ? lookupDrawSampler(presenter, draw.reflection_address_u,
+                draw.reflection_address_v, draw.reflection_point_mip_filter, draw.reflection_mip_lod_bias)
             : presenter->filter_sampler;
     if (sampler == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     presenter->context->PSSetSamplers(1u, 1u, &sampler);

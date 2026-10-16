@@ -482,9 +482,16 @@ bool recomp_d3d_reflection_material(const uint32_t stages[4][32])
         {blend, 2u, 1u, blend, 2u, 1u},
         {4u, 0u, 1u, 4u, 0u, 1u},
     };
+    /* Stage 2 modulates by diffuse or, in material modes 9 and 11 (table
+       0x7affc8), by its own texture. */
+    const uint32_t texture_final[6] = {4u, 2u, 1u, 4u, 2u, 1u};
     static const uint32_t offsets[] = {12u, 14u, 15u, 16u, 18u, 19u};
     for (uint32_t stage = 0u; stage < 3u; ++stage) {
+        bool texture_match = stage == 2u;
         for (uint32_t i = 0u; i < 6u; ++i) {
+            if (stage == 2u && stages[stage][offsets[i]] != texture_final[i]) texture_match = false;
+        }
+        for (uint32_t i = 0u; i < 6u && !texture_match; ++i) {
             if (stages[stage][offsets[i]] != arguments[stage][i]) return false;
         }
         if (stages[stage][20] != 0u) return false;

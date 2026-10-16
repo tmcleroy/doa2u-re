@@ -128,7 +128,35 @@ live C0/C1 factors, and the post-process bright pass. The bright pass matches
 its exact combiner words and Gaussian-cubic stage-0 filtering, then computes
 saturate(2 * (gauss3x3(t0) - c0) - 1) with the 1-2-1 kernel at level 0. The
 bloom composite binds stage-0 MODULATE2X of texture and texture factor over
-white vertices; quad strips draw as triangle strips. The fixed-function draw snapshot
+white vertices; quad strips draw as triangle strips. The fight's trail strips
+(setup 0x23a42d, FVF 0x102, draw 0x23ca7e) use 1x MODULATE(TEXTURE, TFACTOR)
+with a grey factor, stage-0 alpha DISABLE and stages 1-3 off, so they draw
+texture times factor with the white diffuse alpha.
+The stage distortion pass (FUN_0027b070, definition 0x7af5d8) draws FVF
+0x140404 quads, 56 bytes each, with t0 PROJECT2D, t1 DOTPRODUCT and t2 DOT_ST
+using the MINUS1_TO_1_D3D dot mapping. One combiner sets r0 = t2, and the final
+combiner words are zero, so 0x34f5f0 outputs r0 and r0.a while FogEnable
+(0x3553d0) and specular (0x3553fc) are off. The adapter matches those words,
+keeps the 48 bytes the shader reads and swaps textures: the stage-2 scene copy
+becomes the primary texture and the stage-0 normal map the second. The
+presenter decodes n = (b - 128) / 127 from the normal texel and samples the
+scene at (dot(tc1.str, n), dot(tc2.str, n)). Fog, specular or different words
+keep the vertex-layout stop.
+The same effect's overlays bind with fixed-function stages. FUN_0027be10 draws
+scene objects (FVF 0x142, unlit). Stage 0 has color SELECTARG1(TEXTURE) and alpha
+MODULATE(TEXTURE, CURRENT), where stage-0 CURRENT is diffuse. Its texcoords come
+from TCI_CAMERASPACEPOSITION with COUNT3|PROJECTED. For that case the TEXTURE0
+upload (0x34f7d0, case 0x331) emits S, T and Q as matrix columns 0, 1 and 2.
+The presenter interpolates (s, t) and q and divides per pixel. Stage 1 keeps
+the color and applies alpha MODULATE(TFACTOR, CURRENT). FUN_0027c400 then draws
+a pretransformed quad (FVF 0x244). Its stage-0 alpha takes TFACTOR times diffuse.
+Stage 1 applies alpha MODULATE(TEXTURE, CURRENT) from a mask sampled at UV1,
+with ALPHAKILL, which discards zero mask alpha. An unbound mask passes
+through, as 0x352e46 compiles it. Unlit stage-0 selection reuses the lit
+path's per-channel choice of texture and diffuse. A bound stage-1 texture
+under the TFACTOR variant, a mask on another coordinate set or a linear or
+paletted mask still stop.
+The fixed-function draw snapshot
 binds up to eight directional/point light slots, front material and ambient,
 normalization, blended world/normal transforms and infinite-view specular.
 Missing vertex colors resolve material sources as the SDK does. On stage 0 a
@@ -142,15 +170,26 @@ Native pixel
 tests cover diffuse/ambient, point range/attenuation, specular, normal transforms
 and alpha. The reflection material binds the sister presenter's two-texture
 straight or premultiplied texture-alpha blend and final diffuse modulation,
-with generated reflection coordinates or mesh UV0. Both stages share mip
-filter and LOD bias; each keeps its own WRAP or CLAMP addressing, so the
-fight's chrome (Zack, Stage 01) clamps its environment map while the base
-texture wraps. BORDER and MIRROR addressing stay guarded. Other fight chrome
+with generated reflection coordinates or mesh UV0. Each stage keeps its own
+mip filter, LOD bias and WRAP or CLAMP addressing. The fight's chrome (Zack,
+Stage 01) clamps its environment map while the base texture wraps, and
+FUN_002807f0 and FUN_00280f80 write a stage-0 LOD bias without touching stage
+1's. MAXMIPLEVEL, BORDER and MIRROR addressing stay guarded.
+The material binder (FUN_00286d30) takes each stage's ops from table
+0x7b0078, indexed through 0x7affc8. Stage 2 MODULATEs by diffuse in mode 5 and
+by its own texture in modes 9 and 11. With no stage-2 texture bound, 0x352e46
+compiles the texture variant to a CURRENT pass-through, so the blend skips the
+final diffuse. A bound stage-2 texture would need a third sampler and still
+stops with `d3d8:reflection-stage2-texture`.
+Other fight chrome
 (draw 0x28708b, FVF 0x112) swaps the coordinate sources: stage 0 samples the
 environment through camera-space reflection texgen (TEXTURE0 matrix) and
 stage 1 blends the mesh-UV0 base by its own alpha. The combiner is the same,
 so the presenter runs stage-0 texgen alongside the mesh-UV blend. Texgen on
-both stages would need two texture matrices and still stops.
+both stages would need two texture matrices and still stops. Generated
+coordinates on a draw without a normal stream (fight FVF 0x142) take the zero
+inline normal: no SDK path writes v2 inline data (0x34aac0 sets only v0 and v9
+through SetVertexData2f), so the reflection vector is the eye direction.
 Unlit vertex diffuse and lit material diffuse retain their respective alpha
 sources. Blended reflection coordinates, vertex color lighting sources,
 local-view specular, two-sided/spot lighting, other
@@ -172,6 +211,23 @@ computes. They admit the position/normal/UV declaration and the sister
 presenter's stage-0 texture select with an optional stage-1 alpha mask. As the
 5849 combiner compiler does, an op that reads an unbound texture passes CURRENT
 through. Other declarations, combiners and pixel shaders stop explicitly.
+The projected character shadow uses program 0x7af4d0 (created by FUN_00279b30)
+with a position/normal declaration and no texcoord stream, drawn as FVF 0x012.
+FUN_0027a430 renders the shadow into a linear 512x256 A8R8G8B8 target.
+FUN_0027a760 then projects that target onto the stage. The program writes
+oT0 = (s, t, r, max(q, 0)) through MAC MAX and SLT, and the presenter
+divides s and t by q per pixel in texel units. Stage 0 has color
+SELECTARG1(TEXTURE) and alpha MODULATE(TEXTURE, TFACTOR), with the factor's
+alpha. FUN_0027aa70 binds the same program but then resets the device
+through FUN_00289680, which binds FVF 0x112, so it never draws with it.
+Program 0x7ae238 (created by FUN_0026f850 and drawn by FUN_002718e0) declares
+position, D3DCOLOR v3 and UV, drawn as FVF 0x142. It writes oPos from
+c96-c99, oD0 = c112 and oT0 = v9. Program draws now select stage 0 per
+channel, as fixed function does. This draw uses MODULATE(TEXTURE, oD0) for color,
+MODULATE(TEXTURE, TFACTOR) for alpha, and its mipped texture's own mip filter
+and LOD bias. The other program on that declaration (0x7add80, FUN_0026bd20)
+needs LIT, SGE, oD1, oFog and oT3. The presenter logs it as untranslated, and
+the runner stops.
 BGRA8 offscreen color targets and D24S8 custom depth targets bind through the
 shared presenter; clears and draws
 snapshot their storage descriptors. Binding counts retain parent textures,
@@ -261,7 +317,8 @@ Draws do not consume those states yet. SetTextureState_BorderColor
 (state 29) there; BORDER addressing itself still stops in the draw sampler
 checks. A stage-1 combiner the draw path cannot
 express stops with `d3d8:draw-texture-stages` and reports the color/alpha ops
-and arguments of stages 0-1 and the stage-2 ops.
+and arguments of stages 0-2, the stage-3 op, the stage-2 binding, and the
+stage-0/1 addressing, kill and coordinate sources.
 
 The first Story fight (Stage 01) plays through a 180-second probe. Its stage
 fades a light glare by occlusion. Game code `0x276d40` brackets a

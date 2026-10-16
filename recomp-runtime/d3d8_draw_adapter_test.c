@@ -467,6 +467,18 @@ static int lighting_tests(void)
         !submitted.data.draw.reflection_premultiplied);
     CHECK(submitted.data.draw.reflection_bytes == ram + texture.data &&
         submitted.data.draw.reflection_byte_count == 64u);
+    CHECK(!submitted.data.draw.reflection_skip_diffuse);
+    /* Material modes 9 and 11 end with MODULATE(TEXTURE, CURRENT); without a
+       stage-2 texture 0x352e46 compiles it to a CURRENT pass-through. */
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected stage-2 stop: %s\n", stop_reason); return 1; }
+    *recomp_memory_u32(STAGES + 256u + 14u * 4u) = *recomp_memory_u32(STAGES + 256u + 18u * 4u) = 2u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    CHECK(submitted.data.draw.has_reflection && submitted.data.draw.reflection_skip_diffuse);
+    *recomp_memory_u32(DEVICE + 0xf90u) = 0x7000u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:reflection-stage2-texture") == 0);
+    *recomp_memory_u32(DEVICE + 0xf90u) = 0u;
+    *recomp_memory_u32(STAGES + 256u + 14u * 4u) = *recomp_memory_u32(STAGES + 256u + 18u * 4u) = 0u;
     CHECK(submitted.data.draw.reflection_world_view[12] == 5.0f &&
         submitted.data.draw.reflection_normal[0] == 0.5f &&
         submitted.data.draw.reflection_transform[15] == 1.0f &&
@@ -489,8 +501,16 @@ static int lighting_tests(void)
     CHECK(strncmp(stop_reason, "d3d8:draw-texture-stages:", 25) == 0);
     *recomp_memory_u32(STAGES + 128u + 48u) = *recomp_memory_u32(STAGES + 128u + 64u) = 14u;
     *recomp_memory_u32(STAGES + 128u + 6u * 4u) = 0x3f800000u;
+    *recomp_memory_u32(STAGES + 128u + 5u * 4u) = 1u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    /* Stage 1 keeps its own mip filter and bias; stage 0 keeps its own. */
+    CHECK(submitted.data.draw.has_reflection && submitted.data.draw.reflection_mip_lod_bias == 1.0f &&
+        submitted.data.draw.reflection_point_mip_filter && submitted.data.draw.mip_lod_bias == 0.0f);
+    *recomp_memory_u32(STAGES + 128u + 7u * 4u) = 1u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
-    CHECK(strcmp(stop_reason, "d3d8:reflection-sampler") == 0);
+    CHECK(strcmp(stop_reason, "d3d8:reflection-sampler:maxmip=0,1") == 0);
+    *recomp_memory_u32(STAGES + 128u + 7u * 4u) = 0u;
+    *recomp_memory_u32(STAGES + 128u + 5u * 4u) = *recomp_memory_u32(STAGES + 5u * 4u);
     *recomp_memory_u32(STAGES + 128u + 6u * 4u) = 0u;
     *recomp_memory_u32(STAGES + 128u + 21u * 4u) = 0u;
     *recomp_memory_u32(STAGES + 128u + 28u * 4u) = 0u;
@@ -498,6 +518,13 @@ static int lighting_tests(void)
     *recomp_memory_u32(0x3553f8u) = 0u;
     invoke(0x348240u, 5u, 3u, VERTICES, 24u);
     CHECK(submitted.data.draw.has_reflection && submitted.data.draw.reflection_mesh_uv && !lit->enabled);
+    /* Generated stage-1 coordinates without a normal stream (fight FVF 0x142). */
+    *recomp_memory_u32(STAGES + 128u + 21u * 4u) = 2u;
+    *recomp_memory_u32(STAGES + 128u + 28u * 4u) = 0x30000u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 24u);
+    CHECK(submitted.data.draw.has_reflection && !submitted.data.draw.reflection_mesh_uv);
+    *recomp_memory_u32(STAGES + 128u + 21u * 4u) = 0u;
+    *recomp_memory_u32(STAGES + 128u + 28u * 4u) = 0u;
     *recomp_memory_u32(DEVICE + 0x798u) = 0x112u;
     *recomp_memory_u32(0x3553f8u) = 1u;
     /* Fight chrome: stage 0 generates the environment coordinates (TEXTURE0
@@ -680,9 +707,17 @@ static int bright_tests(void)
     CHECK(submits == 1u && submitted.data.draw.texture_factor_modulate2x &&
         submitted.data.draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE &&
         submitted.data.draw.material_alpha == 1.0f);
+    /* Trail strips (setup 0x23a42d): 1x MODULATE(TEXTURE, TFACTOR), alpha DISABLE. */
+    *recomp_memory_u32(STAGES + 48u) = 4u;
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x102u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 20u);
+    CHECK(submits == 2u && submitted.data.draw.texture_factor_modulate &&
+        !submitted.data.draw.texture_factor_modulate2x &&
+        submitted.data.draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE);
+    *recomp_memory_u32(STAGES + 48u) = 5u;
     *recomp_memory_u32(DEVICE + 0x798u) = 0x144u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 28u); return 1; }
-    CHECK(submits == 1u && strncmp(stop_reason, "d3d8:draw-texture-combine:", 26) == 0);
+    CHECK(submits == 2u && strncmp(stop_reason, "d3d8:draw-texture-combine:", 26) == 0);
     return 0;
 }
 
@@ -744,13 +779,143 @@ static int program_tests(void)
     invoke(0x348240u, 5u, 3u, VERTICES, 32u);
     CHECK(submits == 5u && draw->program_alpha_mask && draw->reflection_bytes == ram + 0x8000u);
     CHECK(draw->program_mask_lod_bias == -2.0f);
-    *recomp_memory_u32(STAGES + 48u) = 4u;
+    *recomp_memory_u32(STAGES + 48u) = 5u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
     CHECK(submits == 5u && strncmp(stop_reason, "d3d8:vertex-program-stages", 26) == 0);
     *recomp_memory_u32(STAGES + 48u) = 2u;
+    /* The projected shadow (0x7af4d0, FUN_0027a760): position and normal only,
+       stage-0 alpha MODULATE(TEXTURE, TFACTOR). */
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected shadow stop: %s\n", stop_reason); return 1; }
+    *recomp_memory_u32(PROGRAM + 0xacu) = 2u;
+    *recomp_memory_u32(STAGES + 64u) = 4u;
+    *recomp_memory_u32(STAGES + 76u) = 3u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 24u);
+    CHECK(submits == 6u && draw->fvf == 0x012u && draw->modulate_texture_factor_alpha);
+    *recomp_memory_u32(STAGES + 76u) = 4u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 24u); return 1; }
+    CHECK(submits == 6u && strncmp(stop_reason, "d3d8:vertex-program-stages", 26) == 0);
+    /* FUN_002718e0's program (0x7ae238): position, color and UV; stage 0
+       MODULATE(TEXTURE, oD0) color, MODULATE(TEXTURE, TFACTOR) alpha, mipped. */
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected color-program stop: %s\n", stop_reason); return 1; }
+    *recomp_memory_u32(PROGRAM + 0x3cu) = 2u;
+    *recomp_memory_u32(PROGRAM + 0x4cu) = 0x40u;
+    *recomp_memory_u32(PROGRAM + 0x48u) = 12u;
+    *recomp_memory_u32(PROGRAM + 0xacu) = 0x22u;
+    *recomp_memory_u32(PROGRAM + 0xa8u) = 16u;
+    *recomp_memory_u32(STAGES + 48u) = 4u;
+    *recomp_memory_u32(STAGES + 76u) = 3u;
+    *recomp_memory_u32(STAGES + 20u) = 2u;
+    texture.mip_levels = 2u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 24u);
+    CHECK(submits == 7u && draw->fvf == 0x142u && draw->modulate_texture_factor_alpha &&
+        draw->directional.stage_mode && !draw->point_mip_filter);
+    CHECK(draw->directional.stage[0] == 1.0f && draw->directional.stage[1] == 1.0f &&
+        draw->directional.stage[2] == 1.0f && draw->directional.stage[3] == 0.0f);
+    texture.mip_levels = 1u;
+    *recomp_memory_u32(STAGES + 20u) = 1u;
+    *recomp_memory_u32(STAGES + 48u) = 2u;
+    *recomp_memory_u32(STAGES + 76u) = 0u;
+    *recomp_memory_u32(PROGRAM + 0x3cu) = 0x32u;
+    *recomp_memory_u32(PROGRAM + 0x4cu) = 2u;
+    *recomp_memory_u32(PROGRAM + 0x48u) = 0u;
+    *recomp_memory_u32(PROGRAM + 0xa8u) = 24u;
+    *recomp_memory_u32(PROGRAM + 0xacu) = 0x22u;
+    *recomp_memory_u32(STAGES + 64u) = 2u;
     *recomp_memory_u32(PROGRAM + 0x38u) = 16u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
     CHECK(strncmp(stop_reason, "d3d8:vertex-program-declaration:00009001:2:", 43) == 0);
+    return 0;
+}
+
+static int distortion_tests(void)
+{
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected stop: %s\n", stop_reason); return 1; }
+    initialize();
+    /* Definition 0x7af5d8: PROJECT2D/DOTPRODUCT/DOT_ST, r0 = t2, zero final words. */
+    static const uint32_t shader[][2] = {
+        {0x00u, 0xda301010u}, {0x68u, 0xc0u}, {0x88u, 0xca200000u}, {0xb4u, 0xc0u},
+        {0xd4u, 0x00011101u}, {0xd8u, 0x2621u}, {0xdcu, 0x11u},
+    };
+    for (uint32_t i = 0u; i < sizeof shader / sizeof shader[0]; ++i)
+        *recomp_memory_u32(INPUT + shader[i][0]) = shader[i][1];
+    invoke(0x349490u, INPUT, OUTPUT, 0u, 0u);
+    invoke(0x349520u, *recomp_memory_u32(OUTPUT), 0u, 0u, 0u);
+    *recomp_memory_u32(DEVICE + 0xf88u) = *recomp_memory_u32(DEVICE + 0xf90u) = 0x7000u;
+    *recomp_memory_u32(STAGES + 256u) = *recomp_memory_u32(STAGES + 260u) = 3u;
+    float source[5][14];
+    for (uint32_t i = 0u; i < 5u * 14u; ++i) source[i / 14u][i % 14u] = (float)i;
+    recomp_guest_store(VERTICES, source, sizeof source);
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x140404u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 56u);
+    const RecompD3dPresenterDrawCommand *draw = &submitted.data.draw;
+    CHECK(submits == 1u && draw->distortion && draw->fvf == 0x404u && draw->vertex_stride == 48u);
+    CHECK(draw->address_u == 3u && draw->reflection_address_u == 1u && draw->has_texture);
+    for (uint32_t v = 0u; v < 3u; ++v)
+        for (uint32_t i = 0u; i < 12u; ++i) CHECK(captured_vertices[v * 12u + i] == source[v][i]);
+    /* Fog changes the SDK's final combiner. */
+    *recomp_memory_u32(0x3553d0u) = 1u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 56u); return 1; }
+    CHECK(submits == 1u && strncmp(stop_reason, "d3d8:draw-vertex-layout", 23u) == 0);
+    *recomp_memory_u32(0x3553d0u) = 0u;
+    *recomp_memory_u32(*recomp_memory_u32(*recomp_memory_u32(OUTPUT) + 8u) + 0xdcu) = 0x22u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 56u); return 1; }
+    CHECK(submits == 1u && strncmp(stop_reason, "d3d8:draw-vertex-layout", 23u) == 0);
+    return 0;
+}
+
+static void set_stage(uint32_t stage, uint32_t field, uint32_t value)
+{
+    *recomp_memory_u32(STAGES + stage * 128u + field * 4u) = value;
+}
+
+/* The stage effect's overlay passes, as FUN_0027be10 and FUN_0027c400 set them. */
+static int effect_tests(void)
+{
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected stop: %s\n", stop_reason); return 1; }
+    initialize();
+    *recomp_memory_u32(0x3553f8u) = 0u;
+    *recomp_memory_u32(DEVICE + 0xf88u) = 0x7000u;
+    const float texture0[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,3,1};
+    recomp_guest_store(DEVICE + 0xce0u, texture0, sizeof texture0);
+    /* Pass 2: SELECTARG1(TEXTURE) / MODULATE(TEXTURE, CURRENT), projected
+       camera-space texgen, stage 1 alpha MODULATE(TFACTOR, CURRENT). */
+    set_stage(0u, 12u, 2u); set_stage(0u, 14u, 2u); set_stage(0u, 15u, 1u);
+    set_stage(0u, 16u, 4u); set_stage(0u, 18u, 2u); set_stage(0u, 19u, 1u);
+    set_stage(0u, 21u, 0x103u); set_stage(0u, 28u, 0x20000u);
+    set_stage(1u, 11u, 4u); set_stage(1u, 12u, 2u); set_stage(1u, 14u, 1u); set_stage(1u, 15u, 2u);
+    set_stage(1u, 16u, 4u); set_stage(1u, 18u, 3u); set_stage(1u, 19u, 1u);
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x142u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 24u);
+    const RecompD3dPresenterDrawCommand *draw = &submitted.data.draw;
+    CHECK(submits == 1u && draw->texgen_projected && !draw->texgen_reflection &&
+        draw->reflection_transform[14] == 3.0f && draw->modulate_texture_factor_alpha &&
+        !draw->stage1_alpha_mask && !draw->directional.enabled && draw->directional.stage_mode);
+    CHECK(draw->directional.stage[0] == 1.0f && draw->directional.stage[1] == 0.0f &&
+        draw->directional.stage[2] == 1.0f && draw->directional.stage[3] == 1.0f);
+    /* A bound stage-1 texture would apply its ALPHAKILL. */
+    *recomp_memory_u32(DEVICE + 0xf8cu) = 0x7000u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 24u); return 1; }
+    CHECK(submits == 1u && strncmp(stop_reason, "d3d8:draw-texture-stages:", 25) == 0);
+    /* Pass 3: a pretransformed quad, stage-0 alpha MODULATE(TFACTOR, CURRENT)
+       and stage 1 alpha MODULATE(TEXTURE, CURRENT) over UV1 with ALPHAKILL. */
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected stop: %s\n", stop_reason); return 1; }
+    set_stage(0u, 18u, 3u); set_stage(0u, 21u, 0u); set_stage(0u, 28u, 0u);
+    set_stage(1u, 18u, 2u); set_stage(1u, 28u, 1u); set_stage(1u, 0u, 3u);
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x244u;
+    invoke(0x348240u, 6u, 4u, VERTICES, 36u);
+    CHECK(submits == 2u && draw->stage1_alpha_mask && draw->stage1_alpha_kill &&
+        draw->modulate_texture_factor_alpha && !draw->texgen_projected &&
+        draw->reflection_bytes == ram + texture.data && draw->reflection_address_u == 3u);
+    CHECK(draw->directional.stage[0] == 1.0f && draw->directional.stage[1] == 0.0f &&
+        draw->directional.stage[2] == 0.0f && draw->directional.stage[3] == 1.0f);
+    /* An unbound mask compiles to a pass-through (0x352e46). */
+    *recomp_memory_u32(DEVICE + 0xf8cu) = 0u;
+    invoke(0x348240u, 6u, 4u, VERTICES, 36u);
+    CHECK(submits == 3u && !draw->stage1_alpha_mask && draw->modulate_texture_factor_alpha);
+    *recomp_memory_u32(DEVICE + 0xf8cu) = 0x7000u;
+    set_stage(1u, 28u, 0u);
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 6u, 4u, VERTICES, 36u); return 1; }
+    CHECK(submits == 3u && strncmp(stop_reason, "d3d8:stage1-mask:", 17) == 0);
     return 0;
 }
 
@@ -758,7 +923,7 @@ int main(void)
 {
     initialize();
     if (pixel_tests() || draw_tests() || point_tests() || lighting_tests() || filter_tests() || bright_tests() ||
-        program_tests()) return 1;
+        distortion_tests() || effect_tests() || program_tests()) return 1;
     puts("PASS D3D8 pixel lifecycle/constants and semantic draw ABI/snapshots");
     return 0;
 }
