@@ -24,6 +24,7 @@ enum {
     DEPTH_SOURCE = 0x2200u,
     OFFSCREEN = 0x2400u,
     OFFSCREEN_DEPTH = 0x2500u,
+    BLOOM_SOURCE = 0x2600u,
     ENTRY_ESP = 0x8000u,
     DEVICE_GLOBAL = 0x3554f8u,
     DEVICE = 0x355500u,
@@ -473,6 +474,21 @@ int main(void)
         !submitted.data.clear.clear_stencil && submitted.data.clear.target.no_depth);
     arguments[0] = 0u; arguments[1] = DEPTH_HEADER;
     passed &= call(0x3447d0u, arguments, 2u, NULL);
+    /* 0x2756f0 draws its bloom source into a 720x480 texture against main depth. */
+    const RecompD3dSurfaceHeader bloom = {0x1050001u, 0x200000u, 0u, 0x11229u, 0x2c1df2cfu, 0u};
+    memcpy(recomp_memory(BLOOM_SOURCE, sizeof bloom), &bloom, sizeof bloom);
+    arguments[0] = BLOOM_SOURCE; arguments[1] = DEPTH_HEADER;
+    passed &= call(0x3447d0u, arguments, 2u, NULL);
+    arguments[0] = 0u; arguments[1] = 0u; arguments[2] = 0xf0u;
+    passed &= call(0x347920u, arguments, 6u, NULL);
+    passed &= expect("offscreen color shares the main depth",
+        submitted.data.clear.target.offscreen && !submitted.data.clear.target.custom_depth &&
+        !submitted.data.clear.target.no_depth && submitted.data.clear.target.color.width == 720u &&
+        submitted.data.clear.target.depth.data == *recomp_memory_u32(DEPTH_HEADER + 4u) &&
+        submitted.data.clear.clear_color && !submitted.data.clear.clear_depth);
+    arguments[2] = 0xf3u;
+    arguments[0] = COLOR_HEADER; arguments[1] = DEPTH_HEADER;
+    passed &= call(0x3447d0u, arguments, 2u, NULL);
     passed &= expect("render target restores depth binding",
         *recomp_memory_u32(DEVICE + 0x1a08u) == DEPTH_HEADER &&
         *recomp_memory_u32(DEPTH_HEADER) == 0xd0002u &&
@@ -670,9 +686,15 @@ int main(void)
         submitted.data.clear.target.color.data == 0x400000u);
     memcpy(before, recomp_memory(COLOR_HEADER, sizeof before), sizeof before);
     arguments[0] = 0u;
+    freed_display = 0u;
     passed &= call(0x34af80u, arguments, 1u, NULL);
     passed &= expect("supersampled swap keeps back and front storage",
         memcmp(before, recomp_memory(COLOR_HEADER, sizeof before), sizeof before) == 0);
+    passed &= expect("first swap after reset frees the persisted copy (0x34a600)",
+        freed_display == 0x7f0000u && saved_display == 0u);
+    freed_display = 0u;
+    passed &= call(0x34af80u, arguments, 1u, NULL);
+    passed &= expect("later swaps leave saved data alone", freed_display == 0u);
     arguments[0] = OFFSCREEN; arguments[1] = 0u;
     passed &= call(0x3447d0u, arguments, 2u, NULL);
     passed &= expect("offscreen target drops the supersample scale",

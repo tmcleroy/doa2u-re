@@ -38,6 +38,9 @@ static uint32_t submitted_draws;
    only depth). It still holds the frame Present last showed, and the pixels
    PersistDisplay saved, until a color clear or draw writes it. */
 static bool back_buffer_displayed, back_buffer_saved;
+/* Reset's mode set (0x34d58d) raises device+0x1de0; the next Swap (0x34af40)
+   programs the mode and frees the persisted front-buffer copy (0x34a600). */
+static bool display_mode_pending;
 /* Device teardown (0x34ca1f) frees 64 report pages of 256 visibility slots. */
 enum { VISIBILITY_TESTS = 64u * 256u, D3DERR_TESTINCOMPLETE = 0x88760828u };
 static bool visibility_open;
@@ -106,6 +109,7 @@ void recomp_d3d8_shutdown(void)
     recomp_d3d8_state_reset();
     submitted_draws = 0u;
     back_buffer_displayed = back_buffer_saved = false;
+    display_mode_pending = false;
     visibility_open = false;
     memset(visibility_scale, 0, sizeof visibility_scale);
 }
@@ -153,8 +157,13 @@ static void resolve_target(uint32_t color, uint32_t depth, RecompD3dPresenterTar
         RecompD3dTextureDesc main_depth;
         target_surface(DEVICE + DEPTH_HEADER, true, &main_depth);
         target->custom_depth = target->depth.data != main_depth.data;
-        /* shortcut: offscreen draws cannot share scaled main depth; bind a separate depth surface. */
-        if (!target->custom_depth && (target->offscreen || target->depth.width != main_depth.width ||
+        /* SetRenderTarget (0x3447d0) addresses depth only through its own header, so an
+           offscreen color may test against the main depth, as the bloom source pass
+           (0x2756f0) does. shortcut: a supersampled main depth has physical units the
+           host depth lacks; bind a scaled offscreen target if a caller needs one. */
+        if (!target->custom_depth && ((target->offscreen &&
+                (device_state.scale[0] != 1u || device_state.scale[1] != 1u)) ||
+            target->depth.width != main_depth.width ||
             target->depth.height != main_depth.height || target->depth.pitch != main_depth.pitch ||
             target->depth.linear != main_depth.linear || target->depth.format_byte != main_depth.format_byte))
             recomp_stop(2, "d3d8:target-depth-alias-unbound");
@@ -326,6 +335,15 @@ static uint32_t reference_surface(uint32_t address, bool release)
     return count;
 }
 
+static void free_saved_display(void)
+{
+    const uint32_t previous = recomp_kernel_av_get_saved_data_address();
+    if (previous != 0u) {
+        recomp_kernel_free_pool(previous);
+        recomp_kernel_av_set_saved_data_address(0u);
+    }
+}
+
 static void add_ref(void)
 {
     const uint32_t entry = recomp_runtime.registers.esp;
@@ -476,6 +494,10 @@ static void swap(void)
     recomp_d3d8_submit(&result.command);
     back_buffer_displayed = true;
     back_buffer_saved = false;
+    if (display_mode_pending) {
+        free_saved_display();
+        display_mode_pending = false;
+    }
     *recomp_memory_u32(DEVICE + 0x2404u + completed_bank * 4u) = 0u;
     *recomp_memory_u32(DEVICE + 0x1de4u) = result.command.data.present.swap_counter;
     for (uint32_t i = 0; i < 2u; ++i) store(color_header(i), &device_state.color[i], sizeof device_state.color[i]);
@@ -603,11 +625,7 @@ static void persist_display(void)
        SDK (0x345d70) also publishes a contiguous front-buffer copy (header
        built by 0x345cf0) that the game locks after Reset (0x2823f0). */
     flush(true);
-    const uint32_t previous = recomp_kernel_av_get_saved_data_address();
-    if (previous != 0u) {
-        recomp_kernel_free_pool(previous);
-        recomp_kernel_av_set_saved_data_address(0u);
-    }
+    free_saved_display();
     const uint32_t pitch = (device_state.width * 4u + 63u) & ~63u;
     const uint32_t surface = recomp_kernel_allocate_contiguous(
         0x40u + pitch * device_state.height, 0x7ffffffu, 0x40u, 0x404u);
@@ -700,6 +718,7 @@ static void reset_device(void)
         RECOMP_D3D_CLEAR_DEPTH | RECOMP_D3D_CLEAR_STENCIL, 0u, 0x3f800000u, 0u);
     if (clear.error != RECOMP_D3D_FRAME_OK) recomp_stop(2, "d3d8:reset-clear");
     recomp_d3d8_submit(&clear.command);
+    display_mode_pending = true;
     recomp_runtime.registers.eax = RECOMP_D3D_OK;
     recomp_runtime.registers.esp += 8u;
     fprintf(stderr, "recomp d3d8: Reset %ux%u multisample=%04x interval=%08x frame=%u\n",
