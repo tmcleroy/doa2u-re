@@ -5,7 +5,7 @@
 
 void recomp_hrtf_angles(float x, float y, float z, float *azimuth, float *elevation)
 {
-    /* 0x001C9DA1: piecewise ratio approximations, not atan2/asin. */
+    /* 5849 0x36662F: piecewise ratio approximations, not atan2/asin. */
     float h = sqrtf(x * x + z * z), ax = fabsf(x), az = fabsf(z), ay = fabsf(y);
     float a = 0.0f, e;
 
@@ -20,17 +20,16 @@ void recomp_hrtf_angles(float x, float y, float z, float *azimuth, float *elevat
     *elevation = y < 0.0f ? -e : e;
 }
 
-/* 0x001C96C0: x87 FISTP of t - 0.5 (round to nearest even), then +1 when negative. */
+/* 5849 0x36B5F2: CVTTSS2SI truncation toward zero. */
 static int quantize(float t)
 {
-    int value = (int)nearbyintf(t - 0.5f);
-    return value < 0 ? value + 1 : value;
+    return (int)t;
 }
 
 RecompHrtfFilter recomp_hrtf_lookup(const uint8_t *bank, const uint8_t *map,
     float azimuth, float elevation)
 {
-    /* 0x001CB509 with fold_rear = 0. */
+    /* 5849 0x366BFE with fold_rear = 0 (0x369CAE sets it only for surround/AC3). */
     int e = 6 * (quantize(elevation + (elevation >= 0.0f ? 3.0f : -3.0f)) / 6);
     int a = 0;
     if (e < -90 || e > 90) e = 0;
@@ -41,7 +40,7 @@ RecompHrtfFilter recomp_hrtf_lookup(const uint8_t *bank, const uint8_t *map,
     }
     const uint8_t *entry = map + 2 * ((a / 3) * 31 + (e + 90) / 6);
     const int8_t *ear0 = (const int8_t *)bank + 32 * (entry[0] | entry[1] << 8);
-    /* 0x001CA4D4: the canonical record's delay byte, negated with the ears. */
+    /* 0x369CAE: the canonical record's delay byte, negated with the ears. */
     if (azimuth >= 0.0f) return (RecompHrtfFilter){ear0, ear0 + 32, ear0[31]};
     return (RecompHrtfFilter){ear0 + 32, ear0, -ear0[31]};
 }

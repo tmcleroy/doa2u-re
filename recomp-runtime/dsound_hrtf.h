@@ -3,8 +3,8 @@
 
 #include <stdint.h>
 
-/* DSOUND 3936 full HRTF, rendered natively from the game's own table.
-   See docs/doa3-audio.md for the guest routines each step follows. */
+/* DSOUND 5849 full HRTF, rendered natively from the game's own table.
+   Ported from DOA3 (DSOUND 3936); each step names its 5849 routine. */
 enum { RECOMP_HRTF_TAPS = 31, RECOMP_HRTF_RATE = 48000, RECOMP_HRTF_HISTORY = 128 };
 
 typedef struct RecompHrtfFilter {

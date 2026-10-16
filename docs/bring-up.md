@@ -201,6 +201,19 @@ Any SDK API that is still unreplaced reserves console push-buffer space and
 would then wait forever for GPU hardware. The reservation routine stops
 instead and reports the calling API's return address.
 
+SetTextureState_BumpEnv (`0x346bc0`, stdcall stage/state/value) stores
+BUMPENVMAT00 through BUMPENVLOFFSET (states 22-27) in the deferred stage array
+`0x355060`, which the draw adapter reads; its NV2A method has no host use.
+Draws do not consume those states yet. A stage-1 combiner the draw path cannot
+express stops with `d3d8:draw-texture-stages` and reports the color/alpha ops
+and arguments of stages 0-1 and the stage-2 ops.
+
+The first Story fight (Stage 01) renders and its round timer runs. Game code
+`0x276d40` then brackets a draw with D3DDevice_BeginVisibilityTest
+(`0x3457c0`, CLEAR_REPORT_VALUE plus ZPASS_PIXEL_COUNT_ENABLE) and
+EndVisibilityTest(index) (`0x345860`, report slot from `0x3457f0`). A native
+binding needs presenter occlusion queries with deferred result readback.
+
 ## Game tasks
 
 Game logic runs as up to 24 XAPI fibers, resumed each frame by a task
@@ -242,7 +255,7 @@ The buffer adapter binds the 5849 descriptor and public handle layout to
 the independent cursor model, PCM/Xbox ADPCM decoding and native output.
 Owned and borrowed sample storage have separate lifetimes. Headroom changes
 adjust effective volume; API argument cleanup is verified per entry.
-The initial subset is non-3D buffers with synchronous polling/DoWork pumping.
+Buffers pump synchronously from API polling and DoWork.
 The inherited clock drops output spans after a stall over 100 ms while
 advancing its cursor. Native endpoint consumption has an opt-in host test;
 synthetic API and backend tests remain suitable for public CI.
@@ -270,12 +283,33 @@ Recorded impulse tests establish actual wet processing, not Xbox bit parity;
 the built-in converter ignores room rolloff. DSP programs are not executed.
 
 Recording sends contain decimation, phase and scratch/DMA transfer semantics;
-ordinary SourceVoice resampling is insufficient. Those sends and 3D crosstalk
-remain guarded, as do packet streams, scheduled StopEx, additional play flags
-and unsupported DSP processing. This is an initial native FX subset.
+ordinary SourceVoice resampling is insufficient. Those sends remain guarded,
+as do packet streams, scheduled StopEx, additional play flags and unsupported
+DSP processing. This is an initial native FX subset.
 Listener SetPosition/SetVelocity store their vectors and dirty bits in the
-settings block. An immediate apply commits them through the existing
-listener commit. They have no native effect until 3D buffers are bound.
+settings block. A commit with a dirty position or velocity recomputes every
+3D voice.
+
+Story fights play positioned effects through mono CTRL3D ADPCM buffers
+(flags `0x40010`, created by game code at `0xfc516`). The six buffer setters
+DOA2 calls are bound at their `IDirectSoundBuffer` thunks: SetMaxDistance
+`0x365159`, SetMinDistance `0x36517d`, SetPosition `0x3651a1`, SetVelocity
+`0x3651d6`, SetDistanceFactor `0x36520b` and SetRolloffFactor `0x36522f`.
+Each takes the public handle (+0x1C) and stores into the 5849 3D block. The
+adapter follows the 3D calculator (`0x365553`, `0x364236`) with the
+full-HRTF routines DirectSoundUseFullHRTF installs (`0x366d1a`):
+`-2000·log10(1 + rolloff·(d/min − 1))` distance volume held at max distance,
+Doppler pitch `4096·log2(1 − v/342)` added to the base pitch and clamped, and
+the game's own HRTF bank (`0x36de70`) and map (`0x37f430`). It renders through
+DOA3's `dsound_hrtf.c`, with 5849 truncating quantization. Per-bin terms follow
+`0x369565`. On stereo output the front/back split is off, so XTLK front bins
+6/7 carry the HRTF ears and back bins 8/9 are silent. DOA2's 3D bins
+`{6,8,7,9,2,10,3,22}` place center in slot 4, which enables the center term
+(`0x366ae3`). XTLK bins fold to stereo by side, with back bins at −3 dB, and
+skip the DSP crosstalk canceller. Bin 10 uses the existing I3DL2 send.
+Deferred 3D values apply at once. MUTE3DATMAXDISTANCE, stereo 3D voices, cones,
+modes, orientation, listener factors and I3DL2 sources remain unbound; DOA2
+sets none of them.
 Private notes hold actual graphics/audio startup and boot observations.
 
 The 5849 GetTickCount boundary reads shared monotonic time and offers bounded

@@ -36,6 +36,10 @@ int main(void)
     check(right.left == (const int8_t *)bank + 8 * 32 && right.delay == 3, "right-side source delays left ear");
     RecompHrtfFilter left = recomp_hrtf_lookup(bank, map, -31.0f, 0.0f);
     check(left.left == right.right && left.right == right.left && left.delay == -3, "left side mirrors ears");
+    /* 5849 truncates 1.5 + 1.5 to 3 (row 1); 3936's rounding chose row 0. */
+    map[2 * (1 * 31 + 15)] = 10;
+    check(recomp_hrtf_lookup(bank, map, 1.5f, 0.0f).left == (const int8_t *)bank + 10 * 32,
+        "integer quantization ties truncate");
 
     /* A 48 kHz impulse comes out as each ear's taps, the far ear delayed. */
     RecompHrtfVoice voice;

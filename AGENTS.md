@@ -12,7 +12,8 @@ D3D8 5849 device, frame and state APIs to the shared D3D11 presenter.
 DirectSound 5849 owns native device/buffer lifetime and PCM output.
 Effects-image download owns decoded maps/state and binds native I3DL2 reverb.
 XAPI fibers run on native Windows fibers through `fiber_adapter.c`.
-Recording sends, 3D crosstalk and additional DSP processing remain guarded.
+3D voices render through the game's HRTF tables with crosstalk bins folded to
+stereo. Recording sends and additional DSP processing remain guarded.
 Read the audio limits in `docs/bring-up.md` before extending this adapter.
 Read the graphics limits in `docs/bring-up.md` before extending this adapter.
 Before enabling another adapter,

@@ -38,7 +38,8 @@ The initial DirectSound 5849 adapter uses XAudio2 for PCM/Xbox ADPCM buffers,
 including data ownership, reference counts, headroom, looping and cursors.
 The effects-image adapter decodes programs, owns validated maps/state and
 binds native I3DL2 reverb with stereo dry/wet routing. Recording sends and
-3D crosstalk need further native services. The clock and vblank bindings
+DSP crosstalk cancellation need further native services; positioned 3D
+voices render through the game's HRTF tables. The clock and vblank bindings
 allow background archive workers to progress during startup.
 The graphics adapter also binds textures, vertex buffers, pixel-shader state
 and three draw APIs to the shared D3D11 presenter. Unsupported shader and

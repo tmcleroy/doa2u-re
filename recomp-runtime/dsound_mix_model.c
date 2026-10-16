@@ -35,15 +35,21 @@ bool recomp_dsound_mix_matrices(const RecompDsoundMixModel *model, uint32_t chan
         if (bin >= 32u) return false;
         /* A fully attenuated send is silent wherever it is routed. */
         if (model->volumes[bin] == -10000) continue;
-        /* Crosstalk and FX sends need their own native signal services. */
-        if (bin > 5u && bin != 10u) return false;
+        /* FX sends need their own native signal services. */
+        if (bin > 10u) return false;
         float gain = powf(10.0f, model->volumes[bin] / 2000.0f);
         gain = ldexpf(gain, -(int)(headroom[bin] & 7u));
         if (bin == 10u) {
             wet[0] += gain;
             wet[channels == 1u ? 1u : 3u] += gain;
         } else if (bin <= 1u) dry[bin * channels + (channels == 2u ? bin : 0u)] += gain;
-        else if (bin != 3u) {
+        else if (bin >= 6u) {
+            /* XTLK front/back left (6/8) and right (7/9) carry the HRTF ear of
+               their side. shortcut: folded like 4/5 without the DSP crosstalk
+               canceller; run it when speaker crosstalk output is required. */
+            uint32_t side = bin & 1u;
+            dry[side * channels + (channels == 2u ? side : 0u)] += gain * (bin < 8u ? 1.0f : 0.70710678f);
+        } else if (bin != 3u) {
             /* shortcut: fixed -3 dB stereo fold of center/rear with LFE dropped;
                add speaker-config-aware routing when a surround host output exists. */
             uint32_t in = i % channels; /* hardware feeds stereo channels to alternating slots */

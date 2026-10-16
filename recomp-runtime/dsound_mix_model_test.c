@@ -25,11 +25,16 @@ int main(void)
         dry[2] == 0 && fabsf(dry[3] - (1 + rear + center)) < .00001f && wet[0] == 0);
     CHECK(recomp_dsound_mix_matrices(&model, 1, headroom, dry, wet));
     CHECK(fabsf(dry[0] - (1 + rear + center)) < .00001f && fabsf(dry[1] - dry[0]) < .00001f);
-    const RecompDsoundMixPair crosstalk[2] = {{6,0},{30,-10000}};
-    CHECK(recomp_dsound_mix_set(&model, crosstalk + 1, 1, true));
+    /* 5849's 3D order: XTLK front/back left then right; each bin keeps its ear. */
+    const RecompDsoundMixPair crosstalk[5] = {{6,0},{8,-2000},{7,0},{9,0},{30,-10000}};
+    CHECK(recomp_dsound_mix_set(&model, crosstalk + 4, 1, true));
     CHECK(recomp_dsound_mix_matrices(&model, 2, headroom, dry, wet) && dry[0] == 0);
-    CHECK(recomp_dsound_mix_set(&model, crosstalk, 2, true));
-    CHECK(!recomp_dsound_mix_matrices(&model, 2, headroom, dry, wet));
+    CHECK(recomp_dsound_mix_set(&model, crosstalk, 5, true));
+    CHECK(recomp_dsound_mix_matrices(&model, 2, headroom, dry, wet));
+    CHECK(fabsf(dry[0] - 1.07071068f) < .00001f && dry[1] == 0 && dry[2] == 0 &&
+        fabsf(dry[3] - 1.70710678f) < .00001f && wet[0] == 0);
+    CHECK(recomp_dsound_mix_matrices(&model, 1, headroom, dry, wet));
+    CHECK(fabsf(dry[0] - 1.07071068f) < .00001f && fabsf(dry[1] - 1.70710678f) < .00001f);
     RecompDsoundMixPair pairs[3] = {{0,-2000},{1,0},{10,0}};
     CHECK(recomp_dsound_mix_set(&model, pairs, 3, true));
     headroom[10] = 1;

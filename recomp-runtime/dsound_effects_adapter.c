@@ -33,6 +33,11 @@ static uint32_t settings_address(void)
     return *recomp_memory_u32(recomp_dsound_current_device());
 }
 
+void recomp_dsound_listener_vectors(float vectors[6])
+{
+    memcpy(vectors, recomp_memory(settings_address() + 0x38u, 6u * sizeof *vectors), 6u * sizeof *vectors);
+}
+
 static void free_guest(uint32_t base, uint32_t bytes)
 {
     if (!base) return;
@@ -164,9 +169,11 @@ static void set_effect_data(void)
 
 static uint32_t commit_listener(void)
 {
-    /* shortcut: 3D buffers stay guarded, so listener position/velocity have
-       no native effect yet; commit retires their dirty bits like the SDK. */
-    *recomp_memory_u32(settings_address() + 0x30u) &= ~3u;
+    /* Committing a moved listener recomputes every 3D voice. */
+    uint32_t *flags = recomp_memory_u32(settings_address() + 0x30u);
+    const bool moved = (*flags & 3u) != 0u;
+    *flags &= ~3u;
+    if (moved) recomp_dsound_buffers_refresh_routing();
     if (!listener_dirty) return RECOMP_DSOUND_OK;
     if (locations[0] == NO_EFFECT) return INVALID_EFFECT;
     if (!recomp_audio_output_set_reverb(&pending_listener)) {

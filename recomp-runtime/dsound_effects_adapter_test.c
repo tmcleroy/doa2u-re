@@ -278,14 +278,20 @@ int main(void)
     CHECK(CALL(0x36478eu, DEVICE, 32u, 7u) == RECOMP_DSOUND_INVALID_PARAM && refreshes == 1u);
     CHECK(recomp_dsound_effects_headroom(32u) == 0u);
 
-    /* Listener position/velocity: deferred writes mark dirty, commit retires them. */
+    /* Listener position/velocity: deferred writes mark dirty, commit retires them
+       and recomputes 3D voices once. */
     write32(SETTINGS + 0x30u, 0u);
+    refreshes = 0u;
     CHECK(CALL(0x365fe0u, DEVICE, 0x3f800000u, 0x40000000u, 0x40400000u, 1u) == RECOMP_DSOUND_OK);
     CHECK(read32(SETTINGS + 0x38u) == 0x3f800000u && read32(SETTINGS + 0x40u) == 0x40400000u);
-    CHECK(read32(SETTINGS + 0x30u) == 1u);
+    CHECK(read32(SETTINGS + 0x30u) == 1u && refreshes == 0u);
     CHECK(CALL(0x366015u, DEVICE, 0xbf800000u, 0u, 0x41200000u, 0u) == RECOMP_DSOUND_OK);
     CHECK(read32(SETTINGS + 0x44u) == 0xbf800000u && read32(SETTINGS + 0x4cu) == 0x41200000u);
-    CHECK(read32(SETTINGS + 0x30u) == 0u);
+    CHECK(read32(SETTINGS + 0x30u) == 0u && refreshes == 1u);
+    float vectors[6];
+    recomp_dsound_listener_vectors(vectors);
+    CHECK(vectors[0] == 1.0f && vectors[2] == 3.0f && vectors[3] == -1.0f && vectors[5] == 10.0f);
+    CHECK(CALL(0x365c6eu, DEVICE) == RECOMP_DSOUND_OK && refreshes == 1u);
     stop_armed = 1;
     if (setjmp(stopped) == 0) { CALL(0x365fe0u, DEVICE + 4u, 0u, 0u, 0u, 0u); CHECK(0); }
     stop_armed = 0;

@@ -92,7 +92,7 @@ add_test(NAME recomp-runtime-dsound-device COMMAND recomp_dsound_device_test)
 add_executable(recomp_dsound_api_test dsound_api_adapter.c dsound_device_model.c dsound_api_adapter_test.c)
 add_test(NAME recomp-runtime-dsound-api COMMAND recomp_dsound_api_test)
 add_executable(recomp_dsound_buffer_api_test dsound_buffer_adapter.c dsound_buffer_adapter_test.c
-    dsound_buffer_model.c xbox_adpcm.c)
+    dsound_buffer_model.c dsound_hrtf.c xbox_adpcm.c)
 target_compile_definitions(recomp_dsound_buffer_api_test PRIVATE RECOMP_DSOUND_TEST_CLOCK)
 add_test(NAME recomp-runtime-dsound-buffer-api COMMAND recomp_dsound_buffer_api_test)
 add_executable(recomp_effects_image_test dsound_effects_image.c dsound_effects_image_test.c)
@@ -298,7 +298,8 @@ if(RECOMP_PROGRAM_DIR)
         d3d_device_model.c d3d_light_model.c d3d_render_state_model.c
         d3d_frame_model.c d3d_tile_model.c d3d_vertex_shader_model.c
         dsound_api_adapter.c dsound_device_model.c dsound_buffer_adapter.c
-        dsound_buffer_model.c dsound_effects_adapter.c dsound_effects_image.c dsound_mix_model.c xbox_adpcm.c
+        dsound_buffer_model.c dsound_effects_adapter.c dsound_effects_image.c dsound_mix_model.c
+        dsound_hrtf.c xbox_adpcm.c
         input_model.c input_adapter.c input_host_win32.c input_pulse_source.c
         host_diagnostics.cpp "${_missing_source}" ${_program_sources})
     target_compile_definitions(recomp_program_runner PRIVATE RECOMP_XBE_SHA256="${_xbe_sha256}")

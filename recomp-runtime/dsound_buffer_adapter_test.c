@@ -6,6 +6,7 @@
 #include "kernel_abi.h"
 #include "stop_report.h"
 #include <setjmp.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +23,8 @@ static struct Allocation { uint32_t base, size; int live; } allocations[1024];
 static uint64_t now;
 static int ready = 1, muted;
 static uint32_t output_calls, resets;
+static float listener[6], route_dry[4], route_wet[4];
+static uint32_t route_channels;
 static struct Output { uint32_t bytes, rate, channels, bits; int32_t volume; uint8_t pcm[160000]; } output;
 static jmp_buf stop_environment;
 static int stop_armed;
@@ -61,9 +64,14 @@ int recomp_audio_output_ready(void) { return ready; }
 int recomp_audio_output_enabled(void) { return ready && !muted; }
 void recomp_audio_output_reset_voice(uint32_t slot) { CHECK(slot < 256); ++resets; }
 uint32_t recomp_dsound_effects_headroom(uint32_t bin) { CHECK(bin < 32u); return 0u; }
+void recomp_dsound_listener_vectors(float vectors[6]) { memcpy(vectors, listener, sizeof listener); }
 int recomp_audio_output_set_voice_routing(uint32_t slot, uint32_t channels, const float *dry, const float *wet)
 {
-    CHECK(slot < 256u && (channels == 1u || channels == 2u) && dry && wet); return ready;
+    CHECK(slot < 256u && (channels == 1u || channels == 2u) && dry && wet);
+    route_channels = channels;
+    memcpy(route_dry, dry, 2u * channels * sizeof *dry);
+    memcpy(route_wet, wet, 2u * channels * sizeof *wet);
+    return ready;
 }
 void recomp_audio_output_submit(uint32_t slot, const uint8_t *pcm, uint32_t bytes,
     uint32_t rate, uint32_t channels, uint32_t bits, int32_t volume)
@@ -100,6 +108,7 @@ void recomp_kernel_free_pool(uint32_t address)
 static uint32_t read32(uint32_t address) { uint32_t result; memcpy(&result, recomp_memory(address, 4), 4); return result; }
 static void write32(uint32_t address, uint32_t value) { memcpy(recomp_memory(address, 4), &value, 4); }
 static void write16(uint32_t address, uint16_t value) { memcpy(recomp_memory(address, 2), &value, 2); }
+static uint32_t fbits(float value) { uint32_t bits; memcpy(&bits, &value, 4); return bits; }
 
 static uint32_t call(uint32_t address, const uint32_t *arguments, uint32_t count)
 {
@@ -312,7 +321,7 @@ static void test_validation_and_guards(void)
     CHECK(CALL(0x36513d, handle, DATA) == 0);
     CHECK(read32(read32(handle) + 0x24u) == 1u &&
         *recomp_memory_i8(read32(handle) + 0x28u) == 10);
-    expect_stop(0x365159, handle, "dsound:buffer-3d-unbound");
+    expect_stop(0x365159, handle, "dsound:buffer-not-3d");
     expect_stop(0x366257, handle, "dsound:stream-unbound");
     CHECK(recomp_dsound_buffer_lookup_manual(0x1234) == NULL);
     stop_armed = 1;
@@ -320,9 +329,6 @@ static void test_validation_and_guards(void)
     CHECK(strcmp(stop_reason, "dsound:buffer-play-flags-unbound:00000004") == 0);
     if (setjmp(stop_environment) == 0) { CALL(0x36483e, handle, 1, 0, 0); CHECK(0); }
     CHECK(strcmp(stop_reason, "dsound:buffer-stop-ex-unbound") == 0);
-    write32(DESC + 4, 0x40010);
-    if (setjmp(stop_environment) == 0) { CALL(0x365fbc, DEVICE, DESC, OUTPUT, 0); CHECK(0); }
-    CHECK(strcmp(stop_reason, "dsound:buffer-3d-unbound") == 0);
     write32(DESC + 4, 0x20000);
     if (setjmp(stop_environment) == 0) { CALL(0x365fbc, DEVICE, DESC, OUTPUT, 0); CHECK(0); }
     CHECK(strncmp(stop_reason, "dsound:buffer-create-flags-unbound", strlen("dsound:buffer-create-flags-unbound")) == 0);
@@ -345,11 +351,63 @@ static void test_capacity_and_owner(void)
     CHECK(CALL(0x363641, handle) == 0 && owners == 0 && device == 0 && allocated == freed);
 }
 
+static int near(float a, float b) { return fabsf(a - b) < 0.0001f; }
+
+static void test_3d(void)
+{
+    /* One flat ear pair for every direction; both 45-step center tables at 0.5. */
+    memset(recomp_memory(0x36de70, 0x115c0 + 0xec6), 0, 0x115c0 + 0xec6);
+    *recomp_memory_i8(0x36de70) = 64; *recomp_memory_i8(0x36de90) = 64;
+    for (uint32_t i = 0; i < 45; ++i) { write32(0x36dd00 + 4 * i, fbits(.5f)); write32(0x36ddb8 + 4 * i, fbits(.5f)); }
+    memset(listener, 0, sizeof listener);
+    fixture(1, 1, 0); write32(DESC + 4, 0x40010);
+    CHECK(CALL(0x365fbc, DEVICE, DESC, OUTPUT, 0) == 0);
+    uint32_t handle = read32(OUTPUT), settings = read32(handle);
+    CHECK(read32(settings + 0x20) == 0 && read32(settings + 0x24) == 5);
+    CHECK(*recomp_memory_i8(settings + 0x29) == 8 && *recomp_memory_i8(settings + 0x2c) == 10);
+    for (uint16_t i = 0; i < 2000; ++i) write16(DATA + i * 2u, 1000);
+    CHECK(CALL(0x365793, handle, DATA, 4000) == 0 && CALL(0x364802, handle, 0, 0, 1) == 0);
+    /* rolloff 1, min 1: ten units away is -20 dB on XTLK front and I3DL2; back bins are off. */
+    CHECK(CALL(0x36517d, handle, fbits(1), 1) == 0);
+    CHECK(CALL(0x3651a1, handle, fbits(10), 0, 0, 0) == 0);
+    now = 20; recomp_dsound_buffers_pump();
+    CHECK(output.bits == 32 && output.channels == 2 && output.rate == 48000 && output.bytes >= 900 * 8);
+    const float *ears = (const float *)(const void *)output.pcm;
+    CHECK(near(ears[1600], 1000.f / 32768) && ears[1601] == ears[1600]);
+    CHECK(route_channels == 2 && near(route_dry[0], .1f) && route_dry[1] == 0 && route_dry[2] == 0 &&
+        near(route_dry[3], .1f) && near(route_wet[0], .1f) && near(route_wet[3], .1f));
+    /* DOA2's 3D layout puts center in slot 4: ahead, center 0.25 (-12.04 dB) and front 0.75 (-2.49 dB). */
+    CHECK(CALL(0x3651a1, handle, 0, 0, fbits(10), 1) == 0);
+    const uint32_t bins[16] = {6,0, 8,0, 7,0, 9,0, 2,0, 10,0, 3,0, 22,(uint32_t)-10000};
+    memcpy(recomp_memory(DATA + 0x2000, sizeof bins), bins, sizeof bins);
+    write32(DATA + 0x1ff8, 8); write32(DATA + 0x1ffc, DATA + 0x2000);
+    CHECK(CALL(0x36513d, handle, DATA + 0x1ff8) == 0);
+    const float front = powf(10, -2249 / 2000.f), center = powf(10, -3204 / 2000.f) * .70710678f;
+    CHECK(near(route_dry[0], front + center) && route_dry[1] == 0 && near(route_dry[2], center) &&
+        near(route_dry[3], front) && near(route_wet[0], .1f));
+    /* Listener commit: at the source, only the center split remains. */
+    listener[2] = 10; recomp_dsound_buffers_refresh_routing();
+    CHECK(near(route_dry[3], powf(10, -249 / 2000.f)));
+    /* Approaching at half the speed of sound plays 1.5x: 1000 Hz becomes 1500 Hz. */
+    listener[2] = 0; now = 100;
+    CHECK(CALL(0x36489e, handle, OUTPUT, 0) == 0);
+    uint32_t before = read32(OUTPUT);
+    CHECK(CALL(0x3651d6, handle, 0, 0, fbits(-171), 0) == 0);
+    now = 120; CHECK(CALL(0x36489e, handle, OUTPUT, 0) == 0 && read32(OUTPUT) == (before + 60) % 4000);
+    CHECK(CALL(0x36520b, handle, fbits(2), 0) == 0 && CALL(0x36522f, handle, fbits(0), 0) == 0);
+    CHECK(CALL(0x365159, handle, fbits(5), 0) == 0 && CALL(0x363641, handle) == 0 && allocated == freed);
+    fixture(1, 2, 0); write32(DESC + 4, 0x40010);
+    stop_armed = 1;
+    if (setjmp(stop_environment) == 0) { CALL(0x365fbc, DEVICE, DESC, OUTPUT, 0); CHECK(0); }
+    CHECK(strcmp(stop_reason, "dsound:buffer-3d-format-unbound") == 0);
+    stop_armed = 0;
+}
+
 int main(void)
 {
     test_pcm_and_headroom(); test_ownership_and_lock(); test_clock_and_loop();
-    test_adpcm(); test_validation_and_guards(); test_capacity_and_owner();
+    test_adpcm(); test_validation_and_guards(); test_capacity_and_owner(); test_3d();
     recomp_dsound_buffers_reset(); CHECK(allocated == freed);
-    puts("PASS 5849 buffer RAM layout, PCM/ADPCM output, headroom, clocks, locks, aliases, ownership and guards");
+    puts("PASS 5849 buffer RAM layout, PCM/ADPCM output, headroom, clocks, locks, aliases, ownership, 3D voices and guards");
     return 0;
 }
