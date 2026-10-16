@@ -185,7 +185,10 @@ lit MODULATE(TEXTURE, CURRENT) binds as texture times lit diffuse. Lit stage 0
 also accepts MODULATE(TEXTURE, TFACTOR) in either argument order, independently
 for RGB and alpha. The SDK arg mapper (`0x3529c0`) maps TFACTOR to combiner
 constant C0. The presenter selects that factor instead of lit diffuse for the
-chosen channel and adds lit specular after the texture stages. Adapter tests
+chosen channel and adds lit specular after the texture stages. Unlit colored
+vertices use the same selection for MODULATE(TEXTURE, TFACTOR): the factor
+replaces vertex diffuse in RGB, while alpha independently uses factor or
+diffuse. This includes the FVF 0x142 mesh draw at 0x287120. Adapter tests
 check both channels and argument orders; native pixels check tint, alpha and
 specular ordering. Material
 checks cover only what the SDK uploads: diffuse, ambient and specular RGB

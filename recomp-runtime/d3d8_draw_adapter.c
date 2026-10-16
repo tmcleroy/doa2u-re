@@ -513,7 +513,7 @@ static bool stage0_select(const uint32_t *stage, float select[4], bool *alpha_tf
         uint32_t arg1 = stage[14u + channel * 4u], arg2 = stage[15u + channel * 4u];
         if (arg1 == 1u) arg1 = 0u;
         if (arg2 == 1u) arg2 = 0u;
-        /* Lit draws select TFACTOR in the shader; unlit/program callers use alpha_tfactor. */
+        /* Without a separate alpha factor, select TFACTOR per channel. */
         if (alpha_tfactor == NULL && op == 4u &&
             ((arg1 == 2u && arg2 == 3u) || (arg1 == 3u && arg2 == 2u))) {
             select[channel * 2u] = 1.0f;
@@ -798,13 +798,14 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
             draw->material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE;
             draw->material_alpha = 1.0f;
         }
-        /* Unlit SELECTARG1(TEXTURE) color over a vertex color (the stage
-           effect's FUN_0027be10 and FUN_0027c400) selects texture and diffuse
-           per channel as the lit path does. */
+        /* Unlit texture select or texture-times-factor over vertex color uses
+           the same per-channel selection as lighting; factor replaces diffuse. */
         bool alpha_tfactor = false;
+        const bool factor_color = stage[0][12] == 4u &&
+            ((stage[0][14] == 2u && stage[0][15] == 3u) || (stage[0][14] == 3u && stage[0][15] == 2u));
         const bool unlit_select = !draw->directional.enabled && !draw->has_reflection && !white &&
-            stage[0][12] == 2u && stage[0][14] == 2u &&
-            stage0_select(stage[0], draw->directional.stage, &alpha_tfactor);
+            (factor_color || (stage[0][12] == 2u && stage[0][14] == 2u)) &&
+            stage0_select(stage[0], draw->directional.stage, factor_color ? NULL : &alpha_tfactor);
         if (unlit_select) {
             draw->directional.stage_mode = true;
             draw->material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_NONE;

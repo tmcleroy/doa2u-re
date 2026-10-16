@@ -1004,6 +1004,33 @@ static void set_stage(uint32_t stage, uint32_t field, uint32_t value)
     *recomp_memory_u32(STAGES + stage * 128u + field * 4u) = value;
 }
 
+static int factor_tests(void)
+{
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected factor stop: %s\n", stop_reason); return 1; }
+    initialize();
+    *recomp_memory_u32(DEVICE + 0xf88u) = 0x7000u;
+    CHECK(recomp_d3d_set_texture_factor(&state, 0x804080c0u));
+    for (uint32_t screen = 0u; screen < 2u; ++screen) {
+        *recomp_memory_u32(DEVICE + 0x798u) = screen ? 0x144u : 0x142u;
+        for (uint32_t reverse = 0u; reverse < 2u; ++reverse) {
+            for (uint32_t alpha = 0u; alpha < 2u; ++alpha) {
+                const uint32_t source = alpha == 0u ? 3u : 0u;
+                set_stage(0u, 14u, reverse ? 3u : 2u); set_stage(0u, 15u, reverse ? 2u : 3u);
+                set_stage(0u, 18u, reverse ? source : 2u); set_stage(0u, 19u, reverse ? 2u : source);
+                invoke(0x348240u, 5u, 3u, VERTICES, screen ? 28u : 24u);
+                const RecompD3dPresenterDrawCommand *draw = &submitted.data.draw;
+                CHECK(draw->has_texture && !draw->directional.enabled && draw->directional.stage_mode);
+                CHECK(draw->directional.stage[0] == 1.0f && draw->directional.stage[1] == 2.0f &&
+                    draw->directional.stage[2] == 1.0f && draw->directional.stage[3] == (alpha == 0u ? 2.0f : 1.0f));
+                CHECK(draw->texture_factor == 0x804080c0u && !draw->texture_factor_modulate &&
+                    !draw->modulate_texture_factor_alpha && draw->material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_NONE);
+            }
+        }
+    }
+    CHECK(submits == 8u);
+    return 0;
+}
+
 /* The stage effect's overlay passes, as FUN_0027be10 and FUN_0027c400 set them. */
 static int effect_tests(void)
 {
@@ -1180,7 +1207,7 @@ int main(void)
 {
     initialize();
     if (pixel_tests() || draw_tests() || line_tests() || quad_tests() || point_tests() || lighting_tests() || filter_tests() || bright_tests() ||
-        distortion_tests() || effect_tests() || program_tests() || bump_tests()) return 1;
+        distortion_tests() || factor_tests() || effect_tests() || program_tests() || bump_tests()) return 1;
     puts("PASS D3D8 pixel lifecycle/constants and semantic draw ABI/snapshots");
     return 0;
 }
