@@ -34,6 +34,10 @@ static RecompD3dDeviceState device_state;
 static RecompD3dFrameState frame_state;
 static RecompD3dPresenter *presenter;
 static uint32_t submitted_draws;
+/* The host keeps one main color target across Swap and Reset (which clears
+   only depth). It still holds the frame Present last showed, and the pixels
+   PersistDisplay saved, until a color clear or draw writes it. */
+static bool back_buffer_displayed, back_buffer_saved;
 
 static uint32_t argument(uint32_t entry, uint32_t index)
 {
@@ -60,6 +64,11 @@ uint32_t recomp_d3d8_require_device(void)
 
 void recomp_d3d8_submit(const RecompD3dPresenterCommand *command)
 {
+    if ((command->type == RECOMP_D3D_PRESENTER_COMMAND_CLEAR && command->data.clear.clear_color &&
+         !command->data.clear.target.offscreen) ||
+        (command->type == RECOMP_D3D_PRESENTER_COMMAND_DRAW && !command->data.draw.target.offscreen)) {
+        back_buffer_displayed = back_buffer_saved = false;
+    }
     const RecompD3dPresenterError error = recomp_d3d_presenter_submit(presenter, command);
     if (error == RECOMP_D3D_PRESENTER_CLOSED) recomp_stop(0, "host-window-closed");
     if (error != RECOMP_D3D_PRESENTER_OK) {
@@ -91,6 +100,7 @@ void recomp_d3d8_shutdown(void)
     recomp_d3d_frame_reset(&frame_state);
     recomp_d3d8_state_reset();
     submitted_draws = 0u;
+    back_buffer_displayed = back_buffer_saved = false;
 }
 
 static uint32_t color_header(uint32_t index)
@@ -457,6 +467,8 @@ static void swap(void)
     if (recomp_d3d_device_swap_buffers(&device_state) != RECOMP_D3D_DEVICE_OK) recomp_stop(2, "d3d8:swap-headers");
     recomp_d3d_wait_present();
     recomp_d3d8_submit(&result.command);
+    back_buffer_displayed = true;
+    back_buffer_saved = false;
     *recomp_memory_u32(DEVICE + 0x2404u + completed_bank * 4u) = 0u;
     *recomp_memory_u32(DEVICE + 0x1de4u) = result.command.data.present.swap_counter;
     for (uint32_t i = 0; i < 2u; ++i) store(color_header(i), &device_state.color[i], sizeof device_state.color[i]);
@@ -524,9 +536,37 @@ static void persist_display(void)
         };
         store(surface, &header, sizeof header);
         recomp_kernel_av_set_saved_data_address(surface);
+        back_buffer_saved = back_buffer_displayed;
     }
     recomp_runtime.registers.eax = surface != 0u ? RECOMP_D3D_OK : RECOMP_D3D_FAIL;
     recomp_runtime.registers.esp += 4u;
+}
+
+/* D3DDevice_CopyRects (0x344aa0, stdcall, 5 arguments). After a mode Reset
+   the game (0x2823f0) copies the saved display back into a 720-wide back
+   buffer so the next Swap repeats the last frame. The host back buffer already
+   holds those pixels, so that copy is complete without host work. */
+static void copy_rects(void)
+{
+    const uint32_t entry = recomp_runtime.registers.esp;
+    const uint32_t source = argument(entry, 0u), rects = argument(entry, 1u),
+        count = argument(entry, 2u), destination = argument(entry, 3u), points = argument(entry, 4u);
+    recomp_d3d8_require_device();
+    RecompD3dTextureDesc target, main_color;
+    target_surface(destination, false, &target);
+    target_surface(color_header(0u), false, &main_color);
+    bool bound = source != 0u && source == recomp_kernel_av_get_saved_data_address() &&
+        back_buffer_saved && target.data == main_color.data && points == 0u &&
+        device_state.scale[0] == 1u && device_state.scale[1] == 1u;
+    if (bound && rects != 0u) {
+        const uint32_t *rect = recomp_memory_u32(rects);
+        bound = count == 1u && rect[0] == 0u && rect[1] == 0u && rect[2] != 0u && rect[3] != 0u &&
+            rect[2] <= target.width && rect[3] <= target.height;
+    }
+    /* shortcut: only the saved-display restore is bound; other copies (such as
+       0x277670's render-target snapshot) need a presenter copy command. */
+    if (!bound) recomp_stop(2, "d3d8:copy-rects-unbound:%08" PRIx32 "->%08" PRIx32, source, destination);
+    recomp_runtime.registers.esp = entry + 24u;
 }
 
 static void reset_device(void)
@@ -578,9 +618,9 @@ static void reset_device(void)
     recomp_d3d8_submit(&clear.command);
     recomp_runtime.registers.eax = RECOMP_D3D_OK;
     recomp_runtime.registers.esp += 8u;
-    fprintf(stderr, "recomp d3d8: Reset %ux%u interval=%08x frame=%u\n",
-        candidate.width, candidate.height, request.presentation.full_screen_presentation_interval,
-        frame_state.swap_counter);
+    fprintf(stderr, "recomp d3d8: Reset %ux%u multisample=%04x interval=%08x frame=%u\n",
+        candidate.width, candidate.height, request.presentation.multi_sample_type,
+        request.presentation.full_screen_presentation_interval, frame_state.swap_counter);
 }
 
 /* Every SDK setter that is still unreplaced reserves console push-buffer
@@ -613,6 +653,7 @@ RecompFunction recomp_d3d8_lookup_manual(uint32_t address)
     case 0x003445f0u: return insert_fence;
     case 0x00344430u: return block_on_fence;
     case 0x00345d70u: return persist_display;
+    case 0x00344aa0u: return copy_rects;
     case 0x00344720u: return reset_device;
     /* CRI's no-argument tail aliases bypass generated callee lookup. */
     case 0x002fc300u: case 0x002fc5a0u: case 0x003444c0u: return block_until_vertical_blank;

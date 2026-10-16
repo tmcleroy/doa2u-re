@@ -18,6 +18,7 @@ enum {
     PARAMETERS = 0x1000u,
     OUTPUT = 0x1800u,
     VIEWPORT_OUTPUT = 0x1900u,
+    RECT_SOURCE = 0x1980u,
     TILE_SOURCE = 0x1a00u,
     COLOR_SOURCE = 0x2000u,
     DEPTH_SOURCE = 0x2200u,
@@ -677,6 +678,54 @@ int main(void)
     passed &= expect("fence wait drains and preserves void ABI", flush_count == 9u &&
         flush_wait && recomp_runtime.registers.eax == EAX_SENTINEL &&
         recomp_runtime.registers.esp == ENTRY_ESP + 8u);
+    /* Return Reset 0x2021 -> 0x11 (0x282770): the game widens the old
+       headers (0x2821a0) and persists the display before Reset. */
+    passed &= call(0x345d70u, arguments, 0u, NULL);
+    *recomp_memory_u32(COLOR_HEADER + 16u) = 0x5f1df5ffu;
+    *recomp_memory_u32(COLOR_HEADER + 0x18u + 16u) = 0x2f1df2ffu;
+    *recomp_memory_u32(DEPTH_HEADER + 16u) = 0x5f1df5ffu;
+    const RecompD3dSurfaceHeader narrow[3] = {
+        {0x50001u, 0x100000u, 0u, 0x11229u, 0x2f1df2cfu, 0u},
+        {0x50001u, 0x400000u, 0u, 0x11229u, 0x2f1df2cfu, 0u},
+        {0x50001u, 0x600000u, 0u, 0x12e29u, 0x2f1df2cfu, 0u},
+    };
+    memcpy(recomp_memory(COLOR_SOURCE, 2u * sizeof *narrow), narrow, 2u * sizeof *narrow);
+    memcpy(recomp_memory(DEPTH_SOURCE, sizeof *narrow), &narrow[2], sizeof *narrow);
+    *recomp_memory_u32(PARAMETERS + 16u) = 0x11u;
+    arguments[0] = PARAMETERS;
+    passed &= call(0x344720u, arguments, 1u, NULL);
+    passed &= expect("return reset restores the SDK 0x11 mode and fresh headers",
+        recomp_runtime.registers.eax == 0u &&
+        *recomp_memory_u32(DEVICE + 0x196cu) == 0x11u &&
+        *recomp_memory_u32(DEVICE + 0x96cu) == 0x3f800000u &&
+        *recomp_memory_u32(DEVICE + 0x970u) == 0x3f800000u &&
+        *recomp_memory_u32(DEVICE + 0x95cu) == 0x3f800000u &&
+        *recomp_memory_u32(DEVICE + 0x960u) == 0x3f800000u &&
+        *recomp_memory_u32(DEVICE + 0x954u) == 720u &&
+        *recomp_memory_u32(DEVICE + 0x958u) == 480u &&
+        (*recomp_memory_u32(DEVICE + 8u) & 0x4000u) == 0u &&
+        *recomp_memory_u32(DEVICE + 0x94cu) == 0xc00u &&
+        *recomp_memory_u32(0x3554c8u) == 0u && *recomp_memory_u32(0x355458u) == 2u &&
+        *recomp_memory_u32(DEVICE + 0x1a04u) == COLOR_HEADER &&
+        *recomp_memory_u32(COLOR_HEADER + 4u) == 0x100000u &&
+        *recomp_memory_u32(COLOR_HEADER + 16u) == 0x2f1df2cfu &&
+        *recomp_memory_u32(COLOR_HEADER + 0x18u + 16u) == 0x2f1df2cfu &&
+        *recomp_memory_u32(DEPTH_HEADER + 16u) == 0x2f1df2cfu &&
+        *recomp_memory_u32(DEVICE + 0xee8u) == 720u);
+    /* 0x2823f0 restores the saved display into the 720-wide back buffer. */
+    const uint32_t rect[4] = {0u, 0u, 0x2cfu, 0x1dfu};
+    memcpy(recomp_memory(RECT_SOURCE, sizeof rect), rect, sizeof rect);
+    const uint32_t copy[5] = {saved_display, RECT_SOURCE, 1u, COLOR_HEADER, 0u};
+    prior_submits = submit_count;
+    passed &= call(0x344aa0u, copy, 5u, NULL);
+    passed &= expect("saved-display copy is already in the host back buffer",
+        recomp_runtime.registers.esp == ENTRY_ESP + 24u &&
+        recomp_runtime.registers.eax == EAX_SENTINEL && submit_count == prior_submits);
+    const uint32_t front_copy[5] = {saved_display, RECT_SOURCE, 1u, COLOR_HEADER + 0x18u, 0u};
+    passed &= call(0x344aa0u, front_copy, 5u, "d3d8:copy-rects-unbound");
+    arguments[0] = 0u; arguments[1] = 0u; arguments[2] = 0xf3u;
+    passed &= call(0x347920u, arguments, 6u, NULL);
+    passed &= call(0x344aa0u, copy, 5u, "d3d8:copy-rects-unbound");
     recomp_d3d8_shutdown();
     passed &= expect("shutdown destroys presenter once", destroy_count == 1u);
     recomp_d3d8_shutdown();
