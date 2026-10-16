@@ -235,6 +235,8 @@ typedef struct RecompD3dPresenterDrawCommand {
     bool reflection_normalize;
     bool reflection_mesh_uv;
     bool reflection_premultiplied;
+    /* Discard a zero-alpha stage-1 texel before its reflection blend. */
+    bool reflection_alpha_kill;
     /* Stage 2 MODULATE(TEXTURE, CURRENT) without a stage-2 texture: the 5849
        compiler (0x352e46) passes CURRENT through, so no final diffuse. */
     bool reflection_skip_diffuse;

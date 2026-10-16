@@ -540,6 +540,15 @@ static int lighting_tests(void)
     CHECK(submitted.data.draw.reflection_bytes == ram + texture.data &&
         submitted.data.draw.reflection_byte_count == 64u);
     CHECK(!submitted.data.draw.reflection_skip_diffuse);
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected reflection kill stop: %s\n", stop_reason); return 1; }
+    for (uint32_t kills = 1u; kills <= 3u; ++kills) {
+        *recomp_memory_u32(STAGES + 11u * 4u) = (kills & 1u) ? 4u : 0u;
+        *recomp_memory_u32(STAGES + 128u + 11u * 4u) = (kills & 2u) ? 4u : 0u;
+        invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+        CHECK(submitted.data.draw.has_reflection && submitted.data.draw.alpha_kill == ((kills & 1u) != 0u) &&
+            submitted.data.draw.reflection_alpha_kill == ((kills & 2u) != 0u));
+    }
+    *recomp_memory_u32(STAGES + 11u * 4u) = *recomp_memory_u32(STAGES + 128u + 11u * 4u) = 0u;
     /* A second environment blend precedes the final diffuse stage. */
     uint32_t third_stages[4][32];
     recomp_guest_load(third_stages, STAGES, sizeof third_stages);

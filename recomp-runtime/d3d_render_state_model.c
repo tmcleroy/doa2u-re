@@ -504,7 +504,7 @@ bool recomp_d3d_reflection_material(const uint32_t stages[4][32])
             (stages[stage][1] != 1u && stages[stage][1] != 3u) ||
             stages[stage][3] != 2u || stages[stage][4] != 2u ||
             stages[stage][9] != 0u || stages[stage][10] != 0u ||
-            stages[stage][11] != 0u) return false;
+            (stages[stage][11] != 0u && (stage == 2u || stages[stage][11] != 4u))) return false;
     }
     /* Either stage, or both, may take camera-space reflection coordinates
        (COUNT2, byte +0xf mode 1 of table 0x7b018c); a non-generating stage reads mesh UV0. */

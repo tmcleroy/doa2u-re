@@ -707,6 +707,7 @@ static void attach_reflection(uint32_t device, const RecompD3dVertexLayout *layo
         if (!isfinite(draw->reflection_diffuse[i])) recomp_stop(2, "d3d8:reflection-material");
     draw->reflection_mesh_uv = stages[1][28] == 0u;
     draw->reflection_premultiplied = stages[1][12] == 16u;
+    draw->reflection_alpha_kill = stages[1][11] == 4u;
     draw->reflection_stage2 = stages[2][12] == 14u;
     if (draw->reflection_stage2) {
         RecompD3dPresenterDrawCommand third = {0};
@@ -779,8 +780,8 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
         if (layout->texcoord_count == 0u || stage[0][0] < 1u || stage[0][0] > 3u ||
             stage[0][1] < 1u || stage[0][1] > 3u || stage[0][3] != 2u || stage[0][4] != 2u ||
             stage[0][9] != 0u || stage[0][10] != 0u ||
-            /* ALPHAKILL is DISABLE (0) or ENABLE (4); the reflection path has no kill. */
-            (stage[0][11] != 0u && (stage[0][11] != 4u || draw->has_reflection)) ||
+            /* ALPHAKILL is DISABLE (0) or ENABLE (4), before the texture combine. */
+            (stage[0][11] != 0u && stage[0][11] != 4u) ||
             (draw->texture.mip_levels > 1u && stage[0][5] != 1u && stage[0][5] != 2u))
             recomp_stop(2, "d3d8:draw-texture-sampler:%u,%u:%u,%u,%u:%u,%u,%u:mips=%u:tc=%u",
                 stage[0][0], stage[0][1], stage[0][3], stage[0][4], stage[0][5], stage[0][9],

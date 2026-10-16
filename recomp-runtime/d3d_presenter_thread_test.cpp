@@ -493,7 +493,7 @@ static bool testLighting()
     return passed;
 }
 
-static bool testReflectionStage2()
+static bool testReflectionStage2(bool alpha_kill = false)
 {
     char folder[MAX_PATH], path[MAX_PATH];
     if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "en3", 0, path)) return false;
@@ -506,9 +506,10 @@ static bool testReflectionStage2()
         passed &= expect("third reflection clear", d3d11_backend_submit(presenter, &clear));
         struct Vertex { float x, y, z, nx, ny, nz, u, v; };
         const uint16_t indices[] = {0, 1, 2, 3};
-        const uint32_t base = 0xff0000ffu, environment = 0x80ff0000u;
         const unsigned alphas[] = {0, 128, 255};
         for (unsigned i = 0; i < 3; ++i) {
+            const uint32_t base = alpha_kill && i == 0 ? 0x000000ffu : 0xff0000ffu;
+            const uint32_t environment = alpha_kill ? (i == 1 ? 0x00ff0000u : 0xffff0000u) : 0x80ff0000u;
             const float left = -1.0f + i * (2.0f / 3.0f), right = left + 2.0f / 3.0f;
             const Vertex vertices[] = {{left,1,0.5f,0,0,1,0,0}, {right,1,0.5f,0,0,1,0,0},
                 {left,-1,0.5f,0,0,1,0,0}, {right,-1,0.5f,0,0,1,0,0}};
@@ -525,10 +526,12 @@ static bool testReflectionStage2()
             draw.has_transform = true;
             draw.transform[0] = draw.transform[5] = draw.transform[10] = draw.transform[15] = 1;
             draw.blend.color_write_mask = 15;
-            draw.blend.blend_enable = true;
+            draw.blend.blend_enable = !alpha_kill;
             draw.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
             draw.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
-            draw.has_texture = draw.has_reflection = draw.reflection_stage2 = true;
+            draw.has_texture = draw.has_reflection = true;
+            draw.reflection_stage2 = !alpha_kill;
+            draw.alpha_kill = draw.reflection_alpha_kill = alpha_kill;
             draw.texture.data = 0x1000u;
             draw.texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
             draw.texture.bits_per_pixel = 32;
@@ -566,14 +569,16 @@ static bool testReflectionStage2()
         passed &= expect("destroy third reflection", d3d11_backend_destroy(&presenter));
         if (FILE *file = std::fopen(path, "rb")) {
             const int expected[3][3] = {{8,0,16}, {4,24,8}, {0,96,0}};
+            const int killed[3][3] = {{0,0,0}, {0,0,0}, {0,0,128}};
             for (unsigned i = 0; i < 3; ++i) {
                 unsigned char bgr[3]{};
                 std::fseek(file, 54 + (239 - 120) * 960 + (53 + 107 * i) * 3, SEEK_SET);
                 passed &= std::fread(bgr, 1, 3, file) == 3;
                 for (unsigned c = 0; c < 3; ++c) {
-                    const bool ok = std::abs(int(bgr[c]) - expected[i][c]) <= 1;
+                    const int value = alpha_kill ? killed[i][c] : expected[i][c];
+                    const bool ok = std::abs(int(bgr[c]) - value) <= 1;
                     if (!ok) std::fprintf(stderr, "FAIL third reflection pixel %u channel=%u actual=%u expected=%d\n",
-                        i, c, bgr[c], expected[i][c]);
+                        i, c, bgr[c], value);
                     passed &= ok;
                 }
             }
@@ -1754,7 +1759,8 @@ int main()
 {
     recomp_d3d_presenter_set_immediate_present(false);
     if (!testTicks() || !testCapturedDraw() || !testMipSampler() || !testLines() || !testLighting() ||
-        !testReflectionStage2() || !testReflectionAddress(false) || !testReflectionAddress(true) || !testReflectionAddress(true, true) ||
+        !testReflectionStage2() || !testReflectionStage2(true) ||
+        !testReflectionAddress(false) || !testReflectionAddress(true) || !testReflectionAddress(true, true) ||
         !testReflectionAddress(false, false, true) || !testReflectionAddress(true, false, false, true) ||
         !testReflectionAddress(false, false, false, false, 0.0f) ||
         !testReflectionAddress(false, false, false, false, 0.5f) ||

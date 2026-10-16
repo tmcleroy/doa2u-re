@@ -205,8 +205,10 @@ void buildDrawShaderSource(
         "        float4 diffuse = %s;\n"
         "        if (directional_flags.x > 0.5f) diffuse.rgb = input.color.rgb;\n"
         "        float4 base = guest_texture.Sample(guest_sampler, input.texcoord);\n"
+        "        if (filter_flags.w > 0.5f && base.a == 0.0f) discard;\n"
         "        base.a *= diffuse.a;\n"
         "        float4 env = alpha_mask.Sample(mask_sampler, input.reflection_coord);\n"
+        "        if (reflection_stage2_flags.y > 0.5f && env.a == 0.0f) discard;\n"
         /* w: bit 0 premultiplied blend, bit 1 stage-2 pass-through (no diffuse). */
         "        shaded = (fmod(reflection_flags.w, 2.0f) > 0.5f\n"
         "            ? saturate(env + base * (1.0f - env.a)) : lerp(base, env, env.a));\n"
@@ -2981,6 +2983,7 @@ RecompD3dPresenterError submitDraw(
             sizeof draw.reflection_blend_normal);
     }
     if (draw.has_reflection) {
+        draw_constants[140 + 192 * 4 + 509] = draw.reflection_alpha_kill ? 1.0f : 0.0f;
         std::memcpy(draw_constants + 132, draw.reflection_diffuse, 16u);
         draw_constants[136] = draw.reflection_mesh_uv ? 2.0f : 1.0f;
         draw_constants[139] = (draw.reflection_premultiplied ? 1.0f : 0.0f) +

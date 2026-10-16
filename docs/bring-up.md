@@ -208,6 +208,9 @@ tests cover diffuse/ambient, point range/attenuation, specular, normal transform
 and alpha. The reflection material binds the sister presenter's two-texture
 straight or premultiplied texture-alpha blend and final diffuse modulation,
 with generated reflection coordinates or mesh UV0. Each stage keeps its own
+ALPHAKILL: a zero-alpha sampled texel discards the fragment before the blend,
+independently for stages 0 and 1. Native pixels check each discard and an
+opaque surviving fragment. Each stage also keeps its own
 mip filter, LOD bias and WRAP or CLAMP addressing. The fight's chrome (Zack,
 Stage 01) clamps its environment map while the base texture wraps, and
 FUN_002807f0 and FUN_00280f80 write a stage-0 LOD bias without touching stage
