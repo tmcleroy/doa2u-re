@@ -11,6 +11,10 @@
 
 enum {
     D3D_DIRTY = 0x00355058u,
+    D3D_RENDER_STATE = 0x00355260u,
+    D3D_STATE_DEFAULTS = 0x003536e0u,
+    D3D_SIMPLE_ENCODING = 0x003c18d0u,
+    D3D_DEFERRED_DIRTY = 0x003c16b0u,
     D3D_FOG_COLOR = 0x00355488u,
     G_FILL_MODE = 0x0035548cu,
     G_NORMALIZE = 0x00355498u,
@@ -42,6 +46,29 @@ void recomp_d3d8_state_reset(void)
 bool recomp_d3d8_state_set_simple(uint32_t method, uint32_t value)
 {
     return recomp_d3d_set_simple_render_state(&render_state, method, value);
+}
+
+/* CDevice::Init runs SetStateDefaults (0x34bc80): states 0x39..0xa5 from the
+   SDK table at 0x3536e0, except 0x7e/0x7f/0x9a, go through
+   SetRenderStateNotInline (0x346270), and ZENABLE (0x8f) follows the auto
+   depth surface. Games save and restore states by reading this shadow back. */
+void recomp_d3d8_state_write_defaults(bool auto_depth)
+{
+    for (uint32_t state = 0x39u; state < 0xa6u; ++state) {
+        if (state == 0x7eu || state == 0x7fu || state == 0x9au) continue;
+        const uint32_t value = state == 0x8fu ? (uint32_t)auto_depth :
+            *recomp_memory_u32(D3D_STATE_DEFAULTS + (state - 0x39u) * 4u);
+        if (state < 0x5cu) {
+            const uint32_t method = *recomp_memory_u32(D3D_SIMPLE_ENCODING + state * 4u);
+            if (!recomp_d3d_set_simple_render_state(&render_state, method, value))
+                recomp_stop(2, "d3d8:default-simple-state:%02x:%08x", state, method);
+        } else if (state < 0x88u) {
+            *recomp_memory_u32(D3D_DIRTY) |= *recomp_memory_u32(D3D_DEFERRED_DIRTY + state * 4u);
+        }
+        /* shortcut: complex defaults (0x88+) reach only the shadow, not their
+           setters' model state; replay the setters when a draw needs one. */
+        *recomp_memory_u32(D3D_RENDER_STATE + state * 4u) = value;
+    }
 }
 
 static void set_gamma(void)

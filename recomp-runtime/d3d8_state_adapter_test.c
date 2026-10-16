@@ -223,6 +223,29 @@ int main(void)
     for (uint32_t i = 0u; i < 8u; ++i) invoke(0x345300u, i, 1u);
     if (setjmp(stopped) == 0) { invoke(0x345300u, 8u, 1u); return 1; }
     CHECK(strcmp(stop_reason, "d3d8:unsupported-active-light-count") == 0);
+
+    /* SDK defaults: simple states reach the model, deferred set dirty bits,
+       and every replayed state lands in the shadow the game reads back. */
+    for (uint32_t state = 0x39u; state < 0x5cu; ++state)
+        *recomp_memory_u32(0x3c18d0u + state * 4u) = 0x40000u + state * 4u;
+    *recomp_memory_u32(0x3c18d0u + 0x43u * 4u) = 0x40358u;
+    *recomp_memory_u32(0x3536e0u + (0x43u - 0x39u) * 4u) = 0x01010101u;
+    *recomp_memory_u32(0x3536e0u + (0x66u - 0x39u) * 4u) = 1u;
+    *recomp_memory_u32(0x3c16b0u + 0x66u * 4u) = 0x1200u;
+    *recomp_memory_u32(0x3536e0u + (0x7eu - 0x39u) * 4u) = 0xdeadbeefu;
+    *recomp_memory_u32(0x3536e0u + (0x93u - 0x39u) * 4u) = 0x901u;
+    *recomp_memory_u32(DIRTY) = 0u;
+    recomp_d3d8_state_reset();
+    recomp_d3d8_state_write_defaults(true);
+    uint32_t mask = 0u;
+    CHECK(recomp_d3d_get_simple_render_state(recomp_d3d8_state_model(), 0x40358u, &mask) &&
+        mask == 0x01010101u && *recomp_memory_u32(0x35536cu) == 0x01010101u);
+    CHECK(*recomp_memory_u32(0x3553f8u) == 1u && *recomp_memory_u32(DIRTY) == 0x1200u);
+    CHECK(*recomp_memory_u32(0x355458u) == 0u && *recomp_memory_u32(0x35549cu) == 1u);
+    CHECK(*recomp_memory_u32(0x3554acu) == 0x901u);
+    *recomp_memory_u32(0x3c18d0u + 0x43u * 4u) = 0u;
+    if (setjmp(stopped) == 0) { recomp_d3d8_state_write_defaults(true); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:default-simple-state:43:00000000") == 0);
     passed &= check_frame_state() == 0;
     if (passed) puts("PASS D3D8 gamma, transform, fog, light, shader and frame-state ABI/shadow state");
     return passed ? 0 : 1;

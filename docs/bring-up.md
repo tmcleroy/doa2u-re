@@ -81,6 +81,10 @@ records and active slots, and fog color. Gamma uses two identity-initialized
 SDK shadow banks; Swap consumes the bank selected by preincrement frame
 parity. Light-array growth repairs active pointers. HRESULT and void
 calling conventions have separate synthetic ABI checks.
+CreateDevice replays the SDK render-state defaults from the game's own tables
+into the guest shadow and the simple-state model, so state the game saves and
+restores (such as the color write mask) keeps its SDK value. Complex-state
+defaults reach only the shadow.
 
 The frame-state adapter records semantic depth, stencil, blend and alpha-test
 state through the shared render-state model. Simple states use the SDK's

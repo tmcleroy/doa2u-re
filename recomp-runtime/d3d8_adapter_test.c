@@ -49,6 +49,7 @@ static RecompD3dPresenterError submit_error;
 static uint32_t create_count, submit_count, destroy_count;
 static uint32_t vblank_reset_count, wait_present_count, wait_vblank_count;
 void recomp_d3d8_state_reset(void) {}
+void recomp_d3d8_state_write_defaults(bool auto_depth) { (void)auto_depth; }
 void recomp_d3d8_resource_reset(void) {}
 bool recomp_d3d8_resource_describe(uint32_t resource, RecompD3dTextureDesc *out)
 {

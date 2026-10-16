@@ -199,6 +199,7 @@ static void write_initial_device(void)
     *recomp_memory_u32(DEVICE + 0x798u) = 2u;
     *recomp_memory_u32(DEVICE + 0x79cu) = 0u;
     *recomp_memory_u32(0x00355058u) |= 0x70u;
+    recomp_d3d8_state_write_defaults(*recomp_memory_u32(DEVICE + DEFAULT_DEPTH) != 0u);
 }
 
 static void validate_storage(const RecompD3dSurfaceHeader *surface)
