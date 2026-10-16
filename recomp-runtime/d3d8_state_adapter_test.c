@@ -246,6 +246,12 @@ int main(void)
     *recomp_memory_u32(0x3c18d0u + 0x43u * 4u) = 0u;
     if (setjmp(stopped) == 0) { recomp_d3d8_state_write_defaults(true); return 1; }
     CHECK(strcmp(stop_reason, "d3d8:default-simple-state:43:00000000") == 0);
+    /* BumpEnv stores BUMPENVMAT01 for stage 1 and pops three arguments. */
+    *recomp_memory_u32(STACK + 12u) = 0x3f000000u;
+    CHECK(invoke(0x346bc0u, 1u, 23u) == 0u && recomp_runtime.registers.esp == STACK + 16u);
+    CHECK(*recomp_memory_u32(0x355060u + (32u + 23u) * 4u) == 0x3f000000u);
+    if (setjmp(stopped) == 0) { invoke(0x346bc0u, 1u, 21u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:unsupported-bump-env:1:21") == 0);
     passed &= check_frame_state() == 0;
     if (passed) puts("PASS D3D8 gamma, transform, fog, light, shader and frame-state ABI/shadow state");
     return passed ? 0 : 1;

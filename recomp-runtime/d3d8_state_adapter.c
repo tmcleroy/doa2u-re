@@ -504,6 +504,19 @@ static void texcoord_index(void)
     kernel_return(2u, 0u);
 }
 
+/* SetTextureState_BumpEnv (0x346bc0, stdcall stage/state/value): BUMPENVMAT00
+   through BUMPENVLOFFSET (22..27) land in the deferred stage array 0x355060;
+   the NV2A method it also pushes has no host consumer. */
+static void bump_env(void)
+{
+    (void)recomp_d3d8_require_device();
+    uint32_t stage = kernel_arg(1u), state = kernel_arg(2u);
+    if (stage >= 4u || state < 22u || state > 27u)
+        recomp_stop(2, "d3d8:unsupported-bump-env:%u:%u", stage, state);
+    *recomp_memory_u32(0x355060u + (stage * 32u + state) * 4u) = kernel_arg(3u);
+    kernel_return(3u, 0u);
+}
+
 RecompFunction recomp_d3d8_state_lookup_manual(uint32_t address)
 {
     /* Verified 5849 API entries; unsupported state values stop explicitly. */
@@ -525,6 +538,7 @@ RecompFunction recomp_d3d8_state_lookup_manual(uint32_t address)
     case 0x00346760u: return line_width;
     case 0x00346a60u: return vertex_blend;
     case 0x00346ab0u: return texcoord_index;
+    case 0x00346bc0u: return bump_env;
     case 0x003475c0u: return stencil_fail;
     case 0x00346930u: return fill_mode;
     case 0x00347490u: return z_enable;
