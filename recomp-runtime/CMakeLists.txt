@@ -58,7 +58,7 @@ add_executable(recomp_d3d8_resource_test d3d8_resource_adapter.c d3d_texture_mod
     d3d8_resource_adapter_test.c)
 add_test(NAME recomp-runtime-d3d8-resource COMMAND recomp_d3d8_resource_test)
 add_executable(recomp_d3d8_draw_test d3d8_draw_adapter.c d3d8_draw_adapter_test.c
-    d3d_draw_model.c d3d_texture_model.c d3d_render_state_model.c)
+    d3d_draw_model.c d3d_texture_model.c d3d_render_state_model.c d3d_vertex_shader_model.c)
 add_test(NAME recomp-runtime-d3d8-draw COMMAND recomp_d3d8_draw_test)
 add_executable(recomp_d3d_light_test d3d_light_model.c d3d_light_model_test.c)
 add_test(NAME recomp-runtime-d3d-light COMMAND recomp_d3d_light_test)

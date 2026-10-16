@@ -301,8 +301,43 @@ static int check_frame_state(void)
     *recomp_memory_u32(DIRTY) = 0u;
     CHECK(invoke(0x349320u, 0x112u, 0u) == 0u);
     CHECK(*recomp_memory_u32(DIRTY) == 0x70u);
-    if (setjmp(stopped) == 0) { invoke(0x349320u, 0x357b81u, 0u); return 1; }
-    CHECK(strncmp(stop_reason, "d3d8:programmable-shader-unbound", 32) == 0);
+    /* A program handle loads its code at slot 0 and selects its object. */
+    enum { PROGRAM = 0x358000u };
+    const uint32_t upload[5] = {(4u << 18u) | 0xb00u, 1u, 2u, 3u, 4u};
+    *recomp_memory_u32(PROGRAM + 4u) = 0x10u;
+    *recomp_memory_u32(PROGRAM + 8u) = 1u;
+    *recomp_memory_u32(PROGRAM + 0xcu) = 5u;
+    recomp_guest_store(PROGRAM + 0x114u, upload, sizeof upload);
+    *recomp_memory_u32(DIRTY) = 0u;
+    CHECK(invoke(0x349320u, PROGRAM + 1u, 0u) == 0u);
+    CHECK(recomp_runtime.registers.esp == STACK + 8u);
+    CHECK(*recomp_memory_u32(DEVICE + 0x794u) == PROGRAM);
+    CHECK(*recomp_memory_u32(DEVICE + 0x798u) == PROGRAM + 1u);
+    CHECK(*recomp_memory_u32(DEVICE + 0x79cu) == 0u);
+    CHECK(*recomp_memory_u32(DIRTY) == 0x1070u);
+    CHECK(memcmp(ram + DEVICE + 0x10a8u, upload + 1, 16u) == 0);
+    *recomp_memory_u32(DIRTY) = 0u;
+    CHECK(invoke(0x349320u, PROGRAM + 1u, 0u) == 0u);
+    CHECK(*recomp_memory_u32(DIRTY) == 0x70u);
+    *recomp_memory_u32(PROGRAM + 0x114u) = (4u << 18u) | 0xb80u;
+    if (setjmp(stopped) == 0) { invoke(0x349320u, PROGRAM + 1u, 0u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:vertex-program-unsupported:00358001") == 0);
+    *recomp_memory_u32(DEVICE + 0x794u) = 0x357b80u;
+    float values[16];
+    for (uint32_t i = 0u; i < 16u; ++i) values[i] = (float)i;
+    recomp_guest_store(INPUT, values, sizeof values);
+    recomp_runtime.registers.ecx = 96u;
+    recomp_runtime.registers.edx = INPUT;
+    recomp_runtime.registers.esp = STACK;
+    recomp_d3d8_state_lookup_manual(0x348e40u)();
+    CHECK(recomp_runtime.registers.esp == STACK + 4u);
+    CHECK(memcmp(ram + 0x354440u + 96u * 16u, values, sizeof values) == 0);
+    recomp_runtime.registers.ecx = 191u;
+    recomp_d3d8_state_lookup_manual(0x348de0u)();
+    CHECK(memcmp(ram + 0x354440u + 191u * 16u, values, 16u) == 0);
+    recomp_runtime.registers.ecx = 189u;
+    if (setjmp(stopped) == 0) { recomp_d3d8_state_lookup_manual(0x348e40u)(); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:vertex-constant-range:189") == 0);
     if (setjmp(stopped) == 0) { invoke(0x349320u, 0x902u, 0u); return 1; }
     CHECK(strncmp(stop_reason, "d3d8:invalid-fvf", 16) == 0);
     *recomp_memory_u32(DEVICE + 0x794u) = 0u;

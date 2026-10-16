@@ -17,4 +17,8 @@ bool recomp_d3d_build_fixed_function_declaration(
     uint32_t fvf,
     uint32_t declaration[RECOMP_D3D_VERTEX_DECLARATION_WORDS]);
 
+/* Unpack bounded vertex-program upload blocks; reject other command types. */
+bool recomp_d3d_unpack_vertex_program(const uint32_t *packed, uint32_t words,
+    uint32_t instructions, uint32_t program[136][4]);
+
 #endif

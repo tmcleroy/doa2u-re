@@ -260,15 +260,46 @@ static void light_enable(void)
     kernel_return(2u, 0u);
 }
 
+/* 5849 SetVertexShader on a program handle runs LoadVertexShader(handle, 0)
+   (0x348fb0) then SelectVertexShader(handle, 0) (0x349010). The object at
+   handle - 1 comes from CreateVertexShader (0x348c80): flags +4, instruction
+   count +8, upload word count +0xc, upload blocks +0x114. */
+static void set_vertex_program(uint32_t device, uint32_t handle, uint32_t declaration)
+{
+    const uint32_t object = handle - 1u;
+    const uint32_t flags = *recomp_memory_u32(object + 4u);
+    const uint32_t count = *recomp_memory_u32(object + 8u);
+    const uint32_t words = *recomp_memory_u32(object + 0xcu);
+    uint32_t program[136][4];
+    /* shortcut: declaration-only handles and declaration constant uploads stay
+       guarded; bind them when a run reaches one. */
+    if ((flags & 0x10u) == 0u || words > 680u ||
+        !recomp_d3d_unpack_vertex_program(
+            (const uint32_t *)(const void *)recomp_memory(object + 0x114u, words * 4u),
+            words, count, program))
+        recomp_stop(2, "d3d8:vertex-program-unsupported:%08x", handle);
+    /* Load copies code into the device program shadow unless the device
+       defers it (+8 bit 0x10); constants come from SetVertexShaderConstant. */
+    if ((*recomp_memory_u32(device + 8u) & 0x10u) == 0u)
+        recomp_guest_store(device + 0x10a8u, program, count * sizeof program[0]);
+    const uint32_t old_flags = *recomp_memory_u32(declaration + 4u);
+    *recomp_memory_u32(D3D_DIRTY) |= ((flags ^ old_flags) & 0x13u) != 0u ? 0x1070u : 0x70u;
+    *recomp_memory_u32(device + DEV_DECLARATION) = object;
+    *recomp_memory_u32(device + DEV_SHADER_HANDLE) = handle;
+    *recomp_memory_u32(device + DEV_PROGRAM_SLOT) = 0u;
+}
+
 static void set_vertex_shader(void)
 {
     uint32_t device = recomp_d3d8_require_device();
     uint32_t handle = kernel_arg(1u);
-    /* shortcut: odd handles select programmable declaration/program paths;
-       bind them with the shader-draw producer. */
-    if ((handle & 1u) != 0u) recomp_stop(2, "d3d8:programmable-shader-unbound:%08x", handle);
     uint32_t declaration = *recomp_memory_u32(device + DEV_DECLARATION);
     if (declaration == 0u) recomp_stop(2, "d3d8:missing-declaration");
+    if ((handle & 1u) != 0u) {
+        set_vertex_program(device, handle, declaration);
+        kernel_return(1u, 0u);
+        return;
+    }
     const uint32_t old_flags = *recomp_memory_u32(declaration + 4u);
     const uint32_t old_mask = *recomp_memory_u32(declaration + 0x10u);
     uint32_t *image = (uint32_t *)(void *)recomp_memory(
@@ -295,6 +326,20 @@ static void set_render_state_simple(void)
     }
     recomp_runtime.registers.esp += 4u;
 }
+
+/* 5849 SetVertexShaderConstant1/4 (0x348de0/0x348e40) take the register in
+   ECX and the source in EDX. Keep only the 192-entry shadow at 0x354440,
+   which program draws read; the console push is GPU-only. */
+static void vertex_constants(uint32_t count)
+{
+    const uint32_t index = recomp_runtime.registers.ecx;
+    if (index > 192u - count) recomp_stop(2, "d3d8:vertex-constant-range:%u", index);
+    recomp_guest_memcpy(0x354440u + index * 16u, recomp_runtime.registers.edx, count * 16u);
+    recomp_runtime.registers.esp += 4u;
+}
+
+static void vertex_constant1(void) { vertex_constants(1u); }
+static void vertex_constant4(void) { vertex_constants(4u); }
 
 static void get_transform(void)
 {
@@ -444,6 +489,8 @@ RecompFunction recomp_d3d8_state_lookup_manual(uint32_t address)
     case 0x00347490u: return z_enable;
     case 0x00347520u: return stencil_enable;
     case 0x00347800u: return multi_sample_anti_alias;
+    case 0x00348de0u: return vertex_constant1;
+    case 0x00348e40u: return vertex_constant4;
     case 0x00349320u: return set_vertex_shader;
     default: return NULL;
     }

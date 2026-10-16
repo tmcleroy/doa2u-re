@@ -60,6 +60,20 @@ int main(void)
         recomp_d3d_build_fixed_function_declaration(0x902u, declaration), 0u);
     passed &= expect_u32("null declaration rejected",
         recomp_d3d_build_fixed_function_declaration(0x112u, NULL), 0u);
+
+    uint32_t packed[10] = {(4u << 18u) | 0xb00u, 1u, 2u, 3u, 4u,
+        (4u << 18u) | 0xb00u, 5u, 6u, 7u, 8u};
+    uint32_t program[136][4] = {0};
+    passed &= expect_u32("program upload", recomp_d3d_unpack_vertex_program(
+        packed, 10u, 2u, program), 1u);
+    passed &= expect_u32("program last word", program[1][3], 8u);
+    passed &= expect_u32("truncated program", recomp_d3d_unpack_vertex_program(
+        packed, 9u, 2u, program), 0u);
+    passed &= expect_u32("program count mismatch", recomp_d3d_unpack_vertex_program(
+        packed, 10u, 1u, program), 0u);
+    packed[0] = (4u << 18u) | 0xb80u;
+    passed &= expect_u32("constant upload is not code", recomp_d3d_unpack_vertex_program(
+        packed, 10u, 2u, program), 0u);
     if (passed) puts("PASS fixed-function vertex declaration builder");
     return passed ? 0 : 1;
 }

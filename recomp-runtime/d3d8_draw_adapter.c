@@ -6,6 +6,7 @@
 #include "d3d_device_model.h"
 #include "d3d_draw_model.h"
 #include "d3d_light_model.h"
+#include "d3d_vertex_shader_model.h"
 #include "kernel_abi.h"
 #include "stop_report.h"
 
@@ -498,6 +499,98 @@ static void fixed_stages(const RecompD3dVertexLayout *layout, RecompD3dPresenter
     }
 }
 
+/* A bound 5849 vertex program (see set_vertex_program). Code comes from the
+   CreateVertexShader object, constants from the 192-entry shadow 0x354440
+   written by SetVertexShaderConstant1/4 (0x348de0/0x348e40). c58/c59 hold the
+   viewport scale and offset as GetViewportOffsetAndScale (0x3462d0) computes
+   them. shortcut: only the observed position/normal/UV declaration (as FVF
+   0x112); admit other declarations when a run reaches them. */
+static void attach_program(uint32_t device, RecompD3dPresenterDrawCommand *draw)
+{
+    const uint32_t handle = draw->fvf;
+    uint32_t words[0x114u / 4u];
+    recomp_guest_load(words, handle - 1u, sizeof words);
+    for (uint32_t i = 0u; i < 16u; ++i) {
+        const uint32_t *slot = words + 5u + i * 4u;
+        const uint32_t type = i == 0u || i == 2u ? 0x32u : i == 9u ? 0x22u : 2u;
+        if (slot[2] != type || (type != 2u &&
+                (slot[0] != 0u || slot[1] != (i == 0u ? 0u : i == 2u ? 12u : 24u))))
+            recomp_stop(2, "d3d8:vertex-program-declaration:%08x:%u", handle, i);
+    }
+    if (words[3] > 680u || !recomp_d3d_unpack_vertex_program(
+            (const uint32_t *)(const void *)recomp_memory(handle - 1u + 0x114u, words[3] * 4u),
+            words[3], words[2], draw->program))
+        recomp_stop(2, "d3d8:vertex-program-unsupported:%08x", handle);
+    draw->program_count = words[2];
+    recomp_guest_load(draw->program_constants, 0x354440u, sizeof draw->program_constants);
+    RecompD3dViewport viewport;
+    float scale[2], offset[2], depth;
+    recomp_guest_load(&viewport, device + 0xee0u, sizeof viewport);
+    recomp_guest_load(scale, device + 0x95cu, sizeof scale);
+    recomp_guest_load(&depth, device + 0x948u, sizeof depth);
+    recomp_guest_load(offset, device + 0xef8u, sizeof offset);
+    if ((*recomp_memory_u32(device + 8u) & 0x8000u) != 0u && *recomp_memory_u32(0x3554c0u) != 0u) {
+        offset[0] -= 0.5f;
+        offset[1] -= 0.5f;
+    }
+    float *s = draw->program_constants[58], *o = draw->program_constants[59];
+    s[0] = (float)viewport.width * scale[0] * 0.5f;
+    s[1] = (float)viewport.height * scale[1] * -0.5f;
+    s[2] = (viewport.max_z - viewport.min_z) * depth;
+    s[3] = 0.0f;
+    o[0] = s[0] + (float)viewport.x * scale[0] + offset[0];
+    o[1] = -s[1] + (float)viewport.y * scale[1] + offset[1];
+    o[2] = viewport.min_z * depth;
+    o[3] = 0.0f;
+    for (uint32_t i = 0u; i < 3u; ++i)
+        if (!isfinite(s[i]) || !isfinite(o[i])) recomp_stop(2, "d3d8:vertex-program-viewport");
+    draw->fvf = 0x112u;
+}
+
+/* The presenter's program path samples stage 0 and optionally masks alpha
+   with stage 1, as in DOA3's water passes. Other combiners stop. */
+static void program_stages(uint32_t device, RecompD3dPresenterDrawCommand *draw)
+{
+    uint32_t stage[3][32];
+    recomp_guest_load(stage, STAGES, sizeof stage);
+    const uint32_t select_texture[6] = {2u, 2u, 0u, 2u, 2u, 0u};
+    const uint32_t alpha_mask[6] = {2u, 1u, 0u, 4u, 1u, 2u};
+    const uint32_t fields[6] = {12u, 14u, 15u, 16u, 18u, 19u};
+    uint32_t args[2][6];
+    for (uint32_t i = 0u; i < 2u; ++i)
+        for (uint32_t k = 0u; k < 6u; ++k) args[i][k] = stage[i][fields[k]];
+    const bool mask_combiner = memcmp(args[1], alpha_mask, sizeof args[1]) == 0;
+    /* 5849's combiner compiler (0x352e46) compiles an op that reads a NULL
+       texture as a CURRENT pass-through, so an unbound mask leaves alpha as is. */
+    draw->program_alpha_mask = mask_combiner && *recomp_memory_u32(device + 0xf8cu) != 0u;
+    if (*recomp_memory_u32(device + PIXEL_HANDLE) != 0u || !draw->has_texture ||
+        memcmp(args[0], select_texture, sizeof args[0]) != 0 || stage[2][12] != 1u ||
+        (args[1][0] != 1u && !mask_combiner))
+        recomp_stop(2, "d3d8:vertex-program-stages:%u:%u:%u:%u:%u", args[0][0], args[0][1],
+            args[0][3], args[1][0], stage[2][12]);
+    if (draw->program_alpha_mask) {
+        RecompD3dPresenterDrawCommand mask = {0};
+        attach_texture(device, 1u, &mask);
+        if (mask.palette_bytes != NULL) recomp_stop(2, "d3d8:vertex-program-mask-palette");
+        draw->reflection_texture = mask.texture;
+        draw->reflection_bytes = mask.texture_bytes;
+        draw->reflection_byte_count = mask.texture_byte_count;
+    }
+    /* Admitted: linear min/mag, point mip, no color key, sign, kill or transform. */
+    for (uint32_t i = 0u; i < (draw->program_alpha_mask ? 2u : 1u); ++i) {
+        const uint32_t *t = stage[i];
+        if (t[0] != t[1] || t[0] < 1u || t[0] > 3u || t[3] != 2u || t[4] != 2u ||
+            t[5] != 1u || t[7] != 0u || t[9] != 0u || t[10] != 0u || t[11] != 0u ||
+            t[21] != 0u || (i == 0u && draw->texture.mip_levels != 1u))
+            recomp_stop(2, "d3d8:vertex-program-sampler:%u:%u:%u:%u:%u:%u", i, t[0], t[3],
+                t[4], t[5], t[21]);
+        if (i == 1u) memcpy(&draw->program_mask_lod_bias, &t[6], sizeof draw->program_mask_lod_bias);
+    }
+    if (!isfinite(draw->program_mask_lod_bias) || draw->program_mask_lod_bias < -16.0f ||
+        draw->program_mask_lod_bias > 15.99f)
+        recomp_stop(2, "d3d8:vertex-program-lod-bias");
+}
+
 static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     uint32_t stride, uint32_t index_address)
 {
@@ -513,6 +606,8 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     RecompD3dPresenterCommand command = {0};
     RecompD3dPresenterDrawCommand *draw = &command.data.draw;
     draw->fvf = *recomp_memory_u32(device + 0x798u);
+    const bool program = (draw->fvf & 1u) != 0u;
+    if (program) attach_program(device, draw);
     RecompD3dVertexLayout layout;
     if ((draw->fvf & 1u) != 0u || !recomp_d3d_fvf_layout(draw->fvf, &layout) ||
         layout.stride > stride || (draw->fvf & ~0xfdfu) != 0u)
@@ -543,7 +638,7 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     draw->vertex_stride = stride;
     draw->primitive_type = primitive;
     draw->triangle_count = triangles;
-    if (!layout.pretransformed) {
+    if (!layout.pretransformed && !program) {
         float view[16], projection[16], world[16], vp[16];
         recomp_guest_load(view, device + 0xc60u, sizeof view);
         recomp_guest_load(projection, device + 0xca0u, sizeof projection);
@@ -564,8 +659,11 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     const float rect[6] = {(float)viewport.x, (float)viewport.y, (float)viewport.width,
         (float)viewport.height, viewport.min_z, viewport.max_z};
     memcpy(draw->viewport, rect, sizeof rect);
-    recomp_guest_load(draw->screen_space_offset, device + 0xef8u, sizeof draw->screen_space_offset);
-    for (uint32_t i = 0u; i < 2u; ++i) draw->screen_space_offset[i] -= 0.53125f;
+    /* Program draws carry the offset in c59. */
+    if (!program) {
+        recomp_guest_load(draw->screen_space_offset, device + 0xef8u, sizeof draw->screen_space_offset);
+        for (uint32_t i = 0u; i < 2u; ++i) draw->screen_space_offset[i] -= 0.53125f;
+    }
     const uint32_t scissors = *recomp_memory_u32(device + 0x1c00u);
     if (scissors > 1u || (scissors != 0u && *recomp_memory_u32(device + 0x1c04u) != 0u))
         recomp_stop(2, "d3d8:draw-scissors");
@@ -589,8 +687,10 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     draw->texture_factor = state->texture_factor;
     recomp_d3d8_target(&draw->target);
     attach_texture(device, 0u, draw);
-    attach_lighting(device, &layout, draw);
-    if (*recomp_memory_u32(device + PIXEL_HANDLE) != 0u) {
+    if (!program) attach_lighting(device, &layout, draw);
+    if (program) {
+        program_stages(device, draw);
+    } else if (*recomp_memory_u32(device + PIXEL_HANDLE) != 0u) {
         if (!four_tap(device, draw) && !bright_pass(device, draw))
             recomp_stop(2, "d3d8:draw-pixel-shader-unsupported");
     } else {

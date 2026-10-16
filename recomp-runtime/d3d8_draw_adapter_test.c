@@ -283,7 +283,7 @@ static int draw_tests(void)
         submitted.data.draw.index_count == 4u && submitted.data.draw.triangle_count == 2u);
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 65537u, VERTICES, 28u); return 1; }
     CHECK(strcmp(stop_reason, "d3d8:draw-span") == 0);
-    *recomp_memory_u32(DEVICE + 0x798u) = 3u;
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x1002u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 28u); return 1; }
     CHECK(strncmp(stop_reason, "d3d8:draw-vertex-layout", 23u) == 0);
     *recomp_memory_u32(DEVICE + 0x798u) = 0x144u;
@@ -525,10 +525,70 @@ static int bright_tests(void)
     return 0;
 }
 
+static int program_tests(void)
+{
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected stop: %s\n", stop_reason); return 1; }
+    initialize();
+    enum { PROGRAM = 0x9000u };
+    for (uint32_t i = 0u; i < 16u; ++i) *recomp_memory_u32(PROGRAM + 0x1cu + i * 16u) = 2u;
+    *recomp_memory_u32(PROGRAM + 4u) = 0x10u;
+    *recomp_memory_u32(PROGRAM + 8u) = 1u;
+    *recomp_memory_u32(PROGRAM + 0xcu) = 5u;
+    *recomp_memory_u32(PROGRAM + 0x1cu) = 0x32u;
+    *recomp_memory_u32(PROGRAM + 0x38u) = 12u;
+    *recomp_memory_u32(PROGRAM + 0x3cu) = 0x32u;
+    *recomp_memory_u32(PROGRAM + 0xa8u) = 24u;
+    *recomp_memory_u32(PROGRAM + 0xacu) = 0x22u;
+    const uint32_t upload[5] = {(4u << 18u) | 0xb00u, 1u, 2u, 3u, 4u};
+    recomp_guest_store(PROGRAM + 0x114u, upload, sizeof upload);
+    const float one = 1.0f, two = 2.0f, constant = 7.0f;
+    recomp_guest_store(DEVICE + 0x95cu, &one, 4u);
+    recomp_guest_store(DEVICE + 0x960u, &one, 4u);
+    recomp_guest_store(DEVICE + 0x948u, &two, 4u);
+    recomp_guest_store(0x354440u + 96u * 16u, &constant, 4u);
+    *recomp_memory_u32(DEVICE + 0x798u) = PROGRAM + 1u;
+    *recomp_memory_u32(DEVICE + 0xf88u) = 0x7000u;
+    *recomp_memory_u32(STAGES + 20u) = 1u;
+    *recomp_memory_u32(STAGES + 48u) = *recomp_memory_u32(STAGES + 64u) = 2u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    const RecompD3dPresenterDrawCommand *draw = &submitted.data.draw;
+    CHECK(submits == 1u && draw->fvf == 0x112u && draw->program_count == 1u);
+    CHECK(draw->program[0][3] == 4u && draw->program_constants[96][0] == 7.0f);
+    CHECK(draw->program_constants[58][0] == 360.0f && draw->program_constants[58][1] == -240.0f);
+    CHECK(draw->program_constants[58][2] == 2.0f && draw->program_constants[59][0] == 360.53125f);
+    CHECK(draw->program_constants[59][1] == 240.53125f && draw->program_constants[59][2] == 0.0f);
+    CHECK(!draw->has_transform && draw->screen_space_offset[0] == 0.0f && !draw->program_alpha_mask);
+    /* Multisampled back-buffer rendering shifts the sample grid by half a pixel. */
+    *recomp_memory_u32(DEVICE + 8u) = 0x8000u;
+    *recomp_memory_u32(0x3554c0u) = 1u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    CHECK(draw->program_constants[59][0] == 360.03125f);
+    /* Stage 1 masks alpha with its own texture. */
+    const uint32_t mask_stage[6][2] = {{48u, 2u}, {56u, 1u}, {60u, 0u}, {64u, 4u}, {72u, 1u}, {76u, 2u}};
+    for (uint32_t i = 0u; i < 6u; ++i) *recomp_memory_u32(STAGES + 128u + mask_stage[i][0]) = mask_stage[i][1];
+    *recomp_memory_u32(STAGES + 128u + 20u) = 1u;
+    *recomp_memory_u32(STAGES + 128u + 24u) = 0xc0000000u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    CHECK(submits == 3u && !draw->program_alpha_mask);
+    *recomp_memory_u32(DEVICE + 0xf8cu) = 0x7000u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    CHECK(submits == 4u && draw->program_alpha_mask && draw->reflection_bytes == ram + 0x8000u);
+    CHECK(draw->program_mask_lod_bias == -2.0f);
+    *recomp_memory_u32(STAGES + 48u) = 4u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
+    CHECK(submits == 4u && strncmp(stop_reason, "d3d8:vertex-program-stages", 26) == 0);
+    *recomp_memory_u32(STAGES + 48u) = 2u;
+    *recomp_memory_u32(PROGRAM + 0x38u) = 16u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:vertex-program-declaration:00009001:2") == 0);
+    return 0;
+}
+
 int main(void)
 {
     initialize();
-    if (pixel_tests() || draw_tests() || lighting_tests() || filter_tests() || bright_tests()) return 1;
+    if (pixel_tests() || draw_tests() || lighting_tests() || filter_tests() || bright_tests() ||
+        program_tests()) return 1;
     puts("PASS D3D8 pixel lifecycle/constants and semantic draw ABI/snapshots");
     return 0;
 }

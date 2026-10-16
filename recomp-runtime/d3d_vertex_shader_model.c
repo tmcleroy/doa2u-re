@@ -1,10 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Fixed-function declaration builder taken from committed DOA3 public source
    (doa3-re d3d_vertex_shader_model.c); its operations and offsets match the
-   inspected DOA2U 5849 builder. DOA3's binding model and program unpacking
-   are intentionally not carried over: this adapter latches shader state in
-   the verified 5849 device shadows instead. */
+   inspected DOA2U 5849 builder. Program unpacking is the same DOA3 source;
+   5849 CreateVertexShader (0x348c80) emits the same 0xb00 upload blocks.
+   DOA3's binding model is not carried over: the adapter latches shader state
+   in the verified 5849 device shadows instead. */
 #include "d3d_vertex_shader_model.h"
+
+#include <string.h>
 
 enum {
     D3D_FVF_POSITION_MASK = 0x0000000eu,
@@ -94,4 +97,22 @@ bool recomp_d3d_build_fixed_function_declaration(
         texture_formats >>= 2u;
     }
     return true;
+}
+
+bool recomp_d3d_unpack_vertex_program(const uint32_t *packed, uint32_t words,
+    uint32_t instructions, uint32_t program[136][4])
+{
+    if (!packed || !program || !instructions || instructions > 136u ||
+        !words || words > 680u) return false;
+    uint32_t pos = 0u, count = 0u;
+    while (pos < words) {
+        uint32_t header = packed[pos++];
+        uint32_t size = (header >> 18u) & 0x7ffu;
+        if ((header & 0x3ffffu) != 0xb00u || !size || size % 4u ||
+            size > words - pos || size / 4u > instructions - count) return false;
+        memcpy(program[count], packed + pos, size * 4u);
+        count += size / 4u;
+        pos += size;
+    }
+    return count == instructions;
 }

@@ -86,9 +86,12 @@ The frame-state adapter records semantic depth, stencil, blend and alpha-test
 state through the shared render-state model. Simple states use the SDK's
 fastcall convention, with separate guest shadows maintained by the caller.
 SetVertexShader rebuilds the fixed-function declaration and applies the 5849
-dirty bits. SetMaterial retains its 17-word device shadow. Programmable vertex
-shaders, spot lights, nondefault raster modes and runtime multisampling remain
-explicit limits.
+dirty bits. Program handles load their CreateVertexShader upload blocks into
+the device program shadow and select the object as LoadVertexShader and
+SelectVertexShader do; SetVertexShaderConstant1/4 keep the 192-entry constant
+shadow. Declaration-only handles and declaration constants stop explicitly.
+SetMaterial retains its 17-word device shadow. Spot lights, nondefault raster
+modes and runtime multisampling remain explicit limits.
 
 `d3d8_resource_adapter.c` binds registered textures, palettes, vertex/index
 buffers and surface views. Binding references retain storage independently
@@ -134,6 +137,13 @@ the draw's screen-space offset. Zero rectangles restores viewport clipping,
 including pretransformed draws. Viewport, target and reset calls clear the
 explicit rectangle as the SDK does. Multiple/exclusive rectangles and negative
 edges remain guarded.
+
+Programmable vertex draws snapshot the bound program, the constant shadow and
+the viewport scale/offset constants c58/c59 that GetViewportOffsetAndScale
+computes. They admit the position/normal/UV declaration and the sister
+presenter's stage-0 texture select with an optional stage-1 alpha mask. As the
+5849 combiner compiler does, an op that reads an unbound texture passes CURRENT
+through. Other declarations, combiners and pixel shaders stop explicitly.
 BGRA8 offscreen color targets and D24S8 custom depth targets bind through the
 shared presenter; clears and draws
 snapshot their storage descriptors. Binding counts retain parent textures,
