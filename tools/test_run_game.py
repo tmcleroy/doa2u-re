@@ -29,13 +29,16 @@ class DiscTests(unittest.TestCase):
                     patch("run_game.subprocess.run") as execute:
                 execute.return_value.returncode = 0
                 self.assertEqual(run(1, [30, 100], [200], isolated=True,
-                                     buttons_polls=[(3800, 8), (4000, 1)]), 0)
+                                     buttons_polls=[(3800, 8), (4000, 1)],
+                                     analog_polls=[(4500, 3), (4600, 1)]), 0)
                 command = execute.call_args.args[0]
                 self.assertEqual(command[command.index("--disc-root") + 1],
                                  str(root / "private/probe-disc"))
                 self.assertIn("--input-script-only", command)
-                self.assertEqual(command[-6:], ["--input-buttons-pulse-at", "3800", "8",
-                                               "--input-buttons-pulse-at", "4000", "1"])
+                self.assertEqual(command[-12:-6], ["--input-buttons-pulse-at", "3800", "8",
+                                                  "--input-buttons-pulse-at", "4000", "1"])
+                self.assertEqual(command[-6:], ["--input-analog-pulse-at", "4500", "3",
+                                               "--input-analog-pulse-at", "4600", "1"])
             self.assertEqual(save.read_text(), "user save")
             self.assertFalse((root / "private/probe-disc/.recomp-storage").exists())
 
@@ -49,6 +52,12 @@ class DiscTests(unittest.TestCase):
                       [(1, -1)], [(1, 8)] * 1025):
             with self.assertRaisesRegex(ValueError, "Button polls"):
                 run(1, buttons_polls=polls)
+
+    def test_rejects_invalid_analog_polls_before_reading_inputs(self):
+        for polls in ([(0, 3)], [(-1, 3)], [(2**64, 3)], [(1, -1)], [(1, 8)],
+                      [(1, 3)] * 1025):
+            with self.assertRaisesRegex(ValueError, "Analog polls"):
+                run(1, analog_polls=polls)
 
     def test_links_files_and_keeps_source_saves_out(self):
         with tempfile.TemporaryDirectory() as folder:

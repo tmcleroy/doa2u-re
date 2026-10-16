@@ -334,6 +334,21 @@ int recomp_input_pulse_source_test(void)
         source.pulse_poll_count,
         RECOMP_INPUT_PULSE_POLL_CAPACITY);
 
+    /* Scheduled analog edges address each guest button and release next poll. */
+    recomp_input_pulse_source_init(&source, NULL, 0u);
+    passed &= recomp_input_pulse_source_add_analog_poll(&source, 0u, 0u, 0xffu) ? 0 : 1;
+    passed &= recomp_input_pulse_source_add_analog_poll(&source, 1u, 8u, 0xffu) ? 0 : 1;
+    for (uint8_t index = 0u; index < RECOMP_INPUT_ANALOG_BUTTON_COUNT; ++index)
+        passed &= recomp_input_pulse_source_add_analog_poll(&source, 1u + index * 2u,
+            index, RECOMP_INPUT_ANALOG_PRESSED) ? 1 : 0;
+    for (uint8_t index = 0u; index < RECOMP_INPUT_ANALOG_BUTTON_COUNT; ++index) {
+        passed &= recomp_input_pulse_source_sample(&source, &pad) ? 1 : 0;
+        for (uint8_t channel = 0u; channel < RECOMP_INPUT_ANALOG_BUTTON_COUNT; ++channel)
+            passed &= expect_u64("scheduled analog button", pad.analog_buttons[channel],
+                channel == index ? RECOMP_INPUT_ANALOG_PRESSED : 0u);
+        passed &= recomp_input_pulse_source_sample(&source, &pad) ? 1 : 0;
+        passed &= expect_pad_zero("scheduled analog release", &pad);
+    }
     return passed;
 }
 

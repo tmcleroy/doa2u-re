@@ -470,6 +470,11 @@ Q/W are White/Black and E/R are the triggers. Keyboard input requires window
 focus. `--input-start-pulse-at <poll>` sends a one-sample Start edge through
 ordinary controller sampling; it can be repeated up to four times. The bounded
 probe accepts the same option. Input scripts do not alter game-owned state.
+The runner and bounded probe also accept `--input-analog-pulse-at <poll>
+<index>` for one full-strength sample of A, B, X, Y, Black, White, left trigger
+or right trigger (indices 0 through 7). Polls must be positive uint64 values;
+up to 1024 analog edges may be scheduled, with one analog button per poll.
+`--isolated` keeps probe storage separate and disables physical input and rumble.
 
 ## Audio API contract
 

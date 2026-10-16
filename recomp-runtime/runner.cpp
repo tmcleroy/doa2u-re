@@ -88,12 +88,29 @@ int main(int argc, char **argv)
             }
             continue;
         }
+        if (argument == "--input-analog-pulse-at" && i + 2 < argc) {
+            const std::string value = argv[++i], indexValue = argv[++i];
+            std::uint64_t poll = 0u;
+            std::uint32_t index = 0u;
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), poll);
+            const auto parsedIndex = std::from_chars(indexValue.data(), indexValue.data() + indexValue.size(), index);
+            if (parsed.ec != std::errc() || parsed.ptr != value.data() + value.size() ||
+                parsedIndex.ec != std::errc() || parsedIndex.ptr != indexValue.data() + indexValue.size() ||
+                index >= RECOMP_INPUT_ANALOG_BUTTON_COUNT ||
+                !recomp_input_pulse_source_add_analog_poll(&inputPulses, poll,
+                    static_cast<std::uint8_t>(index), RECOMP_INPUT_ANALOG_PRESSED)) {
+                std::cerr << "recomp runner: invalid analog poll/index or too many pulses\n";
+                return 64;
+            }
+            continue;
+        }
         if ((argument != "--xbe" && argument != "--disc-root" &&
              argument != "--expect-stop" && argument != "--milestone-log") || i + 1 >= argc) {
             std::cerr << "usage: recomp_program_runner --xbe <path> [--disc-root <path>]"
                 " [--expect-stop <id>] [--milestone-log <path>]"
                 " [--input-start-pulse-at <poll>] [--input-a-pulse-at <poll>]"
                 " [--input-buttons-pulse-at <poll> <decimal-mask>]"
+                " [--input-analog-pulse-at <poll> <button-index>]"
                 " [--input-script-only]\n";
             return 64;
         }

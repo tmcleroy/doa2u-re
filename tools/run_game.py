@@ -30,7 +30,7 @@ def prepare_disc(source, disc):
     staging.rename(disc)
 
 
-def run(seconds, start_polls=(), a_polls=(), isolated=False, buttons_polls=()):
+def run(seconds, start_polls=(), a_polls=(), isolated=False, buttons_polls=(), analog_polls=()):
     if seconds <= 0:
         raise ValueError("Probe duration must be positive")
     if len(start_polls) > 4 or any(poll <= 0 or poll > 2**64 - 1 for poll in start_polls):
@@ -40,6 +40,9 @@ def run(seconds, start_polls=(), a_polls=(), isolated=False, buttons_polls=()):
     if len(buttons_polls) > 1024 or any(poll <= 0 or poll > 2**64 - 1 or mask <= 0 or mask > 255
                                        for poll, mask in buttons_polls):
         raise ValueError("Button polls require positive uint64 polls and masks 1..255, at most 1024")
+    if len(analog_polls) > 1024 or any(poll <= 0 or poll > 2**64 - 1 or index < 0 or index > 7
+                                      for poll, index in analog_polls):
+        raise ValueError("Analog polls require positive uint64 polls and indices 0..7, at most 1024")
     selected = selected_xbe()
     generated = ROOT / "private/program/generated"
     receipt = json.loads((ROOT / "private/program/receipt.json").read_text(encoding="utf-8"))
@@ -70,6 +73,8 @@ def run(seconds, start_polls=(), a_polls=(), isolated=False, buttons_polls=()):
                 command.extend(["--input-a-pulse-at", str(poll)])
             for poll, mask in buttons_polls:
                 command.extend(["--input-buttons-pulse-at", str(poll), str(mask)])
+            for poll, index in analog_polls:
+                command.extend(["--input-analog-pulse-at", str(poll), str(index)])
             result = subprocess.run(command,
                                     cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, timeout=seconds)
             code = result.returncode
@@ -89,10 +94,13 @@ if __name__ == "__main__":
                         metavar=("POLL", "MASK"), help="Press a digital button mask (decimal)")
     parser.add_argument("--isolated", action="store_true",
                         help="Use separate probe saves and ignore physical input")
+    parser.add_argument("--input-analog-pulse-at", type=int, nargs=2, action="append", default=[],
+                        metavar=("POLL", "INDEX"), help="Press A/B/X/Y/Black/White/LTrig/RTrig (0..7)")
     args = parser.parse_args()
     try:
         raise SystemExit(run(args.seconds, args.input_start_pulse_at,
-                             args.input_a_pulse_at, args.isolated, args.input_buttons_pulse_at))
+                             args.input_a_pulse_at, args.isolated, args.input_buttons_pulse_at,
+                             args.input_analog_pulse_at))
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         print(f"Cannot run boot probe: {error}", file=sys.stderr)
         raise SystemExit(1)
