@@ -467,13 +467,13 @@ struct TextureEntry {
 /* A guest buffer can be refilled with another texture of the same size and
    format without being freed (item previews reuse theirs), so a hit must also
    match the texels.
-   ponytail: samples 128 words; a rewrite missing all of them stays stale.
-   Hash the whole span if that is ever observed. */
+   Small spans hash every byte; repeated whole-word samples can cancel changes.
+   shortcut: larger spans sample 128 words; hash all bytes if a missed rewrite is observed. */
 uint64_t textureFingerprint(const void *bytes, uint32_t count)
 {
     const auto *data = static_cast<const uint8_t *>(bytes);
     uint64_t hash = 0xcbf29ce484222325ull ^ count;
-    if (count < 8u) {
+    if (count <= 1024u) {
         for (uint32_t i = 0u; i < count; ++i) hash = (hash ^ data[i]) * 0x100000001b3ull;
         return hash;
     }

@@ -547,7 +547,8 @@ static bool testReflectionStage2()
             std::memcpy(draw.reflection_normal, draw.reflection_world_view, sizeof draw.reflection_normal);
             draw.reflection_transform[12] = draw.reflection_transform[13] = 0.25f;
             draw.reflection_stage2_texture = draw.texture;
-            draw.reflection_stage2_texture.data = 0x3000u + i * 0x100u;
+            // Refill the same guest storage: alpha 0 -> 128 must invalidate the cached view.
+            draw.reflection_stage2_texture.data = 0x3000u;
             draw.reflection_stage2_texture.width = 2;
             draw.reflection_stage2_bytes = third;
             draw.reflection_stage2_byte_count = sizeof third;
