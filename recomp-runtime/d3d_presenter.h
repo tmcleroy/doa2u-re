@@ -104,6 +104,9 @@ typedef enum RecompD3dCullMode {
    presenter never decodes guest addresses itself. */
 typedef struct RecompD3dPresenterDrawCommand {
     RecompD3dCullMode cull_mode;
+    /* Pixel width and alpha coverage for untextured XYZ|DIFFUSE line lists. */
+    float line_width;
+    bool line_antialias;
     uint32_t primitive_type;
     uint32_t index_count;
     uint32_t triangle_count;

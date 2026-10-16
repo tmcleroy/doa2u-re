@@ -340,6 +340,30 @@ static int draw_tests(void)
     return 0;
 }
 
+static int line_tests(void)
+{
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected line stop: %s\n", stop_reason); return 1; }
+    initialize();
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x42u;
+    CHECK(recomp_d3d_set_edge_antialias(&state, 1u));
+    const float widths[4] = {0.3f, 0.6f, 0.9f, 1.2f};
+    const float quantized[4] = {0.25f, 0.625f, 0.875f, 1.25f};
+    for (uint32_t i = 0u; i < 4u; ++i) {
+        recomp_guest_store(0x3554d4u, &widths[i], sizeof(float));
+        invoke(0x348240u, 2u, 2u, VERTICES, 16u);
+        CHECK(submitted.data.draw.primitive_type == 2u && submitted.data.draw.line_antialias &&
+            submitted.data.draw.line_width == quantized[i] && submitted.data.draw.has_transform &&
+            submitted.data.draw.fvf == 0x42u && captured_indices[1] == 1u);
+    }
+    CHECK(recomp_d3d_set_edge_antialias(&state, 0u));
+    invoke(0x348240u, 2u, 2u, VERTICES, 16u);
+    CHECK(!submitted.data.draw.line_antialias && submitted.data.draw.line_width == 1.25f);
+    CHECK(recomp_d3d_set_edge_antialias(&state, 1u));
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 16u); return 1; }
+    CHECK(strncmp(stop_reason, "d3d8:draw-raster-state:", 22u) == 0);
+    return 0;
+}
+
 static int quad_tests(void)
 {
     if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected quad stop: %s\n", stop_reason); return 1; }
@@ -1127,7 +1151,7 @@ static int bump_tests(void)
 int main(void)
 {
     initialize();
-    if (pixel_tests() || draw_tests() || quad_tests() || point_tests() || lighting_tests() || filter_tests() || bright_tests() ||
+    if (pixel_tests() || draw_tests() || line_tests() || quad_tests() || point_tests() || lighting_tests() || filter_tests() || bright_tests() ||
         distortion_tests() || effect_tests() || program_tests() || bump_tests()) return 1;
     puts("PASS D3D8 pixel lifecycle/constants and semantic draw ABI/snapshots");
     return 0;

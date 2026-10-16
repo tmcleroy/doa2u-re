@@ -990,17 +990,22 @@ static void program_stages(uint32_t device, RecompD3dPresenterDrawCommand *draw)
         recomp_stop(2, "d3d8:vertex-program-lod-bias");
 }
 
+static float line_width(void)
+{
+    float width;
+    recomp_guest_load(&width, 0x3554d4u, sizeof width);
+    return fminf(floorf(width * 8.0f + 0.5f), 511.0f) / 8.0f;
+}
+
 /* D3D11 rasterizes one-pixel lines only. A wider line list becomes quads in
    screen space, widened across the minor axis like aliased NV2A lines, with
    the width the SDK programs (0x346760: 1/8-pixel steps, at most 0x1ff). */
 static uint8_t *widen_lines(bool transformed, RecompD3dPresenterDrawCommand *draw)
 {
-    float width;
-    recomp_guest_load(&width, 0x3554d4u, sizeof width);
-    width = fminf(floorf(width * 8.0f + 0.5f), 511.0f) / 8.0f;
+    const float width = line_width();
     if (width <= 1.0f) return NULL;
-    /* shortcut: only pretransformed lines widen; add a clip-space pass if a
-       transformed wide line appears. */
+    /* shortcut: other transformed layouts still need the native line path;
+       XYZ|DIFFUSE lines use the presenter's clip-space expansion instead. */
     const uint32_t lines = draw->index_count / 2u, stride = draw->vertex_stride;
     if (transformed || lines > 16384u) recomp_stop(2, "d3d8:draw-wide-lines:%u", lines);
     uint8_t *storage = malloc((size_t)lines * (12u + 4u * stride));
@@ -1249,7 +1254,10 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
         memcpy(draw->scissor, clip, sizeof clip);
     }
     const RecompD3dRenderStateModel *state = recomp_d3d8_state_model();
-    if ((state->fill_mode != 0u && state->fill_mode != 0x1b02u) || state->edge_antialias != 0u ||
+    const bool native_line = primitive == 2u && !program && draw->fvf == 0x42u &&
+        *recomp_memory_u32(device + 0xf88u) == 0u && *recomp_memory_u32(0x3553f8u) == 0u;
+    if ((state->fill_mode != 0u && state->fill_mode != 0x1b02u) ||
+        (state->edge_antialias != 0u && !native_line) ||
         state->z_enable == 2u)
         recomp_stop(2, "d3d8:draw-raster-state:%x:%x:%x:ret=%08x", state->fill_mode,
             state->edge_antialias, state->z_enable, *recomp_memory_u32(recomp_runtime.registers.esp));
@@ -1278,7 +1286,10 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
         fixed_stages(device, &layout, draw);
     }
     command.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
-    if (primitive == 2u) expanded = widen_lines(program || !layout.pretransformed, draw);
+    if (native_line) {
+        draw->line_width = line_width();
+        draw->line_antialias = state->edge_antialias != 0u;
+    } else if (primitive == 2u) expanded = widen_lines(program || !layout.pretransformed, draw);
     recomp_d3d8_submit(&command);
     free(sequential);
     free(expanded);

@@ -324,8 +324,18 @@ select. The game supplies 1440-wide back and depth headers and a 720-wide front
 header; the guest device keeps the SDK's scale, physical size and swap-filter
 fields, while the host target and vertex-shader viewport constants stay in
 logical 720x480 units. PersistDisplay publishes an SDK-shaped saved surface
-without host pixels. Line lists draw natively; widths above one pixel become
-screen-space quads, and transformed wide lines stay guarded.
+without host pixels. Line lists draw natively; pretransformed widths above
+one pixel become screen-space quads. Untextured, unlit XYZ|DIFFUSE lines
+(FVF 0x42) also support transformed widths and EdgeAntiAlias. The effect at
+`0x254dd0` draws those lines with widths 0.3, 0.6, 0.9 and 1.2; the adapter
+quantizes them to the SDK's 1/8-pixel steps. A geometry shader clips endpoints
+against near/far/W planes and widens after projection in viewport pixels.
+Fractional alpha coverage uses feathered strips, with culling disabled and
+the ordinary pipeline restored after drawing. The trapezoidal filter and
+square caps approximate hardware; exact line-filter calibration remains
+unverified. Other transformed wide-line layouts and polygon edge smoothing
+remain guarded. Native pixel tests cover fractional coverage, clipping,
+both line directions and pipeline restoration.
 Point lists draw as Xbox point sprites. With POINTSPRITEENABLE the 5849
 combiner compiler (0x352a60) compiles stage 3 only, and that stage's texture
 receives the sprite coordinates. The fight's particles (0x2345c0) use

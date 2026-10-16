@@ -236,6 +236,85 @@ static bool testMipSampler()
     return passed;
 }
 
+static bool testLines()
+{
+    char folder[MAX_PATH], path[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "lin", 0, path)) return false;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", path);
+    RecompD3dPresenter *presenter = nullptr;
+    bool passed = expect("create lines", d3d11_backend_create(&config, &presenter));
+    if (passed) {
+        auto clear = clearCommand();
+        clear.data.clear.color = 0xff000000u;
+        passed &= expect("lines clear", d3d11_backend_submit(presenter, &clear));
+        struct Vertex { float x, y, z; uint32_t color; };
+        Vertex vertices[2] = {{20,20.25f,0.5f,~0u}, {100,20.25f,0.5f,~0u}};
+        const uint16_t indices[2] = {0,1};
+        RecompD3dPresenterCommand command{RECOMP_D3D_PRESENTER_COMMAND_DRAW};
+        auto &draw = command.data.draw;
+        draw.primitive_type = 2;
+        draw.index_count = draw.vertex_count = 2;
+        draw.vertex_stride = sizeof(Vertex);
+        draw.fvf = 0x42;
+        draw.vertex_bytes = vertices;
+        draw.index_bytes = indices;
+        draw.has_transform = true;
+        draw.transform[0] = 2.0f / 320;
+        draw.transform[5] = -2.0f / 240;
+        draw.transform[10] = draw.transform[15] = 1;
+        draw.transform[12] = -1;
+        draw.transform[13] = 1;
+        draw.blend.color_write_mask = 15;
+        draw.blend.blend_enable = true;
+        draw.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
+        draw.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+        draw.line_antialias = true;
+        draw.line_width = 1.25f;
+        draw.cull_mode = RECOMP_D3D_CULL_CLOCKWISE;
+        passed &= expect("fractional line", d3d11_backend_submit(presenter, &command));
+        for (auto &v : vertices) v.y = 40.5f;
+        std::swap(vertices[0], vertices[1]);
+        draw.line_width = 0.25f;
+        passed &= expect("subpixel line", d3d11_backend_submit(presenter, &command));
+        std::swap(vertices[0], vertices[1]);
+        // Near-plane clipping keeps the second half; the fully hidden line emits nothing.
+        for (auto &v : vertices) v.y = 60.5f;
+        vertices[0].z = -0.5f;
+        draw.line_width = 1;
+        passed &= expect("near crossing line", d3d11_backend_submit(presenter, &command));
+        for (auto &v : vertices) { v.y = 80.5f; v.z = -1; }
+        passed &= expect("hidden line", d3d11_backend_submit(presenter, &command));
+        // A later aliased line must use the ordinary pipeline again.
+        for (auto &v : vertices) { v.y = 100.5f; v.z = 0.5f; }
+        draw.line_antialias = false;
+        passed &= expect("ordinary line", d3d11_backend_submit(presenter, &command));
+        RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
+        present.data.present = {5,1};
+        passed &= expect("lines present", d3d11_backend_submit(presenter, &present));
+        passed &= expect("destroy lines", d3d11_backend_destroy(&presenter));
+        if (FILE *file = std::fopen(path, "rb")) {
+            const unsigned pixels[][3] = {{50,20,223}, {50,19,96}, {50,18,0}, {50,40,64},
+                {40,60,0}, {80,60,255}, {50,80,0}, {50,100,255}};
+            for (const auto &pixel : pixels) {
+                unsigned char bgr[3]{};
+                std::fseek(file, 54 + (239-pixel[1])*960 + pixel[0]*3, SEEK_SET);
+                passed &= std::fread(bgr, 1, 3, file) == 3;
+                for (unsigned c=0; c<3; ++c) {
+                    const bool ok = std::abs(int(bgr[c])-int(pixel[2])) <= 2;
+                    if (!ok) std::fprintf(stderr, "FAIL line pixel %u,%u channel=%u actual=%u expected=%u\n",
+                        pixel[0], pixel[1], c, bgr[c], pixel[2]);
+                    passed &= ok;
+                }
+            }
+            std::fclose(file);
+        } else passed = false;
+    }
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
+    DeleteFileA(path);
+    if (passed) std::puts("PASS transformed line widths, fractional alpha coverage, clipping and pipeline restore");
+    return passed;
+}
+
 static bool testLighting()
 {
     char folder[MAX_PATH], path[MAX_PATH];
@@ -1517,7 +1596,7 @@ static bool testVisibility()
 int main()
 {
     recomp_d3d_presenter_set_immediate_present(false);
-    if (!testTicks() || !testCapturedDraw() || !testMipSampler() || !testLighting() ||
+    if (!testTicks() || !testCapturedDraw() || !testMipSampler() || !testLines() || !testLighting() ||
         !testReflectionAddress(false) || !testReflectionAddress(true) || !testReflectionAddress(true, true) ||
         !testReflectionAddress(false, false, true) || !testReflectionAddress(true, false, false, true) ||
         !testScreenSpaceOffsetAndScissor() || !testBrightPass() || !testDistortion() || !testStageEffect() ||

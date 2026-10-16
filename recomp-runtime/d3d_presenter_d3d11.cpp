@@ -388,6 +388,7 @@ struct DrawPipeline {
     bool used;
     bool failed;
     ID3D11VertexShader *vertex_shader;
+    ID3D11GeometryShader *geometry_shader;
     ID3D11PixelShader *pixel_shader;
     ID3D11InputLayout *input_layout;
 };
@@ -725,6 +726,7 @@ void releaseGraphics(RecompD3dPresenter *presenter)
         releaseCom(pipeline.input_layout);
         releaseCom(pipeline.pixel_shader);
         releaseCom(pipeline.vertex_shader);
+        releaseCom(pipeline.geometry_shader);
         pipeline.used = false;
     }
     presenter->draw_pipeline_count = 0u;
@@ -1532,6 +1534,38 @@ bool drawShaderSource(
             "        shaded = float4(lerp(fog_color.rgb, t2.rgb * (1.0f - k) * v0.rgb, f), v0.a);\n"
             "    } else\n");
     }
+    if (fvf == 0x42u && pipeline.program_count == 0u) {
+        /* shortcut: trapezoidal alpha coverage and square caps approximate NV2A's
+           line filter, calibrate against hardware when comparing the line effect. */
+        compiled_source +=
+            "\n[maxvertexcount(8)] void gs_main(line VSOut v[2], inout TriangleStream<VSOut> output) {\n"
+            "    float4 style = filter_constants[0];\n"
+            "    if (style.x <= 0) return;\n"
+            "    VSOut a = v[0], b = v[1];\n"
+            "    [unroll] for (uint plane=0; plane<3; ++plane) {\n"
+            "        float da = plane==0 ? a.position.z : plane==1 ? a.position.w-a.position.z : a.position.w-1e-6f;\n"
+            "        float db = plane==0 ? b.position.z : plane==1 ? b.position.w-b.position.z : b.position.w-1e-6f;\n"
+            "        if (da<0 && db<0) return;\n"
+            "        if (da<0 || db<0) {\n"
+            "            float t=da/(da-db); VSOut c=(VSOut)0;\n"
+            "            c.position=lerp(a.position,b.position,t); c.color=lerp(a.color,b.color,t);\n"
+            "            if (da<0) a=c; else b=c;\n"
+            "        }\n"
+            "    }\n"
+            "    float2 delta=(b.position.xy/b.position.w-a.position.xy/a.position.w)/style.zw;\n"
+            "    float len=length(delta); if (len<1e-6f) return;\n"
+            "    float2 side=style.y>0 ? float2(-delta.y,delta.x)/len :\n"
+            "        (abs(delta.x)>=abs(delta.y) ? float2(0,1) : float2(1,0));\n"
+            "    uint layers=style.y>0 ? 4 : 2;\n"
+            "    for (uint i=0; i<layers; ++i) {\n"
+            "        float offset=style.y>0 ? (i==0 ? -(style.x+1)*0.5f : i==1 ? -abs(style.x-1)*0.5f :\n"
+            "            i==2 ? abs(style.x-1)*0.5f : (style.x+1)*0.5f) : (i==0 ? -style.x*0.5f : style.x*0.5f);\n"
+            "        float coverage=style.y>0 ? (i==0 || i==3 ? 0 : min(style.x,1)) : 1;\n"
+            "        VSOut p=a; p.position.xy+=side*offset*style.zw*p.position.w; p.color.a*=coverage; output.Append(p);\n"
+            "        p=b; p.position.xy+=side*offset*style.zw*p.position.w; p.color.a*=coverage; output.Append(p);\n"
+            "    }\n"
+            "}\n";
+    }
     return true;
 }
 
@@ -1603,6 +1637,13 @@ bool createDrawPipeline(
             nullptr,
             &pipeline.pixel_shader);
     }
+    if (SUCCEEDED(result) && fvf == 0x42u && pipeline.program_count == 0u) {
+        ID3DBlob *geometry_blob = nullptr;
+        if (!compileDrawShader(compiled_source.c_str(), "gs_main", "gs_4_0", &geometry_blob)) result = E_FAIL;
+        else result = presenter->device->CreateGeometryShader(geometry_blob->GetBufferPointer(),
+            geometry_blob->GetBufferSize(), nullptr, &pipeline.geometry_shader);
+        releaseCom(geometry_blob);
+    }
     if (SUCCEEDED(result)) {
         D3D11_INPUT_ELEMENT_DESC elements[8]{};
         UINT count = 0u;
@@ -1658,6 +1699,7 @@ bool createDrawPipeline(
         releaseCom(pipeline.input_layout);
         releaseCom(pipeline.pixel_shader);
         releaseCom(pipeline.vertex_shader);
+        releaseCom(pipeline.geometry_shader);
         return false;
     }
     std::fprintf(
@@ -1773,6 +1815,7 @@ const DrawPipeline *lookupDrawPipeline(
     releaseCom(pipeline.input_layout);
     releaseCom(pipeline.pixel_shader);
     releaseCom(pipeline.vertex_shader);
+    releaseCom(pipeline.geometry_shader);
     presenter->next_draw_pipeline_slot =
         (presenter->next_draw_pipeline_slot + 1u) % kDrawPipelineSlots;
     if (presenter->draw_pipeline_count < kDrawPipelineSlots) {
@@ -2530,10 +2573,13 @@ RecompD3dPresenterError submitDraw(
     const RecompD3dPresenterDrawCommand &draw)
 {
     const bool screen_offset = draw.screen_space_offset[0] != 0.0f || draw.screen_space_offset[1] != 0.0f;
+    const bool geometry_line = draw.line_antialias || draw.line_width > 1.0f;
     // shortcut: programmable offsets are unsupported, add their viewport contract when needed.
     if (draw.vertex_bytes == nullptr || draw.index_bytes == nullptr ||
         draw.vertex_stride == 0u || draw.vertex_count == 0u ||
-        draw.index_count == 0u ||
+        draw.index_count == 0u || !std::isfinite(draw.line_width) || draw.line_width < 0.0f ||
+        (geometry_line && (draw.fvf != 0x42u || draw.program_count || draw.primitive_type != 2u ||
+            draw.has_texture || draw.directional.enabled)) ||
         static_cast<unsigned>(draw.cull_mode) > RECOMP_D3D_CULL_COUNTER_CLOCKWISE ||
         !std::isfinite(draw.screen_space_offset[0]) || !std::isfinite(draw.screen_space_offset[1]) ||
         (screen_offset && draw.program_count) ||
@@ -2903,6 +2949,20 @@ RecompD3dPresenterError submitDraw(
         bump[14] = (draw.fog_color & 0xffu) / 255.0f;
     }
 
+    if (geometry_line) {
+        D3D11_VIEWPORT viewport{};
+        UINT count = 1u;
+        presenter->context->RSGetViewports(&count, &viewport);
+        if (count != 1u || viewport.Width <= 0 || viewport.Height <= 0)
+            return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        float *style = draw_constants + 140 + 192 * 4 + 340 + 8;
+        style[0] = draw.line_width;
+        style[1] = draw.line_antialias ? 1.0f : 0.0f;
+        style[2] = sub_viewport ? 2.0f / draw.viewport[2]
+            : 2.0f * presenter->target_scale_x / viewport.Width;
+        style[3] = sub_viewport ? -2.0f / draw.viewport[3]
+            : -2.0f * presenter->target_scale_y / viewport.Height;
+    }
     UINT index_offset = 0u;
     if (!uploadRing(presenter, &presenter->draw_index_buffer,
             presenter->draw_index_capacity, presenter->draw_index_used,
@@ -2925,6 +2985,8 @@ RecompD3dPresenterError submitDraw(
     presenter->context->VSSetShader(pipeline->vertex_shader, nullptr, 0u);
     presenter->context->VSSetConstantBuffers(
         0u, 1u, &presenter->draw_constant_buffer);
+    presenter->context->GSSetShader(geometry_line ? pipeline->geometry_shader : nullptr, nullptr, 0u);
+    presenter->context->GSSetConstantBuffers(0u, 1u, &presenter->draw_constant_buffer);
     presenter->context->PSSetShader(pipeline->pixel_shader, nullptr, 0u);
     presenter->context->PSSetConstantBuffers(
         0u, 1u, &presenter->draw_constant_buffer);
@@ -2951,7 +3013,8 @@ RecompD3dPresenterError submitDraw(
         if (sampler == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
         presenter->context->PSSetSamplers(2u, 1u, &sampler);
     }
-    presenter->context->RSSetState(presenter->draw_rasterizer_states[draw.cull_mode]);
+    presenter->context->RSSetState(presenter->draw_rasterizer_states[
+        geometry_line ? RECOMP_D3D_CULL_NONE : draw.cull_mode]);
     presenter->context->RSSetScissorRects(1u, &scissor);
     ID3D11DepthStencilState *depth_state = lookupDepthState(presenter, draw.depth);
     if (depth_state == nullptr) {
@@ -3000,6 +3063,7 @@ RecompD3dPresenterError submitDraw(
         presenter->context->RSSetViewports(1u, &guest);
     }
     presenter->context->DrawIndexed(draw_index_count, 0u, 0);
+    presenter->context->GSSetShader(nullptr, nullptr, 0u);
     if (sub_viewport) presenter->context->RSSetViewports(1u, &whole);
     static const char *program_dump = std::getenv("RECOMP_D3D_PROGRAM_TEXTURE_DUMP");
     static unsigned program_dump_count = 0;
