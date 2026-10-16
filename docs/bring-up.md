@@ -388,7 +388,10 @@ arena allocation would fail with guest memory full. The stack would then start
 at 0x175000 and overwrite the switch table at 0x174530, a crash seen in fights.
 
 Fixed-function stage 0 also admits D3DTSS_ALPHAKILL ENABLE (4), which discards
-fragments whose sampled texel alpha is zero, and camera-space reflection
+fragments whose sampled texel alpha is zero. Programmable stage 0 keeps
+independent WRAP, MIRROR or CLAMP U/V addressing, using the same native sampler
+as fixed-function draws; a native pixel check covers mixed CLAMP/WRAP.
+Fixed-function stage 0 also admits camera-space reflection
 texgen (TCI 0x30000) with COUNT2. That texgen reuses the reflection inputs
 with the TEXTURE0 matrix (0xce0) and writes UV0; without a normal stream it
 uses a zero normal, as the stage-1 path does. COUNT2 over mesh UV0, which a

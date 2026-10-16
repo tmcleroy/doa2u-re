@@ -956,6 +956,15 @@ static int program_tests(void)
     const uint32_t before = submits;
     invoke(0x348240u, 5u, 3u, VERTICES, 48u);
     CHECK(submits == before + 1u && draw->fvf == 0x442u && draw->vertex_stride == 48u);
+    for (uint32_t u = 3u; u > 0u; --u) {
+        for (uint32_t v = 1u; v <= 3u; ++v) {
+            *recomp_memory_u32(STAGES) = u;
+            *recomp_memory_u32(STAGES + 4u) = v;
+            invoke(0x348240u, 5u, 3u, VERTICES, 48u);
+            CHECK(draw->address_u == u && draw->address_v == v);
+        }
+    }
+    CHECK(submits == before + 10u);
     /* A gap in the UV sets is not an FVF layout. */
     *recomp_memory_u32(PROGRAM + 0xccu) = 2u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 48u); return 1; }

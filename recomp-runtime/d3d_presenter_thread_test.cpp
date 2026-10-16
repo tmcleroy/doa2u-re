@@ -1230,6 +1230,21 @@ static bool testProgramMaxSlt()
             color.program[i][3] = (15u << 12) | (movs[i][1] << 3) | 2048u | (i == 2 ? 1u : 0u);
         }
         passed &= expect("color program draw", d3d11_backend_submit(presenter, &second));
+        // Clamp U and wrap V independently: (1.25, 1.25) selects top-right green.
+        const Colored addressed[] = {{0, 1, 0.5f, white, 1.25f, 1.25f}, {1, 1, 0.5f, white, 1.25f, 1.25f},
+            {0, 0, 0.5f, white, 1.25f, 1.25f}, {1, 0, 0.5f, white, 1.25f, 1.25f}};
+        const uint32_t corners[] = {0xffff0000u, 0xff00ff00u, 0xff0000ffu, white};
+        color.vertex_bytes = addressed;
+        color.texture.width = color.texture.height = 2;
+        color.texture.data = 0x3000u;
+        color.texture_bytes = corners;
+        color.texture_byte_count = sizeof corners;
+        color.address_u = 3;
+        color.address_v = 1;
+        color.blend.blend_enable = false;
+        color.directional.stage_mode = false;
+        color.modulate_texture_factor_alpha = false;
+        passed &= expect("independent program addressing", d3d11_backend_submit(presenter, &second));
         RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
         present.data.present = {5, 1};
         passed &= expect("program present", d3d11_backend_submit(presenter, &present));
@@ -1248,6 +1263,13 @@ static bool testProgramMaxSlt()
                     i, bgr[0], bgr[1], bgr[2]);
                 passed &= pixel_ok;
             }
+            unsigned char bgr[3]{};
+            std::fseek(file, 54 + (239 - 60) * 960 + 240 * 3, SEEK_SET);
+            passed &= std::fread(bgr, 1, 3, file) == 3;
+            const bool addressed_ok = bgr[0] < 4 && bgr[1] > 250 && bgr[2] < 4;
+            if (!addressed_ok) std::fprintf(stderr, "FAIL program U clamp V wrap BGR=%u,%u,%u\n",
+                bgr[0], bgr[1], bgr[2]);
+            passed &= addressed_ok;
             std::fclose(file);
         } else passed = false;
     }
