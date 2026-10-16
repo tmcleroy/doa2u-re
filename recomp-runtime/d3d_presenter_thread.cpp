@@ -15,6 +15,7 @@
 #include <new>
 #include <system_error>
 #include <thread>
+#include <unordered_map>
 
 
 namespace {
@@ -35,6 +36,9 @@ struct PresenterThread {
     RecompD3dPresenterError status = RECOMP_D3D_PRESENTER_OK;
     RecompD3dPresenterError destroyed = RECOMP_D3D_PRESENTER_OK;
     unsigned draw_declines = 0;
+    // Guest visibility indices: ENDs submitted but unresolved, and the latest count.
+    struct Visibility { unsigned pending = 0; uint32_t pixels = 0; };
+    std::unordered_map<uint32_t, Visibility> visibility;
     // RECOMP_PERF_COUNTER pacing on the game side, reported once per second.
     bool pacing = false;
     double last_frame_ms = 0.0;
@@ -147,6 +151,26 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
     }
 }
 
+// Publishes every resolved query; returns true while one is still pending.
+bool resolveVisibility(PresenterThread &thread, RecompD3dPresenter *backend)
+{
+    for (;;) {
+        uint32_t index = 0u, pixels = 0u;
+        const auto state = d3d11_backend_poll_visibility(backend, &index, &pixels);
+        if (state == D3D11_VISIBILITY_FAILED) {
+            fail(thread, RECOMP_D3D_PRESENTER_HOST_FAILURE);
+            return false;
+        }
+        if (state != D3D11_VISIBILITY_READY) return state == D3D11_VISIBILITY_PENDING;
+        std::lock_guard<std::mutex> lock(thread.mutex);
+        const auto found = thread.visibility.find(index);
+        if (found != thread.visibility.end() && found->second.pending != 0u) {
+            found->second.pixels = pixels;
+            --found->second.pending;
+        }
+    }
+}
+
 void run(PresenterThread &thread, RecompD3dPresenterConfig config)
 {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
@@ -168,6 +192,7 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
     thread.changed.notify_all();
     if (created != RECOMP_D3D_PRESENTER_OK) return;
 
+    bool querying = false;
     for (;;) {
         pump(thread);
         D3dCapturePacket *packet = nullptr;
@@ -177,14 +202,17 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
             else if (thread.shutdown) break;
         }
         if (packet == nullptr) {
+            // Resolve queries off the GPU while idle, polling until none remain.
+            if (querying) querying = resolveVisibility(thread, backend);
             if (MsgWaitForMultipleObjects(1, &thread.wake, FALSE,
-                    INFINITE, QS_ALLINPUT) == WAIT_FAILED) {
+                    querying ? 1u : INFINITE, QS_ALLINPUT) == WAIT_FAILED) {
                 fail(thread, RECOMP_D3D_PRESENTER_HOST_FAILURE);
             }
             continue;
         }
         execute(thread, backend, *packet);
         packet->clear();
+        querying = resolveVisibility(thread, backend);
         {
             std::lock_guard<std::mutex> lock(thread.mutex);
             thread.front = (thread.front + 1) % 3;
@@ -289,6 +317,21 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
     error = status(thread);
     if (error != RECOMP_D3D_PRESENTER_OK) return error;
     if (command == nullptr) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
+    if (command->type == RECOMP_D3D_PRESENTER_COMMAND_VISIBILITY_END) {
+        // Counted before the worker can resolve it, so a read never sees stale completion.
+        try {
+            std::lock_guard<std::mutex> lock(thread.mutex);
+            ++thread.visibility[command->data.visibility_index].pending;
+        } catch (const std::bad_alloc &) {
+            return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
+        }
+        error = thread.packets[thread.open].add(*command);
+        if (error != RECOMP_D3D_PRESENTER_OK) {
+            std::lock_guard<std::mutex> lock(thread.mutex);
+            --thread.visibility[command->data.visibility_index].pending;
+        }
+        return error;
+    }
     error = thread.packets[thread.open].add(*command);
     if (error != RECOMP_D3D_PRESENTER_OK) return error;
     return command->type == RECOMP_D3D_PRESENTER_COMMAND_PRESENT
@@ -322,6 +365,22 @@ RecompD3dPresenterError recomp_d3d_presenter_flush(RecompD3dPresenter *presenter
     thread.changed.wait(lock, [&] { return thread.pending == 0u ||
         thread.status != RECOMP_D3D_PRESENTER_OK; });
     return thread.status;
+}
+
+RecompD3dPresenterError recomp_d3d_presenter_visibility_result(
+    RecompD3dPresenter *presenter, uint32_t index, bool *complete, uint32_t *pixels)
+{
+    const auto error = validate(presenter);
+    if (error != RECOMP_D3D_PRESENTER_OK) return error;
+    if (complete == nullptr || pixels == nullptr) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
+    auto &thread = *active_thread;
+    std::lock_guard<std::mutex> lock(thread.mutex);
+    if (thread.status != RECOMP_D3D_PRESENTER_OK) return thread.status;
+    const auto found = thread.visibility.find(index);
+    if (found == thread.visibility.end()) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
+    *complete = found->second.pending == 0u;
+    *pixels = found->second.pixels;
+    return RECOMP_D3D_PRESENTER_OK;
 }
 
 RecompD3dPresenterError recomp_d3d_presenter_destroy(RecompD3dPresenter **presenter)

@@ -34,6 +34,9 @@ typedef enum RecompD3dPresenterCommandType {
     RECOMP_D3D_PRESENTER_COMMAND_PRESENT,
     RECOMP_D3D_PRESENTER_COMMAND_DRAW,
     RECOMP_D3D_PRESENTER_COMMAND_GAMMA,
+    /* Occlusion counting brackets later draws; END assigns the count to an index. */
+    RECOMP_D3D_PRESENTER_COMMAND_VISIBILITY_BEGIN,
+    RECOMP_D3D_PRESENTER_COMMAND_VISIBILITY_END,
 } RecompD3dPresenterCommandType;
 
 /* Resolved by the adapter. Surface wrappers sharing pixel storage have the
@@ -208,6 +211,7 @@ typedef struct RecompD3dPresenterCommand {
         RecompD3dPresenterDrawCommand draw;
         /* Xbox gamma ramp: separate 256-entry 8-bit red, green, blue planes. */
         uint8_t gamma[3][256];
+        uint32_t visibility_index;
     } data;
 } RecompD3dPresenterCommand;
 
@@ -244,6 +248,13 @@ RecompD3dPresenterError recomp_d3d_presenter_destroy(
 /* Publish queued work without swapping; optionally wait for its completion. */
 RecompD3dPresenterError recomp_d3d_presenter_flush(
     RecompD3dPresenter *presenter, bool wait);
+
+/* Result of the latest VISIBILITY_END submitted for index: samples that passed
+   depth/stencil, in pixels of the bound target's guest size. complete stays
+   false while any END for index is unresolved. Never waits; flush publishes a
+   queued END. INVALID_ARGUMENT when no END for index was submitted. */
+RecompD3dPresenterError recomp_d3d_presenter_visibility_result(
+    RecompD3dPresenter *presenter, uint32_t index, bool *complete, uint32_t *pixels);
 
 /* Retire pixels only when their backing allocation is released, not when a
    nonowning surface wrapper is destroyed. Accepts guest RAM aliases. */

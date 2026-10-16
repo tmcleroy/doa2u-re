@@ -38,6 +38,11 @@ static uint32_t submitted_draws;
    only depth). It still holds the frame Present last showed, and the pixels
    PersistDisplay saved, until a color clear or draw writes it. */
 static bool back_buffer_displayed, back_buffer_saved;
+/* Device teardown (0x34ca1f) frees 64 report pages of 256 visibility slots. */
+enum { VISIBILITY_TESTS = 64u * 256u, D3DERR_TESTINCOMPLETE = 0x88760828u };
+static bool visibility_open;
+/* Guest samples per counted host pixel for each ended index; zero until ended. */
+static uint32_t visibility_scale[VISIBILITY_TESTS];
 
 static uint32_t argument(uint32_t entry, uint32_t index)
 {
@@ -101,6 +106,8 @@ void recomp_d3d8_shutdown(void)
     recomp_d3d8_state_reset();
     submitted_draws = 0u;
     back_buffer_displayed = back_buffer_saved = false;
+    visibility_open = false;
+    memset(visibility_scale, 0, sizeof visibility_scale);
 }
 
 static uint32_t color_header(uint32_t index)
@@ -513,6 +520,83 @@ static void block_on_fence(void)
     recomp_runtime.registers.esp += 8u;
 }
 
+/* D3DDevice_InsertCallback (0x349e10, stdcall type, callback, context).
+   Queued commands own their bytes and the host GPU never writes guest memory,
+   so the READ (0) and WRITE (1) conditions already hold here. The cdecl
+   callback runs at once on the calling thread instead of the GPU interrupt. */
+static void insert_callback(void)
+{
+    const uint32_t entry = recomp_runtime.registers.esp;
+    const uint32_t type = argument(entry, 0u), callback = argument(entry, 1u);
+    uint32_t context = argument(entry, 2u);
+    recomp_d3d8_require_device();
+    if (type > 1u || callback == 0u) recomp_stop(2, "d3d8:insert-callback:%u", type);
+    kernel_call_guest(callback, &context, 1u);
+    recomp_runtime.registers.esp = entry + 16u;
+}
+
+/* D3DDevice_BeginVisibilityTest (0x3457c0, no arguments) clears the report
+   counter and enables Z-pass counting for later draws. */
+static void begin_visibility_test(void)
+{
+    recomp_d3d8_require_device();
+    const RecompD3dPresenterCommand command = {.type = RECOMP_D3D_PRESENTER_COMMAND_VISIBILITY_BEGIN};
+    recomp_d3d8_submit(&command);
+    visibility_open = true;
+    recomp_runtime.registers.esp += 4u;
+}
+
+/* D3DDevice_EndVisibilityTest (0x345860, stdcall index) reports the count into
+   the index's 16-byte slot (0x3457f0). The presenter keeps it instead, so no
+   guest slot page is allocated. */
+static void end_visibility_test(void)
+{
+    const uint32_t entry = recomp_runtime.registers.esp, index = argument(entry, 0u);
+    recomp_d3d8_require_device();
+    if (index >= VISIBILITY_TESTS) recomp_stop(2, "d3d8:visibility-index:%08" PRIx32, index);
+    /* The SDK would report a stale counter here; no caller has needed it. */
+    if (!visibility_open) recomp_stop(2, "d3d8:visibility-end-without-begin");
+    RecompD3dPresenterTarget target;
+    recomp_d3d8_target(&target);
+    RecompD3dPresenterCommand command = {.type = RECOMP_D3D_PRESENTER_COMMAND_VISIBILITY_END};
+    command.data.visibility_index = index;
+    recomp_d3d8_submit(&command);
+    visibility_open = false;
+    /* The host counts logical pixels; a supersampled back buffer has more samples. */
+    visibility_scale[index] = target.offscreen ? 1u : device_state.scale[0] * device_state.scale[1];
+    recomp_runtime.registers.eax = RECOMP_D3D_OK;
+    recomp_runtime.registers.esp = entry + 8u;
+}
+
+/* D3DDevice_GetVisibilityTestResult (0x344450, stdcall index, result,
+   timestamp) returns D3DERR_TESTINCOMPLETE while the slot is pending and
+   kicks the push buffer when the test is still queued; callers poll. */
+static void get_visibility_test_result(void)
+{
+    const uint32_t entry = recomp_runtime.registers.esp, index = argument(entry, 0u);
+    const uint32_t result = argument(entry, 1u), timestamp = argument(entry, 2u);
+    recomp_d3d8_require_device();
+    if (index >= VISIBILITY_TESTS || visibility_scale[index] == 0u)
+        recomp_stop(2, "d3d8:visibility-result-not-ended:%08" PRIx32, index);
+    if (result == 0u) recomp_stop(2, "d3d8:visibility-result-null");
+    /* shortcut: no host clock maps the GPU report timestamp; bind one when a caller asks for it. */
+    if (timestamp != 0u) recomp_stop(2, "d3d8:visibility-timestamp-unbound");
+    bool complete = false;
+    uint32_t pixels = 0u;
+    const RecompD3dPresenterError error =
+        recomp_d3d_presenter_visibility_result(presenter, index, &complete, &pixels);
+    if (error == RECOMP_D3D_PRESENTER_CLOSED) recomp_stop(0, "host-window-closed");
+    if (error != RECOMP_D3D_PRESENTER_OK) recomp_stop(2, "d3d8:visibility-result:%u", (unsigned)error);
+    if (complete) {
+        *recomp_memory_u32(result) = pixels * visibility_scale[index];
+        recomp_runtime.registers.eax = RECOMP_D3D_OK;
+    } else {
+        flush(false);
+        recomp_runtime.registers.eax = D3DERR_TESTINCOMPLETE;
+    }
+    recomp_runtime.registers.esp = entry + 16u;
+}
+
 static void persist_display(void)
 {
     /* The native window retains its displayed front buffer across reset. The
@@ -652,6 +736,10 @@ RecompFunction recomp_d3d8_lookup_manual(uint32_t address)
     case 0x00344420u: case 0x0034a370u: return wait_idle;
     case 0x003445f0u: return insert_fence;
     case 0x00344430u: return block_on_fence;
+    case 0x00349e10u: return insert_callback;
+    case 0x003457c0u: return begin_visibility_test;
+    case 0x00345860u: return end_visibility_test;
+    case 0x00344450u: return get_visibility_test_result;
     case 0x00345d70u: return persist_display;
     case 0x00344aa0u: return copy_rects;
     case 0x00344720u: return reset_device;

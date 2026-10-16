@@ -686,11 +686,78 @@ static bool testClose(bool idle)
     return passed;
 }
 
+// A far quad behind a near quad covering the left half counts only the right half.
+static bool testVisibility()
+{
+    RecompD3dPresenter *presenter = nullptr;
+    if (!expect("create visibility", recomp_d3d_presenter_create(&config, &presenter))) return false;
+    struct Vertex { float x, y, z, rhw; uint32_t diffuse; };
+    const uint16_t indices[] = {0, 1, 2, 3};
+    // The occluder's right edge avoids pixel centers with or without a half-pixel shift.
+    const Vertex near_quad[] = {{-10, -10, 0.25f, 1, ~0u}, {159.9f, -10, 0.25f, 1, ~0u},
+        {-10, 250, 0.25f, 1, ~0u}, {159.9f, 250, 0.25f, 1, ~0u}};
+    const Vertex far_quad[] = {{-10, -10, 0.5f, 1, ~0u}, {330, -10, 0.5f, 1, ~0u},
+        {-10, 250, 0.5f, 1, ~0u}, {330, 250, 0.5f, 1, ~0u}};
+    RecompD3dPresenterCommand draw_command{RECOMP_D3D_PRESENTER_COMMAND_DRAW};
+    auto &draw = draw_command.data.draw;
+    draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+    draw.index_count = draw.vertex_count = 4;
+    draw.triangle_count = 2;
+    draw.vertex_stride = sizeof(Vertex);
+    draw.fvf = 0x44u;
+    draw.index_bytes = indices;
+    draw.blend.color_write_mask = 15;
+    draw.depth.depth_test_enable = true;
+    draw.depth.depth_write_enable = true;
+    draw.depth.depth_func = RECOMP_D3D_COMPARE_LESS_EQUAL;
+    draw.vertex_bytes = near_quad;
+    RecompD3dPresenterCommand begin{RECOMP_D3D_PRESENTER_COMMAND_VISIBILITY_BEGIN};
+    RecompD3dPresenterCommand end{RECOMP_D3D_PRESENTER_COMMAND_VISIBILITY_END};
+    auto clear = clearCommand();
+    bool passed = expect("visibility clear", recomp_d3d_presenter_submit(presenter, &clear));
+    passed &= expect("occluder", recomp_d3d_presenter_submit(presenter, &draw_command));
+    draw.vertex_bytes = far_quad;
+    draw.depth.depth_write_enable = false;
+    for (uint32_t index : {7u, 8u}) {
+        draw.depth.depth_test_enable = index == 7u;
+        end.data.visibility_index = index;
+        passed &= expect("visibility begin", recomp_d3d_presenter_submit(presenter, &begin));
+        passed &= expect("counted draw", recomp_d3d_presenter_submit(presenter, &draw_command));
+        passed &= expect("visibility end", recomp_d3d_presenter_submit(presenter, &end));
+    }
+    bool complete = true;
+    uint32_t pixels[2]{};
+    passed &= expect("queued result", recomp_d3d_presenter_visibility_result(presenter, 7u, &complete, &pixels[0]));
+    passed &= !complete;
+    passed &= expect("unknown index", recomp_d3d_presenter_visibility_result(presenter, 9u, &complete, &pixels[0]),
+        RECOMP_D3D_PRESENTER_INVALID_ARGUMENT);
+    passed &= expect("publish visibility", recomp_d3d_presenter_flush(presenter, false));
+    const ULONGLONG deadline = GetTickCount64() + 5000u;
+    for (uint32_t i = 0; i < 2u && passed; ++i) {
+        complete = false;
+        while (passed && !complete && GetTickCount64() < deadline) {
+            passed &= expect("poll visibility", recomp_d3d_presenter_visibility_result(
+                presenter, 7u + i, &complete, &pixels[i]));
+        }
+        passed &= complete;
+    }
+    passed &= pixels[0] == 160u * 240u && pixels[1] == 320u * 240u;
+    // An END the worker cannot match to a BEGIN fails the presenter.
+    passed &= expect("unbegun end", recomp_d3d_presenter_submit(presenter, &end));
+    passed &= expect("unbegun end fails", recomp_d3d_presenter_flush(presenter, true),
+        RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
+    recomp_d3d_presenter_destroy(&presenter);
+    if (passed) std::puts("PASS occlusion counts partially hidden and unoccluded quads");
+    else std::fprintf(stderr, "FAIL visibility complete=%d pixels=%u,%u\n", complete, pixels[0], pixels[1]);
+    return passed;
+}
+
 int main()
 {
     recomp_d3d_presenter_set_immediate_present(false);
     if (!testTicks() || !testCapturedDraw() || !testMipSampler() || !testLighting() ||
-        !testScreenSpaceOffsetAndScissor() || !testBrightPass() || !testClose(false) || !testClose(true)) return 1;
+        !testScreenSpaceOffsetAndScissor() || !testBrightPass() || !testVisibility() ||
+        !testClose(false) || !testClose(true)) return 1;
     std::puts("PASS presenter render thread");
     return 0;
 }

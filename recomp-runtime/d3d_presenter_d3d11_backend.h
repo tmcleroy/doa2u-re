@@ -13,4 +13,15 @@ RecompD3dPresenterError d3d11_backend_destroy(RecompD3dPresenter **presenter);
 void d3d11_backend_set_immediate_present(bool enabled);
 void d3d11_backend_report_draw_textures();
 
+enum D3d11VisibilityPoll {
+    D3D11_VISIBILITY_IDLE,
+    D3D11_VISIBILITY_PENDING,
+    D3D11_VISIBILITY_READY,
+    D3D11_VISIBILITY_FAILED,
+};
+/* Resolves the oldest ended visibility query without waiting; READY fills
+   its index and count. Queries resolve in submission order. */
+D3d11VisibilityPoll d3d11_backend_poll_visibility(
+    RecompD3dPresenter *presenter, uint32_t *index, uint32_t *pixels);
+
 #endif

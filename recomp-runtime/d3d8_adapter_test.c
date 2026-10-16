@@ -99,6 +99,27 @@ RecompD3dPresenterError recomp_d3d_presenter_release_memory(
     return RECOMP_D3D_PRESENTER_OK;
 }
 void recomp_d3d_wait_vblank(void) { ++wait_vblank_count; }
+static bool visibility_complete;
+static uint32_t visibility_pixels, visibility_queried;
+RecompD3dPresenterError recomp_d3d_presenter_visibility_result(
+    RecompD3dPresenter *presenter, uint32_t index, bool *complete, uint32_t *pixels)
+{
+    (void)presenter;
+    visibility_queried = index;
+    *complete = visibility_complete;
+    *pixels = visibility_pixels;
+    return RECOMP_D3D_PRESENTER_OK;
+}
+static uint32_t dispatched, dispatched_context, dispatched_return;
+void recomp_dispatch_indirect_site(uint32_t guest_address, uint32_t saved_esp,
+    const char *member, int line)
+{
+    (void)saved_esp; (void)member; (void)line;
+    dispatched = guest_address;
+    dispatched_return = *recomp_memory_u32(recomp_runtime.registers.esp);
+    dispatched_context = *recomp_memory_u32(recomp_runtime.registers.esp + 4u);
+    recomp_runtime.registers.esp += 4u; /* cdecl: the callee pops only its return. */
+}
 static jmp_buf stop_environment;
 static bool stop_armed;
 static int stop_code;
@@ -678,6 +699,47 @@ int main(void)
     passed &= expect("fence wait drains and preserves void ABI", flush_count == 9u &&
         flush_wait && recomp_runtime.registers.eax == EAX_SENTINEL &&
         recomp_runtime.registers.esp == ENTRY_ESP + 8u);
+    /* 0x276d40 brackets a draw with Begin/End(index), inserts a WRITE
+       callback (0x276b50) and polls the result on a later frame. */
+    arguments[0] = 0x11u;
+    passed &= call(0x345860u, arguments, 1u, "d3d8:visibility-end-without-begin");
+    passed &= call(0x3457c0u, arguments, 0u, NULL);
+    passed &= expect("begin submits counting with the void ABI",
+        submitted.type == RECOMP_D3D_PRESENTER_COMMAND_VISIBILITY_BEGIN &&
+        recomp_runtime.registers.esp == ENTRY_ESP + 4u && recomp_runtime.registers.eax == EAX_SENTINEL);
+    arguments[0] = 0x4000u;
+    passed &= call(0x345860u, arguments, 1u, "d3d8:visibility-index:00004000");
+    arguments[0] = 0x11u;
+    passed &= call(0x345860u, arguments, 1u, NULL);
+    passed &= expect("end submits its index and pops it",
+        submitted.type == RECOMP_D3D_PRESENTER_COMMAND_VISIBILITY_END &&
+        submitted.data.visibility_index == 0x11u &&
+        recomp_runtime.registers.esp == ENTRY_ESP + 8u && recomp_runtime.registers.eax == 0u);
+    arguments[0] = 1u; arguments[1] = 0x276b50u; arguments[2] = 0x11u;
+    passed &= call(0x349e10u, arguments, 3u, NULL);
+    passed &= expect("callback runs as cdecl with its context",
+        dispatched == 0x276b50u && dispatched_context == 0x11u && dispatched_return == 0u &&
+        recomp_runtime.registers.esp == ENTRY_ESP + 16u && recomp_runtime.registers.eax == EAX_SENTINEL);
+    arguments[0] = 2u;
+    passed &= call(0x349e10u, arguments, 3u, "d3d8:insert-callback:2");
+    arguments[0] = 0x11u; arguments[1] = OUTPUT; arguments[2] = 0u;
+    *recomp_memory_u32(OUTPUT) = EAX_SENTINEL;
+    prior_submits = flush_count;
+    passed &= call(0x344450u, arguments, 3u, NULL);
+    passed &= expect("pending result kicks queued work and keeps the output",
+        recomp_runtime.registers.eax == 0x88760828u && recomp_runtime.registers.esp == ENTRY_ESP + 16u &&
+        visibility_queried == 0x11u && flush_count == prior_submits + 1u && !flush_wait &&
+        *recomp_memory_u32(OUTPUT) == EAX_SENTINEL);
+    visibility_complete = true;
+    visibility_pixels = 300u;
+    passed &= call(0x344450u, arguments, 3u, NULL);
+    passed &= expect("complete result counts supersampled back-buffer samples",
+        recomp_runtime.registers.eax == 0u && recomp_runtime.registers.esp == ENTRY_ESP + 16u &&
+        *recomp_memory_u32(OUTPUT) == 600u);
+    arguments[2] = OUTPUT + 4u;
+    passed &= call(0x344450u, arguments, 3u, "d3d8:visibility-timestamp-unbound");
+    arguments[0] = 0x12u; arguments[2] = 0u;
+    passed &= call(0x344450u, arguments, 3u, "d3d8:visibility-result-not-ended:00000012");
     /* Return Reset 0x2021 -> 0x11 (0x282770): the game widens the old
        headers (0x2821a0) and persists the display before Reset. */
     passed &= call(0x345d70u, arguments, 0u, NULL);

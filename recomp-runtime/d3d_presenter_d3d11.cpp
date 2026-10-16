@@ -466,6 +466,12 @@ struct RecompD3dPresenter {
     float scale = 1.0f;         // RECOMP_D3D_SCALE: main target height multiplier
     uint32_t msaa = 1u;         // RECOMP_D3D_MSAA: main target sample count
     float target_scale_x = 1.0f, target_scale_y = 1.0f; // bound target / guest size
+    uint32_t target_samples = 1u; // MSAA samples of the bound target
+    // Occlusion queries: the open BEGIN, ended ones in submission order, reusable ones.
+    struct VisibilityQuery { ID3D11Query *query; uint32_t index; float samples_per_pixel; };
+    ID3D11Query *visibility_active = nullptr;
+    std::vector<VisibilityQuery> visibility_pending;
+    std::vector<ID3D11Query *> visibility_free;
     bool smaa = false;          // RECOMP_D3D_SMAA: post-process the output
     ID3D11VertexShader *smaa_vs[3]{};   // edges, weights, blend
     ID3D11PixelShader *smaa_ps[3]{};
@@ -647,6 +653,11 @@ void releaseSmaa(RecompD3dPresenter *presenter)
 
 void releaseGraphics(RecompD3dPresenter *presenter)
 {
+    releaseCom(presenter->visibility_active);
+    for (auto &pending : presenter->visibility_pending) releaseCom(pending.query);
+    for (auto &query : presenter->visibility_free) releaseCom(query);
+    presenter->visibility_pending.clear();
+    presenter->visibility_free.clear();
     if (presenter->context != nullptr) {
         presenter->context->OMSetRenderTargets(0u, nullptr, nullptr);
         presenter->context->ClearState();
@@ -1018,6 +1029,7 @@ HRESULT createGraphics(RecompD3dPresenter *presenter)
     presenter->context->RSSetViewports(1u, &viewport);
     presenter->target_scale_x = viewport.Width / presenter->config.width;
     presenter->target_scale_y = viewport.Height / presenter->config.height;
+    presenter->target_samples = presenter->msaa;
     return S_OK;
 }
 
@@ -1244,6 +1256,7 @@ RecompD3dPresenterError bindTarget(
         target.offscreen ? height : mainHeight(presenter));
     presenter->target_scale_x = host_width / width;
     presenter->target_scale_y = host_height / height;
+    presenter->target_samples = target.offscreen ? 1u : presenter->msaa;
 
     /* Clear can write a previously sampled target too. Switch the output
        before rebinding t0 so sampling the previous output remains valid. */
@@ -3589,6 +3602,39 @@ RecompD3dPresenterError submitPresent(
     return RECOMP_D3D_PRESENTER_OK;
 }
 
+/* A repeated BEGIN restarts counting, as the SDK's CLEAR_REPORT_VALUE does. */
+RecompD3dPresenterError beginVisibility(RecompD3dPresenter *presenter)
+{
+    if (presenter->visibility_active != nullptr) {
+        presenter->context->End(presenter->visibility_active);
+    } else if (!presenter->visibility_free.empty()) {
+        presenter->visibility_active = presenter->visibility_free.back();
+        presenter->visibility_free.pop_back();
+    } else {
+        const D3D11_QUERY_DESC desc = {D3D11_QUERY_OCCLUSION, 0u};
+        if (FAILED(presenter->device->CreateQuery(&desc, &presenter->visibility_active))) {
+            return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+        }
+    }
+    presenter->context->Begin(presenter->visibility_active);
+    return RECOMP_D3D_PRESENTER_OK;
+}
+
+RecompD3dPresenterError endVisibility(RecompD3dPresenter *presenter, uint32_t index)
+{
+    if (presenter->visibility_active == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    presenter->visibility_pending.reserve(presenter->visibility_pending.size() + 1u);
+    // Polling returns every query to the free list without allocating.
+    presenter->visibility_free.reserve(
+        presenter->visibility_free.size() + presenter->visibility_pending.size() + 1u);
+    presenter->context->End(presenter->visibility_active);
+    // Host samples per guest pixel of the target bound when counting ends.
+    presenter->visibility_pending.push_back({presenter->visibility_active, index,
+        presenter->target_scale_x * presenter->target_scale_y * presenter->target_samples});
+    presenter->visibility_active = nullptr;
+    return RECOMP_D3D_PRESENTER_OK;
+}
+
 } // namespace
 
 RecompD3dPresenterError d3d11_backend_create(
@@ -3692,6 +3738,10 @@ RecompD3dPresenterError d3d11_backend_submit(
         return submitPresent(presenter, command->data.present);
     case RECOMP_D3D_PRESENTER_COMMAND_DRAW:
         return submitDraw(presenter, command->data.draw);
+    case RECOMP_D3D_PRESENTER_COMMAND_VISIBILITY_BEGIN:
+        return beginVisibility(presenter);
+    case RECOMP_D3D_PRESENTER_COMMAND_VISIBILITY_END:
+        return endVisibility(presenter, command->data.visibility_index);
     default:
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
@@ -3787,6 +3837,25 @@ RecompD3dPresenterError d3d11_backend_destroy(
 void d3d11_backend_set_immediate_present(bool enabled)
 {
     immediate_present = enabled;
+}
+
+D3d11VisibilityPoll d3d11_backend_poll_visibility(
+    RecompD3dPresenter *presenter, uint32_t *index, uint32_t *pixels)
+{
+    if (presenter == nullptr || presenter != active_presenter ||
+        GetCurrentThreadId() != presenter->owner_thread) return D3D11_VISIBILITY_FAILED;
+    if (presenter->visibility_pending.empty()) return D3D11_VISIBILITY_IDLE;
+    const auto front = presenter->visibility_pending.front();
+    UINT64 samples = 0u;
+    const HRESULT result = presenter->context->GetData(front.query, &samples, sizeof samples, 0u);
+    if (result == S_FALSE) return D3D11_VISIBILITY_PENDING;
+    if (FAILED(result)) return D3D11_VISIBILITY_FAILED;
+    presenter->visibility_pending.erase(presenter->visibility_pending.begin());
+    presenter->visibility_free.push_back(front.query);
+    *index = front.index;
+    *pixels = static_cast<uint32_t>((std::min)(
+        std::floor(static_cast<double>(samples) / front.samples_per_pixel + 0.5), 4294967295.0));
+    return D3D11_VISIBILITY_READY;
 }
 
 

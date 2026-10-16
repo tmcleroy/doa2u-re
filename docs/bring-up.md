@@ -46,6 +46,9 @@ seed recipe rather than replaced by success stubs.
 Game handlers reached only through data tables (the game-mode table at
 0x6959f0 and the four-entry handler groups at 0x7c0040) are seeded the same
 way when the lifter misses them; an unresolved indirect call names the next one.
+Tail-jump switch cases past a null table slot (0x2a82bc, cases 0x2a8247 and
+0x2a8286) are seeded too. A lone in-function arm ended by a null slot
+(0x2929f4) resolves in the lifter as a local switch.
 
 `tools/build_game.py` authenticates the selected XBE, lifter revision,
 generated source manifest and final runner. CMake rejects partial or wrong
@@ -208,11 +211,23 @@ Draws do not consume those states yet. A stage-1 combiner the draw path cannot
 express stops with `d3d8:draw-texture-stages` and reports the color/alpha ops
 and arguments of stages 0-1 and the stage-2 ops.
 
-The first Story fight (Stage 01) renders and its round timer runs. Game code
-`0x276d40` then brackets a draw with D3DDevice_BeginVisibilityTest
-(`0x3457c0`, CLEAR_REPORT_VALUE plus ZPASS_PIXEL_COUNT_ENABLE) and
-EndVisibilityTest(index) (`0x345860`, report slot from `0x3457f0`). A native
-binding needs presenter occlusion queries with deferred result readback.
+The first Story fight (Stage 01) plays through a 180-second probe. Its stage
+fades a light glare by occlusion. Game code `0x276d40` brackets a
+draw with BeginVisibilityTest (`0x3457c0`, no arguments) and
+EndVisibilityTest(index) (`0x345860`, stdcall), then inserts a WRITE callback
+(`0x276b50`) that marks the index ready. Next frame it polls
+GetVisibilityTestResult(index, &result, NULL) (`0x344450`, stdcall) while it
+returns D3DERR_TESTINCOMPLETE. The visible/total ratio of two tests feeds the
+fade, so only relative counts matter. The presenter wraps the draws in a
+D3D11 occlusion query per END and resolves it on its worker without waiting.
+Counts are normalized to guest target pixels and scaled by the back buffer's
+supersample factor, as Xbox reports count samples. A pending poll publishes
+queued work, as the SDK's fence kick does. No guest report slot is written.
+Indices beyond the SDK's 64 report pages, an End without Begin, and a
+requested report timestamp stop explicitly.
+InsertCallback (`0x349e10`, stdcall type/callback/context) calls its cdecl
+callback immediately: captured commands own their bytes and the host GPU
+never writes guest memory, so READ and WRITE conditions already hold.
 
 ## Game tasks
 
