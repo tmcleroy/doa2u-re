@@ -1060,14 +1060,15 @@ static int factor_tests(void)
     initialize();
     *recomp_memory_u32(DEVICE + 0xf88u) = 0x7000u;
     CHECK(recomp_d3d_set_texture_factor(&state, 0x804080c0u));
-    for (uint32_t screen = 0u; screen < 2u; ++screen) {
-        *recomp_memory_u32(DEVICE + 0x798u) = screen ? 0x144u : 0x142u;
+    for (uint32_t format = 0u; format < 4u; ++format) {
+        const bool screen = (format & 1u) != 0u, white = format >= 2u;
+        *recomp_memory_u32(DEVICE + 0x798u) = (screen ? 0x104u : 0x102u) | (white ? 0u : 0x40u);
         for (uint32_t reverse = 0u; reverse < 2u; ++reverse) {
-            for (uint32_t alpha = 0u; alpha < 2u; ++alpha) {
+            for (uint32_t alpha = 0u; alpha < (white ? 1u : 2u); ++alpha) {
                 const uint32_t source = alpha == 0u ? 3u : 0u;
                 set_stage(0u, 14u, reverse ? 3u : 2u); set_stage(0u, 15u, reverse ? 2u : 3u);
                 set_stage(0u, 18u, reverse ? source : 2u); set_stage(0u, 19u, reverse ? 2u : source);
-                invoke(0x348240u, 5u, 3u, VERTICES, screen ? 28u : 24u);
+                invoke(0x348240u, 5u, 3u, VERTICES, (screen ? 24u : 20u) + (white ? 0u : 4u));
                 const RecompD3dPresenterDrawCommand *draw = &submitted.data.draw;
                 CHECK(draw->has_texture && !draw->directional.enabled && draw->directional.stage_mode);
                 CHECK(draw->directional.stage[0] == 1.0f && draw->directional.stage[1] == 2.0f &&
@@ -1077,7 +1078,7 @@ static int factor_tests(void)
             }
         }
     }
-    CHECK(submits == 8u);
+    CHECK(submits == 12u);
     return 0;
 }
 

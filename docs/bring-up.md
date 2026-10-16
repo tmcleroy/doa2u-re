@@ -195,7 +195,11 @@ vertices use the same selection for MODULATE(TEXTURE, TFACTOR): the factor
 replaces vertex diffuse in RGB, while alpha independently uses factor or
 diffuse. This includes the FVF 0x142 mesh draw at 0x287120. Adapter tests
 check both channels and argument orders; native pixels check tint, alpha and
-specular ordering. Material
+specular ordering. Unlit streams without vertex color also admit texture times
+factor in both RGB and alpha (FVF 0x102, draw return 0x1a1edd), through the same
+per-channel selection. The RGB-only factor flag is cleared so it cannot apply
+twice; adapter tests cover world/screen layouts and native pixels check alpha.
+Material
 checks cover only what the SDK uploads: diffuse, ambient and specular RGB
 (0x34fb90), emissive RGB and diffuse alpha (0x34fc80), and specular RGB and
 power (0x34fe40) only while specular is enabled. Non-finite unused terms draw;

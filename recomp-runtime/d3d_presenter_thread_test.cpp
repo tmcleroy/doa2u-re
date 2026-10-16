@@ -1215,6 +1215,25 @@ static bool testStageEffect()
         draw.reflection_transform[13] = 0.5f;
         draw.reflection_transform[14] = 1;
         passed &= expect("unprojected position draw", d3d11_backend_submit(presenter, &command));
+        // FVF 0x102 has no diffuse stream: texture times factor in both channels.
+        const float white_quad[4][5] = {{-0.875f,1.0f/3,0.5f,0,0}, {-0.625f,1.0f/3,0.5f,0,0},
+            {-0.875f,1.0f/6,0.5f,0,0}, {-0.625f,1.0f/6,0.5f,0,0}};
+        draw.fvf = 0x102u;
+        draw.vertex_stride = sizeof white_quad[0];
+        draw.vertex_bytes = white_quad;
+        draw.texgen_projected = false;
+        draw.texture.width = 1;
+        draw.texture.data = 0x4000u;
+        draw.texture_bytes = &green;
+        draw.texture_byte_count = sizeof green;
+        draw.directional.stage[0] = draw.directional.stage[2] = 1;
+        draw.directional.stage[1] = draw.directional.stage[3] = 2;
+        draw.texture_factor = 0x804080c0u;
+        draw.modulate_texture_factor_alpha = false;
+        draw.blend.blend_enable = true;
+        draw.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
+        draw.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+        passed &= expect("white texture-factor draw", d3d11_backend_submit(presenter, &command));
         RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
         present.data.present = {5, 1};
         passed &= expect("effect present", d3d11_backend_submit(presenter, &present));
@@ -1225,7 +1244,7 @@ static bool testStageEffect()
             // the projected quad reads red at s/q 0.31 (s 0.63 would be green), green at 0.69.
             const int pixels[][4] = {{25, 40, 0, 128}, {55, 40, 0, 64}, {85, 40, 0, 255}, {115, 40, 0, 0},
                 {145, 40, 0, 128}, {175, 40, 0, 0}, {100, 200, 255, 0}, {220, 200, 0, 255},
-                {240, 60, 255, 0}, {280, 60, 0, 255}};
+                {240, 60, 255, 0}, {280, 60, 0, 255}, {40, 90, 0, 64}};
             for (const auto &pixel : pixels) {
                 unsigned char bgr[3]{};
                 std::fseek(file, 54 + (239 - pixel[1]) * 960 + pixel[0] * 3, SEEK_SET);

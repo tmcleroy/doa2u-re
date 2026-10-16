@@ -826,11 +826,15 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
         bool alpha_tfactor = false;
         const bool factor_color = stage[0][12] == 4u &&
             ((stage[0][14] == 2u && stage[0][15] == 3u) || (stage[0][14] == 3u && stage[0][15] == 2u));
-        const bool unlit_select = !draw->directional.enabled && !draw->has_reflection && !white &&
+        const bool factor_alpha = stage[0][16] == 4u &&
+            ((stage[0][18] == 2u && stage[0][19] == 3u) || (stage[0][18] == 3u && stage[0][19] == 2u));
+        const bool unlit_select = !draw->directional.enabled && !draw->has_reflection &&
+            (!white || (factor_color && factor_alpha)) &&
             (factor_color || (stage[0][12] == 2u && stage[0][14] == 2u)) &&
             stage0_select(stage[0], draw->directional.stage, factor_color ? NULL : &alpha_tfactor);
         if (unlit_select) {
             draw->directional.stage_mode = true;
+            draw->texture_factor_modulate = false;
             draw->material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_NONE;
         } else alpha_tfactor = false;
         if (!draw->directional.enabled && !draw->has_reflection && !unlit_select &&
