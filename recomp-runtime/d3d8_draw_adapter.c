@@ -519,7 +519,10 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
             stage[1][16], stage[1][18], stage[1][19]};
         draw->modulate_texture_factor = recomp_d3d_texture_factor_modulate_selected(final, stage[2][12]);
         if (stage[1][12] != 1u && !draw->modulate_texture_factor && !draw->has_reflection)
-            recomp_stop(2, "d3d8:draw-texture-stages");
+            recomp_stop(2, "d3d8:draw-texture-stages:%u,%u,%u/%u,%u,%u:%u,%u,%u/%u,%u,%u:%u,%u",
+                stage[0][12], stage[0][14], stage[0][15], stage[0][16], stage[0][18], stage[0][19],
+                stage[1][12], stage[1][14], stage[1][15], stage[1][16], stage[1][18], stage[1][19],
+                stage[2][12], stage[2][16]);
     }
 }
 
