@@ -88,7 +88,8 @@ typedef struct RecompD3dDirectionalLighting {
     float specular[8][4];
     /* World vertex-to-viewer direction; w is the power, 0 for no specular. */
     float view[4];
-    /* Stage 0 uses: color texture, color diffuse, alpha texture, alpha diffuse. */
+    /* Stage 0: RGB texture, RGB source, alpha texture, alpha source.
+       Sources: 0 = one, 1 = diffuse, 2 = TFACTOR. Texture selectors are 0/1. */
     float stage[4];
 } RecompD3dDirectionalLighting;
 

@@ -443,6 +443,25 @@ static int lighting_tests(void)
     invoke(0x348240u, 5u, 3u, VERTICES, 32u);
     CHECK(lit->enabled && lit->stage[0] == 1.0f && lit->stage[1] == 1.0f);
     *recomp_memory_u32(STAGES + 15u * 4u) = 0u;
+    /* Lit stage 0 can multiply texture by TFACTOR independently in RGB/alpha. */
+    CHECK(recomp_d3d_set_texture_factor(&state, 0x804080c0u));
+    for (uint32_t channels = 1u; channels < 4u; ++channels) {
+        *recomp_memory_u32(STAGES + 15u * 4u) = (channels & 1u) ? 3u : 0u;
+        *recomp_memory_u32(STAGES + 19u * 4u) = (channels & 2u) ? 3u : 0u;
+        invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+        CHECK(lit->enabled && lit->stage[0] == 1.0f && lit->stage[2] == 1.0f &&
+            lit->stage[1] == ((channels & 1u) ? 2.0f : 1.0f) &&
+            lit->stage[3] == ((channels & 2u) ? 2.0f : 1.0f));
+        CHECK(submitted.data.draw.texture_factor == 0x804080c0u &&
+            !submitted.data.draw.texture_factor_modulate && !submitted.data.draw.modulate_texture_factor_alpha);
+    }
+    /* Multiplication accepts either argument order. */
+    *recomp_memory_u32(STAGES + 14u * 4u) = *recomp_memory_u32(STAGES + 18u * 4u) = 3u;
+    *recomp_memory_u32(STAGES + 15u * 4u) = *recomp_memory_u32(STAGES + 19u * 4u) = 2u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    CHECK(lit->stage[1] == 2.0f && lit->stage[3] == 2.0f);
+    *recomp_memory_u32(STAGES + 14u * 4u) = *recomp_memory_u32(STAGES + 18u * 4u) = 2u;
+    *recomp_memory_u32(STAGES + 15u * 4u) = *recomp_memory_u32(STAGES + 19u * 4u) = 0u;
     CHECK(recomp_d3d8_state_set_simple(0x4037cu, 0x1d00u));
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
     CHECK(strcmp(stop_reason, "d3d8:lighting-shade-mode") == 0);

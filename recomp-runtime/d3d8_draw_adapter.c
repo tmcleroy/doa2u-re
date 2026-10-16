@@ -502,7 +502,7 @@ static void bump_stages(uint32_t device, bool water, RecompD3dPresenterDrawComma
     draw->bump_water = water;
 }
 
-/* Stage-0 color and alpha as products of texture and diffuse: the first
+/* Stage-0 color and alpha as products of texture and diffuse or TFACTOR: the first
    stage's flag 0x10 (0x352aba) makes the arg mapper (0x3529c0) read CURRENT
    as V0, the diffuse color. With alpha_tfactor, alpha MODULATE may take
    TFACTOR as one argument, which the presenter applies as a factor. */
@@ -513,6 +513,13 @@ static bool stage0_select(const uint32_t *stage, float select[4], bool *alpha_tf
         uint32_t arg1 = stage[14u + channel * 4u], arg2 = stage[15u + channel * 4u];
         if (arg1 == 1u) arg1 = 0u;
         if (arg2 == 1u) arg2 = 0u;
+        /* Lit draws select TFACTOR in the shader; unlit/program callers use alpha_tfactor. */
+        if (alpha_tfactor == NULL && op == 4u &&
+            ((arg1 == 2u && arg2 == 3u) || (arg1 == 3u && arg2 == 2u))) {
+            select[channel * 2u] = 1.0f;
+            select[channel * 2u + 1u] = 2.0f;
+            continue;
+        }
         if (alpha_tfactor != NULL && channel == 1u && op == 4u && (arg1 == 3u || arg2 == 3u)) {
             op = arg1 == 3u ? 3u : 2u;
             *alpha_tfactor = true;
@@ -768,7 +775,7 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
         draw->texture_factor_modulate2x = white && stage[0][12] == 5u &&
             stage[0][14] == 2u && stage[0][15] == 3u;
         /* The trail strips (setup 0x23a42d, draw 0x23ca7e) use 1x MODULATE. */
-        draw->texture_factor_modulate = white && stage[0][12] == 4u &&
+        draw->texture_factor_modulate = !draw->directional.enabled && white && stage[0][12] == 4u &&
             ((stage[0][14] == 2u && stage[0][15] == 3u) || (stage[0][14] == 3u && stage[0][15] == 2u));
         const bool white_alpha = white && layout->pretransformed &&
             recomp_d3d_texture_material_alpha_mode(stage[0][12], stage[0][14], stage[0][15],

@@ -170,7 +170,13 @@ normalization, blended world/normal transforms and infinite-view specular.
 Missing vertex colors resolve material sources as the SDK does. On stage 0 a
 CURRENT argument reads diffuse: the combiner compiler flags the first stage
 (0x352aba) and its arg mapper (0x3529c0) then maps CURRENT to V0, so a fight's
-lit MODULATE(TEXTURE, CURRENT) binds as texture times lit diffuse. Material
+lit MODULATE(TEXTURE, CURRENT) binds as texture times lit diffuse. Lit stage 0
+also accepts MODULATE(TEXTURE, TFACTOR) in either argument order, independently
+for RGB and alpha. The SDK arg mapper (`0x3529c0`) maps TFACTOR to combiner
+constant C0. The presenter selects that factor instead of lit diffuse for the
+chosen channel and adds lit specular after the texture stages. Adapter tests
+check both channels and argument orders; native pixels check tint, alpha and
+specular ordering. Material
 checks cover only what the SDK uploads: diffuse, ambient and specular RGB
 (0x34fb90), emissive RGB and diffuse alpha (0x34fc80), and specular RGB and
 power (0x34fe40) only while specular is enabled. Non-finite unused terms draw;
