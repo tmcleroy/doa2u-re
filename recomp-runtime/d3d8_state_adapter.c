@@ -133,6 +133,18 @@ static void set_fog_color(void)
     recomp_runtime.registers.esp += 8u;
 }
 
+/* 5849 ShadowFunc (0x346580) writes state 0x9c and pushes value - 0x200.
+   Depth-texture sampling is guarded by attach_texture, so no host draw uses it. */
+static void shadow_func(void)
+{
+    recomp_d3d8_require_device();
+    const uint32_t value = kernel_arg(1u);
+    /* shortcut: only the observed default is bound, extend with depth-texture sampling. */
+    if (value != 0x200u) recomp_stop(2, "d3d8:unsupported-shadow-func:%08x", value);
+    *recomp_memory_u32(0x3554d0u) = value;
+    recomp_runtime.registers.esp += 8u;
+}
+
 static void set_screen_space_offset(void)
 {
     const uint32_t device = recomp_d3d8_require_device();
@@ -544,6 +556,7 @@ RecompFunction recomp_d3d8_state_lookup_manual(uint32_t address)
     case 0x00345ea0u: return set_screen_space_offset;
     case 0x00346240u: return set_render_state_simple;
     case 0x00346540u: return edge_anti_alias;
+    case 0x00346580u: return shadow_func;
     case 0x00346610u: return cull_mode;
     case 0x003466c0u: return normalize_normals;
     case 0x00346700u: return texture_factor;

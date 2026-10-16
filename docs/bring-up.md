@@ -367,6 +367,13 @@ Any SDK API that is still unreplaced reserves console push-buffer space and
 would then wait forever for GPU hardware. The reservation routine stops
 instead and reports the calling API's return address.
 
+SetRenderState_ShadowFunc (`0x346580`, void/stdcall value) preserves state
+0x9c at `0x3554d0` without reserving console push-buffer space. Both direct
+game callers (`0x27aa70` and `0x280f80`) set the SDK default `0x200`; the
+effect state restore (`0x27b900`) can restore its saved shadow. Only that
+default is bound. Other values stop, and depth-texture sampling remains
+guarded by the draw adapter.
+
 SetTextureState_BumpEnv (`0x346bc0`, stdcall stage/state/value) stores
 BUMPENVMAT00 through BUMPENVLOFFSET (states 22-27) in the deferred stage array
 `0x355060`, which the draw adapter reads; its NV2A method has no host use.

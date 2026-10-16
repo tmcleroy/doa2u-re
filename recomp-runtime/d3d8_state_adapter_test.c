@@ -278,6 +278,18 @@ static int check_frame_state(void)
     CHECK(strncmp(stop_reason, "d3d8:unsupported-fill-mode", 26) == 0);
     CHECK(invoke(0x346540u, 0u, 0u) == 0u);
     CHECK(*recomp_memory_u32(0x3554bcu) == 0u);
+    /* ShadowFunc is void/stdcall and preserves the state read by save/restore. */
+    CHECK(recomp_d3d8_state_lookup_manual(0x346580u) != NULL);
+    *recomp_memory_u32(0x3554d0u) = 0x207u;
+    *recomp_memory_u32(DIRTY) = 0x1234u;
+    *recomp_memory_u32(DEVICE) = 0xdeadbeefu;
+    CHECK(invoke(0x346580u, 0x200u, 0u) == 0x11223344u);
+    CHECK(recomp_runtime.registers.esp == STACK + 8u);
+    CHECK(*recomp_memory_u32(0x3554d0u) == 0x200u &&
+        *recomp_memory_u32(DIRTY) == 0x1234u && *recomp_memory_u32(DEVICE) == 0xdeadbeefu);
+    if (setjmp(stopped) == 0) { invoke(0x346580u, 0x207u, 0u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:unsupported-shadow-func:00000207") == 0);
+    CHECK(*recomp_memory_u32(0x3554d0u) == 0x200u);
     CHECK(invoke(0x346610u, 0x901u, 0u) == 0u);
     CHECK(*recomp_memory_u32(0x3554acu) == 0x901u);
     CHECK(invoke(0x347800u, 0u, 0u) == 0u);
