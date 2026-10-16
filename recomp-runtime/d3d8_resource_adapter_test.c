@@ -185,6 +185,14 @@ int main(void)
     CHECK(strcmp(reason, "d3d8:texture-stage:4") == 0);
     if (setjmp(stopped) == 0) { invoke(0x347ec0u, TEXTURE, 0u, 0u, 0u, 0u); return 1; }
     CHECK(strncmp(reason, "d3d8:resource-destroy-unowned", 28u) == 0);
+    /* An XPR volume texture (4x4x2 A8R8G8B8, two levels) releases every level. */
+    texture(TEXTURE + 96u, 0x40001u, 0x1222063au, 0u);
+    CHECK(invoke(0x347f10u, TEXTURE + 96u, 0u, 0u, 0u, 0u) == 4u);
+    invoke(0x347fa0u, TEXTURE + 96u, 0x80000000u, 0u, 0u, 0u);
+    CHECK(invalidated_base == DATA && invalidated_size == 144u);
+    texture(TEXTURE + 96u, 0x40001u, 0x12220c3au, 0u);
+    if (setjmp(stopped) == 0) { invoke(0x347fa0u, TEXTURE + 96u, 0x80000000u, 0u, 0u, 0u); return 1; }
+    CHECK(strcmp(reason, "d3d8:volume-register:12220c3a:00000000") == 0);
     recomp_d3d8_resource_reset();
     puts("PASS D3D8 resource ABI, mip views, bindings, retention and owned destruction");
     return 0;

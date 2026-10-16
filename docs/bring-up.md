@@ -111,6 +111,10 @@ their allocator is verified. Locks validate mip/rectangle spans. Write locks
 and texture registration invalidate native texture caches. Queued draws own
 all submitted vertex, index, palette and texture bytes, including non-linear
 formats. Cube/volume views and displaced swizzled locks remain unsupported.
+The XPR loader (FUN_00289f80) registers volume textures (a 64x64x8 A8R8G8B8
+map appears after a Story fight), so Register releases a swizzled,
+uncompressed volume's full span: width x height x depth per level, each
+axis halving to 1. Sampling, locking or viewing a volume still stops.
 
 `d3d8_draw_adapter.c` binds DrawVertices, DrawVerticesUP and
 DrawIndexedVertices to the existing D3D11 presenter. It snapshots fixed-function

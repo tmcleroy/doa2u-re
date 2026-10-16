@@ -219,7 +219,27 @@ static void resource_register(void)
     uint32_t data = word(resource + 4u) + arg(1u);
     if ((value & TYPE_MASK) != 0x20000u) data &= 0x0fffffffu;
     put(resource + 4u, data);
-    if ((value & TYPE_MASK) == 0x40000u || (value & TYPE_MASK) == 0x50000u) {
+    const uint32_t format = word(resource + 12u);
+    if ((value & TYPE_MASK) == 0x40000u && (format & 0xf4u) == 0x30u) {
+        /* XPR volume textures (FUN_00289f80) only need their span released;
+           sampling one still stops in describe. */
+        RecompD3dTextureDesc desc;
+        const uint32_t descriptor = *recomp_memory(FORMAT_TABLE + ((format >> 8u) & 255u), 1u);
+        const uint32_t byte = (format >> 8u) & 255u;
+        if (word(resource + 16u) != 0u || (byte >= 0xcu && byte <= 0xfu) ||
+            !recomp_d3d_texture_describe(format, 0u, data, descriptor, &desc) || desc.bits_per_pixel == 0u)
+            recomp_stop(2, "d3d8:volume-register:%08x:%08x", format, word(resource + 16u));
+        uint32_t width = desc.width, height = desc.height, depth = 1u << ((format >> 28u) & 15u);
+        uint64_t bytes = 0u;
+        for (uint32_t i = 0u; i < desc.mip_levels; ++i) {
+            bytes += (uint64_t)width * height * depth * desc.bits_per_pixel / 8u;
+            width = width > 1u ? width >> 1u : 1u;
+            height = height > 1u ? height >> 1u : 1u;
+            depth = depth > 1u ? depth >> 1u : 1u;
+        }
+        if (bytes > 0x04000000u - desc.data) recomp_stop(2, "d3d8:resource-size");
+        recomp_d3d8_release_memory(desc.data, (uint32_t)bytes);
+    } else if ((value & TYPE_MASK) == 0x40000u || (value & TYPE_MASK) == 0x50000u) {
         LevelView view = level_view(resource, 0u);
         recomp_d3d8_release_memory(view.desc.data, view.bytes);
     }
