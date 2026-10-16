@@ -20,10 +20,10 @@ int main()
     const void *Draw::*fields[] = {
         &Draw::vertex_bytes, &Draw::index_bytes, &Draw::texture_bytes,
         &Draw::palette_bytes, &Draw::alpha_mask_bytes,
-        &Draw::alpha_mask_palette, &Draw::reflection_bytes,
+        &Draw::alpha_mask_palette, &Draw::reflection_bytes, &Draw::reflection_stage2_bytes,
     };
-    const size_t sizes[] = {33u, 6u, 65u, 1024u, 17u, 1024u, 31u};
-    std::array<std::vector<uint8_t>, 7> sources;
+    const size_t sizes[] = {33u, 6u, 65u, 1024u, 17u, 1024u, 31u, 16u};
+    std::array<std::vector<uint8_t>, 8> sources;
     RecompD3dPresenterCommand input{};
     input.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
     auto &draw = input.data.draw;
@@ -35,6 +35,7 @@ int main()
     draw.alpha_mask_byte_count = 17u;
     draw.alpha_mask_palette_byte_count = 1024u;
     draw.reflection_byte_count = 31u;
+    draw.reflection_stage2_byte_count = 16u;
     draw.texture.data = 0x101000u;
     draw.alpha_mask.data = 0x202000u;
     draw.reflection_texture.data = 0x303000u;

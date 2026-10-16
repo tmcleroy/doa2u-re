@@ -540,6 +540,38 @@ static int lighting_tests(void)
     CHECK(submitted.data.draw.reflection_bytes == ram + texture.data &&
         submitted.data.draw.reflection_byte_count == 64u);
     CHECK(!submitted.data.draw.reflection_skip_diffuse);
+    /* A second environment blend precedes the final diffuse stage. */
+    uint32_t third_stages[4][32];
+    recomp_guest_load(third_stages, STAGES, sizeof third_stages);
+    memcpy(third_stages[3], third_stages[2], sizeof third_stages[3]);
+    memcpy(third_stages[2], third_stages[1], sizeof third_stages[2]);
+    third_stages[2][0] = third_stages[2][1] = 3u;
+    third_stages[2][5] = 1u;
+    third_stages[2][6] = 0xc0000000u;
+    recomp_guest_store(STAGES, third_stages, sizeof third_stages);
+    *recomp_memory_u32(DEVICE + 0xf90u) = 0x7000u;
+    const float texture2[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 11,0,0,1};
+    recomp_guest_store(DEVICE + 0xd60u, texture2, sizeof texture2);
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected third blend stop: %s\n", stop_reason); return 1; }
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    CHECK(submitted.data.draw.has_reflection && submitted.data.draw.reflection_stage2 &&
+        !submitted.data.draw.reflection_skip_diffuse && submitted.data.draw.reflection_stage2_bytes == ram + texture.data &&
+        submitted.data.draw.reflection_stage2_byte_count == 64u &&
+        submitted.data.draw.reflection_stage2_address_u == 3u && submitted.data.draw.reflection_stage2_address_v == 3u &&
+        submitted.data.draw.reflection_stage2_point_mip_filter && submitted.data.draw.reflection_stage2_mip_lod_bias == -511.0f / 256.0f &&
+        submitted.data.draw.reflection_stage2_transform[12] == 11.0f);
+    *recomp_memory_u32(STAGES + 256u + 7u * 4u) = 1u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:reflection-stage2-sampler") == 0);
+    *recomp_memory_u32(STAGES + 256u + 7u * 4u) = 0u;
+    *recomp_memory_u32(STAGES + 256u + 28u * 4u) = 0x20000u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
+    CHECK(strncmp(stop_reason, "d3d8:draw-texture-stages:", 25) == 0);
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected restored reflection stop: %s\n", stop_reason); return 1; }
+    memcpy(third_stages[2], third_stages[3], sizeof third_stages[2]);
+    third_stages[3][12] = 1u;
+    recomp_guest_store(STAGES, third_stages, sizeof third_stages);
+    *recomp_memory_u32(DEVICE + 0xf90u) = 0u;
     /* FVF XYZB1|NORMAL|TEX1 also reaches the generated environment stage. */
     *recomp_memory_u32(DEVICE + 0x798u) = 0x116u;
     *recomp_memory_u32(0x355484u) = 1u;

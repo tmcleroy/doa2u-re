@@ -203,8 +203,8 @@ bool recomp_d3d_texture_factor_modulate_selected(
     const uint32_t stage[6],
     uint32_t next_color_op);
 
-/* UV0 base, straight or premultiplied texture-alpha reflection blend, then
-   stage-2 MODULATE by diffuse or by the stage-2 texture. */
+/* UV0 base, one texture-alpha reflection blend then stage-2 modulation,
+   or two straight blends at generated coordinates then stage-3 diffuse. */
 bool recomp_d3d_reflection_material(const uint32_t stages[4][32]);
 
 /* No ambient, enabled lights, or material emission can contribute RGB. */

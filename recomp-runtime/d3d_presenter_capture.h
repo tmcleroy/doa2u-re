@@ -56,7 +56,7 @@ private:
     struct CapturedCommand {
         CapturedCommand() {} // Skip zeroing: add() writes every field it uses.
         alignas(8) RecompD3dPresenterCommand value;
-        size_t offsets[7];
+        size_t offsets[8];
     };
     struct Span { size_t size; size_t offset; };
 

@@ -255,6 +255,16 @@ typedef struct RecompD3dPresenterDrawCommand {
        (texgen_reflection with has_reflection and !reflection_mesh_uv). */
     float reflection_stage1_transform[16];
     float reflection_diffuse[4];
+    /* Second BLENDTEXTUREALPHA at stage 2, before stage-3 diffuse modulation.
+       Coordinates use the shared reflection vector and TEXTURE2. */
+    bool reflection_stage2;
+    RecompD3dTextureDesc reflection_stage2_texture;
+    const void *reflection_stage2_bytes;
+    uint32_t reflection_stage2_byte_count;
+    uint32_t reflection_stage2_address_u, reflection_stage2_address_v;
+    bool reflection_stage2_point_mip_filter;
+    float reflection_stage2_mip_lod_bias;
+    float reflection_stage2_transform[16];
     RecompD3dPresenterTarget target;
 } RecompD3dPresenterDrawCommand;
 

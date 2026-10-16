@@ -218,6 +218,14 @@ by its own texture in modes 9 and 11. With no stage-2 texture bound, 0x352e46
 compiles the texture variant to a CURRENT pass-through, so the blend skips the
 final diffuse. A bound stage-2 texture would need a third sampler and still
 stops with `d3d8:reflection-stage2-texture`.
+The binder also reaches modes 3, 4, 4, 5: a base, two successive
+BLENDTEXTUREALPHA stages, then diffuse. The second blend binds a third native
+sampler, with stage 2's own mip filter, bias and WRAP/CLAMP addressing. Stages
+1 and 2 generate reflection coordinates through TEXTURE1 and TEXTURE2
+respectively; both use the same eye and normal inputs. The queued draw owns
+the third texture's bytes. Native pixels cover its alpha endpoints and midpoint,
+its independent matrix and CLAMP addressing, and the final diffuse RGB/alpha.
+Other third-stage combiners and coordinate sources remain guarded.
 Other fight chrome
 (draw 0x28708b, FVF 0x112) swaps the coordinate sources: stage 0 samples the
 environment through camera-space reflection texgen (TEXTURE0 matrix) and

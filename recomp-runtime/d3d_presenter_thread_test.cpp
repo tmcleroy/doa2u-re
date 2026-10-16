@@ -493,6 +493,97 @@ static bool testLighting()
     return passed;
 }
 
+static bool testReflectionStage2()
+{
+    char folder[MAX_PATH], path[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "en3", 0, path)) return false;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", path);
+    RecompD3dPresenter *presenter = nullptr;
+    bool passed = expect("create third reflection", d3d11_backend_create(&config, &presenter));
+    if (passed) {
+        auto clear = clearCommand();
+        clear.data.clear.color = 0xff000000u;
+        passed &= expect("third reflection clear", d3d11_backend_submit(presenter, &clear));
+        struct Vertex { float x, y, z, nx, ny, nz, u, v; };
+        const uint16_t indices[] = {0, 1, 2, 3};
+        const uint32_t base = 0xff0000ffu, environment = 0x80ff0000u;
+        const unsigned alphas[] = {0, 128, 255};
+        for (unsigned i = 0; i < 3; ++i) {
+            const float left = -1.0f + i * (2.0f / 3.0f), right = left + 2.0f / 3.0f;
+            const Vertex vertices[] = {{left,1,0.5f,0,0,1,0,0}, {right,1,0.5f,0,0,1,0,0},
+                {left,-1,0.5f,0,0,1,0,0}, {right,-1,0.5f,0,0,1,0,0}};
+            const uint32_t third[] = {0xffff0000u, (alphas[i] << 24) | 0x0000ff00u};
+            RecompD3dPresenterCommand command{RECOMP_D3D_PRESENTER_COMMAND_DRAW};
+            auto &draw = command.data.draw;
+            draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+            draw.index_count = draw.vertex_count = 4;
+            draw.triangle_count = 2;
+            draw.vertex_stride = sizeof(Vertex);
+            draw.vertex_bytes = vertices;
+            draw.index_bytes = indices;
+            draw.fvf = 0x112u;
+            draw.has_transform = true;
+            draw.transform[0] = draw.transform[5] = draw.transform[10] = draw.transform[15] = 1;
+            draw.blend.color_write_mask = 15;
+            draw.blend.blend_enable = true;
+            draw.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
+            draw.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+            draw.has_texture = draw.has_reflection = draw.reflection_stage2 = true;
+            draw.texture.data = 0x1000u;
+            draw.texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
+            draw.texture.bits_per_pixel = 32;
+            draw.texture.width = draw.texture.height = draw.texture.mip_levels = 1;
+            draw.texture_bytes = &base;
+            draw.texture_byte_count = sizeof base;
+            draw.reflection_texture = draw.texture;
+            draw.reflection_texture.data = 0x2000u;
+            draw.reflection_bytes = &environment;
+            draw.reflection_byte_count = sizeof environment;
+            draw.reflection_diffuse[0] = draw.reflection_diffuse[3] = 0.5f;
+            draw.reflection_diffuse[1] = 0.75f;
+            draw.reflection_diffuse[2] = 0.25f;
+            draw.reflection_world_view[0] = draw.reflection_world_view[5] =
+                draw.reflection_world_view[10] = draw.reflection_world_view[15] = 1;
+            std::memcpy(draw.reflection_normal, draw.reflection_world_view, sizeof draw.reflection_normal);
+            draw.reflection_transform[12] = draw.reflection_transform[13] = 0.25f;
+            draw.reflection_stage2_texture = draw.texture;
+            draw.reflection_stage2_texture.data = 0x3000u + i * 0x100u;
+            draw.reflection_stage2_texture.width = 2;
+            draw.reflection_stage2_bytes = third;
+            draw.reflection_stage2_byte_count = sizeof third;
+            draw.reflection_stage2_address_u = draw.reflection_stage2_address_v = 3;
+            draw.reflection_stage2_point_mip_filter = true;
+            draw.reflection_stage2_mip_lod_bias = -511.0f / 256.0f;
+            // Own TEXTURE2 clamps to green; TEXTURE1, UV0 or WRAP would sample red.
+            draw.reflection_stage2_transform[12] = 1.25f;
+            draw.reflection_stage2_transform[13] = 0.25f;
+            passed &= expect("third reflection draw", d3d11_backend_submit(presenter, &command));
+        }
+        RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
+        present.data.present = {5, 1};
+        passed &= expect("third reflection present", d3d11_backend_submit(presenter, &present));
+        passed &= expect("destroy third reflection", d3d11_backend_destroy(&presenter));
+        if (FILE *file = std::fopen(path, "rb")) {
+            const int expected[3][3] = {{8,0,16}, {4,24,8}, {0,96,0}};
+            for (unsigned i = 0; i < 3; ++i) {
+                unsigned char bgr[3]{};
+                std::fseek(file, 54 + (239 - 120) * 960 + (53 + 107 * i) * 3, SEEK_SET);
+                passed &= std::fread(bgr, 1, 3, file) == 3;
+                for (unsigned c = 0; c < 3; ++c) {
+                    const bool ok = std::abs(int(bgr[c]) - expected[i][c]) <= 1;
+                    if (!ok) std::fprintf(stderr, "FAIL third reflection pixel %u channel=%u actual=%u expected=%d\n",
+                        i, c, bgr[c], expected[i][c]);
+                    passed &= ok;
+                }
+            }
+            std::fclose(file);
+        } else passed = false;
+    }
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
+    DeleteFileA(path);
+    return passed;
+}
+
 // texgen: stage 0 samples the base at generated coordinates (TEXTURE0 matrix)
 // while the half-alpha environment keeps mesh UV, as the fight's chrome does.
 // uv_transform: no reflection; UV0 is (u, v, 1, 0) times TEXTURE0.
@@ -1662,7 +1753,7 @@ int main()
 {
     recomp_d3d_presenter_set_immediate_present(false);
     if (!testTicks() || !testCapturedDraw() || !testMipSampler() || !testLines() || !testLighting() ||
-        !testReflectionAddress(false) || !testReflectionAddress(true) || !testReflectionAddress(true, true) ||
+        !testReflectionStage2() || !testReflectionAddress(false) || !testReflectionAddress(true) || !testReflectionAddress(true, true) ||
         !testReflectionAddress(false, false, true) || !testReflectionAddress(true, false, false, true) ||
         !testReflectionAddress(false, false, false, false, 0.0f) ||
         !testReflectionAddress(false, false, false, false, 0.5f) ||

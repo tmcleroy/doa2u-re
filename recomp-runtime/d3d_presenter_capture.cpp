@@ -12,7 +12,7 @@ using Draw = RecompD3dPresenterDrawCommand;
 constexpr const void *Draw::*pointer_fields[] = {
     &Draw::vertex_bytes, &Draw::index_bytes, &Draw::texture_bytes,
     &Draw::palette_bytes, &Draw::alpha_mask_bytes,
-    &Draw::alpha_mask_palette, &Draw::reflection_bytes,
+    &Draw::alpha_mask_palette, &Draw::reflection_bytes, &Draw::reflection_stage2_bytes,
 };
 // No readable guest span can exceed the runner's entire 64 MiB RAM region.
 constexpr uint64_t max_span_bytes = 64u * 1024u * 1024u;
@@ -42,7 +42,7 @@ RecompD3dPresenterError D3dCapturePacket::add(
         return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
     }
 
-    uint64_t sizes[7]{};
+    uint64_t sizes[8]{};
     if (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW) {
         const auto &draw = command.data.draw;
         sizes[0] = uint64_t(draw.vertex_count) * draw.vertex_stride;
@@ -52,6 +52,7 @@ RecompD3dPresenterError D3dCapturePacket::add(
         sizes[4] = draw.alpha_mask_byte_count;
         sizes[5] = draw.alpha_mask_palette_byte_count;
         sizes[6] = draw.reflection_byte_count;
+        sizes[7] = draw.reflection_stage2_byte_count;
         for (uint64_t size : sizes) {
             if (size > max_span_bytes) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
         }
@@ -59,13 +60,13 @@ RecompD3dPresenterError D3dCapturePacket::add(
 
     const size_t old_payload_size = payload_.size();
     const size_t old_command_count = commands_.size();
-    const void *inserted_sources[7]{};
+    const void *inserted_sources[8]{};
     size_t inserted_count = 0u;
     try {
         CapturedCommand &captured = commands_.emplace_back();
         copyCommand(captured.value, command);
         if (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW) {
-            for (size_t i = 0u; i < 7u; ++i) {
+            for (size_t i = 0u; i < 8u; ++i) {
                 const void *source = command.data.draw.*pointer_fields[i];
                 captured.value.data.draw.*pointer_fields[i] = nullptr;
                 captured.offsets[i] = null_offset;
@@ -142,7 +143,7 @@ void D3dCapturePacket::seal()
     if (sealed_) return;
     for (auto &captured : commands_) {
         if (captured.value.type != RECOMP_D3D_PRESENTER_COMMAND_DRAW) continue;
-        for (size_t i = 0u; i < 7u; ++i) {
+        for (size_t i = 0u; i < 8u; ++i) {
             captured.value.data.draw.*pointer_fields[i] = captured.offsets[i] == null_offset
                 ? nullptr : payload_.data() + captured.offsets[i];
         }

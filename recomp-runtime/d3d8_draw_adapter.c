@@ -707,8 +707,30 @@ static void attach_reflection(uint32_t device, const RecompD3dVertexLayout *layo
         if (!isfinite(draw->reflection_diffuse[i])) recomp_stop(2, "d3d8:reflection-material");
     draw->reflection_mesh_uv = stages[1][28] == 0u;
     draw->reflection_premultiplied = stages[1][12] == 16u;
-    /* shortcut: a bound stage-2 texture needs a third sampler; admit it when a run reaches it. */
-    draw->reflection_skip_diffuse = stages[2][14] == 2u;
+    draw->reflection_stage2 = stages[2][12] == 14u;
+    if (draw->reflection_stage2) {
+        RecompD3dPresenterDrawCommand third = {0};
+        attach_texture(device, 2u, &third);
+        if (!third.has_texture || third.texture.linear || third.palette_bytes != NULL ||
+            third.texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8)
+            recomp_stop(2, "d3d8:reflection-stage2-layout");
+        if (stages[2][7] != 0u ||
+            (third.texture.mip_levels > 1u && stages[2][5] != 1u && stages[2][5] != 2u))
+            recomp_stop(2, "d3d8:reflection-stage2-sampler");
+        draw->reflection_stage2_texture = third.texture;
+        draw->reflection_stage2_bytes = third.texture_bytes;
+        draw->reflection_stage2_byte_count = third.texture_byte_count;
+        draw->reflection_stage2_address_u = third.address_u;
+        draw->reflection_stage2_address_v = third.address_v;
+        draw->reflection_stage2_point_mip_filter = stages[2][5] == 1u;
+        draw->reflection_stage2_mip_lod_bias = lod_bias(stages[2][6]);
+        recomp_guest_load(draw->reflection_stage2_transform, device + 0xd60u,
+            sizeof draw->reflection_stage2_transform);
+        for (uint32_t i = 0u; i < 16u; ++i)
+            if (!isfinite(draw->reflection_stage2_transform[i])) recomp_stop(2, "d3d8:reflection-stage2-transform");
+    }
+    /* shortcut: stage-2 texture MODULATE stays guarded; bind it when a run reaches it. */
+    draw->reflection_skip_diffuse = !draw->reflection_stage2 && stages[2][14] == 2u;
     if (draw->reflection_skip_diffuse && *recomp_memory_u32(device + 0xf90u) != 0u)
         recomp_stop(2, "d3d8:reflection-stage2-texture");
     draw->has_reflection = true;

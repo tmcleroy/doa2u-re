@@ -474,29 +474,31 @@ bool recomp_d3d_texture_factor_modulate_selected(
 
 bool recomp_d3d_reflection_material(const uint32_t stages[4][32])
 {
-    if (stages == NULL || stages[3][12] != 1u) return false;
+    if (stages == NULL) return false;
+    const bool third = stages[3][12] != 1u;
     const uint32_t blend = stages[1][12];
-    if (blend != 14u && blend != 16u) return false;
-    const uint32_t arguments[3][6] = {
+    if ((blend != 14u && blend != 16u) || (third && blend != 14u)) return false;
+    const uint32_t arguments[4][6] = {
         {2u, 2u, 1u, 4u, 2u, 0u},
         {blend, 2u, 1u, blend, 2u, 1u},
+        {4u, 0u, 1u, 4u, 0u, 1u},
         {4u, 0u, 1u, 4u, 0u, 1u},
     };
     /* Stage 2 modulates by diffuse or, in material modes 9 and 11 (table
        0x7affc8), by its own texture. */
     const uint32_t texture_final[6] = {4u, 2u, 1u, 4u, 2u, 1u};
     static const uint32_t offsets[] = {12u, 14u, 15u, 16u, 18u, 19u};
-    for (uint32_t stage = 0u; stage < 3u; ++stage) {
-        bool texture_match = stage == 2u;
+    for (uint32_t stage = 0u; stage < (third ? 4u : 3u); ++stage) {
+        bool texture_match = !third && stage == 2u;
         for (uint32_t i = 0u; i < 6u; ++i) {
             if (stage == 2u && stages[stage][offsets[i]] != texture_final[i]) texture_match = false;
         }
         for (uint32_t i = 0u; i < 6u && !texture_match; ++i) {
-            if (stages[stage][offsets[i]] != arguments[stage][i]) return false;
+            if (stages[stage][offsets[i]] != arguments[third && stage == 2u ? 1u : stage][i]) return false;
         }
         if (stages[stage][20] != 0u) return false;
     }
-    for (uint32_t stage = 0u; stage < 2u; ++stage) {
+    for (uint32_t stage = 0u; stage < (third ? 3u : 2u); ++stage) {
         /* D3DTADDRESS WRAP (1) or CLAMP (3); BORDER needs D3DTSS_BORDERCOLOR. */
         if ((stages[stage][0] != 1u && stages[stage][0] != 3u) ||
             (stages[stage][1] != 1u && stages[stage][1] != 3u) ||
@@ -511,7 +513,9 @@ bool recomp_d3d_reflection_material(const uint32_t stages[4][32])
         generated[stage] = stages[stage][21] == 2u && stages[stage][28] == 0x30000u;
         mesh[stage] = stages[stage][21] == 0u && stages[stage][28] == 0u;
     }
-    return (mesh[0] || generated[0]) && (mesh[1] || generated[1]);
+    return (mesh[0] || generated[0]) && (mesh[1] || generated[1]) &&
+        (!third || (generated[1] && stages[2][21] == 2u && stages[2][28] == 0x30000u &&
+            stages[3][21] == 0u));
 }
 
 bool recomp_d3d_diffuse_rgb_is_zero(

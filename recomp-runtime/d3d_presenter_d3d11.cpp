@@ -117,6 +117,8 @@ constexpr char kDrawShaderPrologue[] =
     "    float4 fog_color;\n"
     "    row_major float4x4 reflection_blend_world_view[3];\n"
     "    row_major float4x4 reflection_blend_normal[3];\n"
+    "    row_major float4x4 reflection_transform2;\n"
+    "    float4 reflection_stage2_flags;\n"
     "}\n"
     "Texture2D guest_texture : register(t0);\n"
     "SamplerState guest_sampler : register(s0);\n"
@@ -181,6 +183,7 @@ void buildDrawShaderSource(
         "    float2 reflection_coord : TEXCOORD4;\n"
         "    float3 lit_specular : TEXCOORD6;\n"
         "    float projected_q : TEXCOORD7;\n"
+        "    float2 reflection_coord2 : TEXCOORD10;\n"
         "%s"
         "};\n"
         "VSOut vs_main(VSIn input) {\n"
@@ -206,8 +209,12 @@ void buildDrawShaderSource(
         "        float4 env = alpha_mask.Sample(mask_sampler, input.reflection_coord);\n"
         /* w: bit 0 premultiplied blend, bit 1 stage-2 pass-through (no diffuse). */
         "        shaded = (fmod(reflection_flags.w, 2.0f) > 0.5f\n"
-        "            ? saturate(env + base * (1.0f - env.a)) : lerp(base, env, env.a)) *\n"
-        "            (reflection_flags.w > 1.5f ? 1.0f : diffuse);\n"
+        "            ? saturate(env + base * (1.0f - env.a)) : lerp(base, env, env.a));\n"
+        "        if (reflection_stage2_flags.x > 0.5f) {\n"
+        "            float4 third = bump_map.Sample(bump_sampler, input.reflection_coord2);\n"
+        "            shaded = lerp(shaded, third, third.a);\n"
+        "        }\n"
+        "        shaded *= reflection_flags.w > 1.5f ? 1.0f : diffuse;\n"
         "    } else\n"
         "%s"
         "    if (blend_flags.y == 1.0f) {\n"
@@ -302,6 +309,7 @@ void buildDrawShaderSource(
                   "        if (reflection_flags.y > 0.5f) n = normalize(n);\n"
                   "        float3 r = reflect(normalize(eye), n);\n"
                   "        float2 generated = mul(float4(r, 1), reflection_transform).xy;\n"
+                  "        if (reflection_stage2_flags.x > 0.5f) output.reflection_coord2 = mul(float4(r, 1), reflection_transform2).xy;\n"
                   "        if (filter_texel.z > 0.5f) output.texcoord = generated;\n"
                   "        if (abs(reflection_flags.x - 1.0f) < 0.5f) output.reflection_coord = filter_texel.z > 0.5f\n"
                   "            ? mul(float4(r, 1), reflection_transform1).xy : generated;\n"
@@ -319,6 +327,7 @@ void buildDrawShaderSource(
                   "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
                   "        float3 r = normalize(eye);\n"
                   "        float2 generated = mul(float4(r, 1), reflection_transform).xy;\n"
+                  "        if (reflection_stage2_flags.x > 0.5f) output.reflection_coord2 = mul(float4(r, 1), reflection_transform2).xy;\n"
                   "        if (filter_texel.z > 0.5f) output.texcoord = generated;\n"
                   "        if (abs(reflection_flags.x - 1.0f) < 0.5f) output.reflection_coord = filter_texel.z > 0.5f\n"
                   "            ? mul(float4(r, 1), reflection_transform1).xy : generated;\n"
@@ -1758,8 +1767,9 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
        point positions, attenuation/range and material-scaled ambient, then specular, view and stage (340 floats),
        then post-filter flags, texel size and four constants (24 floats), the
        stage-1 texture matrix (16), bump matrices, bump fog and fog color (16),
-       and the extra reflection world-view/normal transforms (96). */
-    constant_desc.ByteWidth = (140u + 192u * 4u + 492u) * sizeof(float);
+       the extra reflection world-view/normal transforms (96), and the stage-2
+       texture matrix and flags (20). */
+    constant_desc.ByteWidth = (140u + 192u * 4u + 512u) * sizeof(float);
     constant_desc.Usage = D3D11_USAGE_DYNAMIC;
     constant_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constant_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -2773,6 +2783,20 @@ RecompD3dPresenterError submitDraw(
     }
     std::unique_ptr<ID3D11ShaderResourceView, decltype(release_view)> retained_mask(nullptr, release_view);
     ID3D11ShaderResourceView *bump_view = nullptr;
+    if (draw.reflection_stage2) {
+        if (!draw.has_reflection || draw.program_count || draw.bump_env || draw.distortion ||
+            draw.reflection_premultiplied || draw.reflection_skip_diffuse || draw.reflection_mesh_uv)
+            return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        if (mask_view != nullptr) mask_view->AddRef();
+        retained_mask.reset(mask_view);
+        RecompD3dPresenterDrawCommand third{};
+        third.texture = draw.reflection_stage2_texture;
+        third.texture_bytes = draw.reflection_stage2_bytes;
+        third.texture_byte_count = draw.reflection_stage2_byte_count;
+        bump_view = lookupTexture(presenter, third);
+        if (bump_view == nullptr || mask_view == nullptr || texture_view == nullptr)
+            return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    }
     if (draw.bump_env) {
         if (!draw.program_count || draw.has_alpha_mask || draw.has_reflection || draw.program_alpha_mask ||
             draw.distortion || draw.stage1_alpha_mask || draw.four_tap_filter || draw.bright_pass)
@@ -2806,7 +2830,7 @@ RecompD3dPresenterError submitDraw(
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
     recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
-    float draw_constants[140 + 192 * 4 + 492]{};
+    float draw_constants[140 + 192 * 4 + 512]{};
     std::memcpy(draw_constants, draw.transform, sizeof draw.transform);
     std::memcpy(draw_constants + 16, draw.blend_transforms, sizeof draw.blend_transforms);
     if (layout.pretransformed || draw.program_count || screen_offset) {
@@ -2964,6 +2988,10 @@ RecompD3dPresenterError submitDraw(
         if (draw.texgen_reflection && !draw.reflection_mesh_uv)
             std::memcpy(draw_constants + 140 + 192 * 4 + 364, draw.reflection_stage1_transform, 64u);
     }
+    if (draw.reflection_stage2) {
+        std::memcpy(draw_constants + 140 + 192 * 4 + 492, draw.reflection_stage2_transform, 64u);
+        draw_constants[140 + 192 * 4 + 508] = 1.0f;
+    }
     if (draw.stage1_alpha_mask)
         draw_constants[138] = draw.stage1_kill_only ? 3.0f : draw.stage1_alpha_kill ? 2.0f : 1.0f;
     if (draw.bump_env) {
@@ -3035,8 +3063,11 @@ RecompD3dPresenterError submitDraw(
             : presenter->filter_sampler;
     if (sampler == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     presenter->context->PSSetSamplers(1u, 1u, &sampler);
-    if (draw.bump_env) {
-        sampler = lookupDrawSampler(presenter, draw.bump_address_u, draw.bump_address_v, false, 0.0f);
+    if (draw.bump_env || draw.reflection_stage2) {
+        sampler = draw.reflection_stage2
+            ? lookupDrawSampler(presenter, draw.reflection_stage2_address_u, draw.reflection_stage2_address_v,
+                draw.reflection_stage2_point_mip_filter, draw.reflection_stage2_mip_lod_bias)
+            : lookupDrawSampler(presenter, draw.bump_address_u, draw.bump_address_v, false, 0.0f);
         if (sampler == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
         presenter->context->PSSetSamplers(2u, 1u, &sampler);
     }
