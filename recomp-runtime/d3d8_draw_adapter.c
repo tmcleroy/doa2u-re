@@ -1203,9 +1203,10 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     if (count > 65536u || vertices == 0u || stride == 0u)
         recomp_stop(2, "d3d8:draw-span");
     const bool points = primitive == 1u;
+    const bool line_strip = primitive == 4u;
     const uint32_t triangles = points ? count * 2u : quads ? count / 2u : primitive == 2u ? count / 2u :
-        recomp_d3d_draw_triangle_count(primitive, count);
-    if (!points && !quads && primitive != 2u && (primitive < 5u || primitive > 7u))
+        line_strip ? count - 1u : recomp_d3d_draw_triangle_count(primitive, count);
+    if (!points && !quads && !line_strip && primitive != 2u && (primitive < 5u || primitive > 7u))
         recomp_stop(2, "d3d8:draw-primitive:%u", primitive);
     if (triangles == 0u) return;
     RecompD3dPresenterCommand command = {0};
@@ -1258,6 +1259,20 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
         indices = sequential;
         primitive = 5u;
         count = triangles * 3u;
+    }
+    if (line_strip) {
+        /* Keep adjacent pairs in order for the existing width/antialias path. */
+        uint16_t *pairs = malloc(triangles * 2u * sizeof *pairs);
+        if (pairs == NULL) recomp_stop(2, "d3d8:draw-index-allocation");
+        for (uint32_t i = 0u; i < triangles; ++i) {
+            pairs[i * 2u] = indices[i];
+            pairs[i * 2u + 1u] = indices[i + 1u];
+        }
+        free(sequential);
+        sequential = pairs;
+        indices = pairs;
+        primitive = 2u;
+        count = triangles * 2u;
     }
     draw->vertex_count = largest + 1u;
     const uint32_t bytes = recomp_d3d_draw_vertex_bytes(stride, largest);

@@ -24,7 +24,7 @@ uint8_t *recomp_fast_ram;
 static uint8_t ram[RECOMP_XBOX_RAM_SIZE];
 static RecompD3dRenderStateModel state;
 static RecompD3dPresenterCommand submitted;
-static uint16_t captured_indices[98304];
+static uint16_t captured_indices[131070];
 static float captured_vertices[64];
 static uint32_t allocated = 0x360000u, freed, submits;
 static bool fail_allocation;
@@ -296,7 +296,7 @@ static int draw_tests(void)
     const uint32_t before = submits;
     invoke(0x348240u, 5u, 0u, VERTICES, 28u);
     CHECK(submits == before);
-    if (setjmp(stopped) == 0) { invoke(0x348240u, 4u, 3u, VERTICES, 28u); return 1; }
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 3u, 3u, VERTICES, 28u); return 1; }
     CHECK(strncmp(stop_reason, "d3d8:draw-primitive", 19u) == 0);
     const uint32_t quads = submits;
     invoke(0x348240u, 9u, 5u, VERTICES, 28u);
@@ -357,6 +357,32 @@ static int line_tests(void)
             submitted.data.draw.line_width == quantized[i] && submitted.data.draw.has_transform &&
             submitted.data.draw.fvf == 0x42u && captured_indices[1] == 1u);
     }
+    const uint16_t strip[6] = {0u, 1u, 1u, 2u, 2u, 3u};
+    invoke(0x348240u, 4u, 4u, VERTICES, 16u);
+    CHECK(submitted.data.draw.primitive_type == 2u && submitted.data.draw.index_count == 6u &&
+        submitted.data.draw.vertex_count == 4u && submitted.data.draw.triangle_count == 3u &&
+        submitted.data.draw.line_antialias && submitted.data.draw.line_width == 1.25f);
+    CHECK(memcmp(captured_indices, strip, sizeof strip) == 0);
+    CHECK(recomp_runtime.registers.esp == STACK + 20u);
+    const uint16_t source[4] = {3u, 0u, 2u, 1u}, indexed[6] = {3u, 0u, 0u, 2u, 2u, 1u};
+    recomp_guest_store(INDICES, source, sizeof source);
+    *recomp_memory_u32(0x3579a8u) = 16u;
+    invoke(0x348450u, 4u, 4u, INDICES, 0u);
+    CHECK(submitted.data.draw.vertex_count == 4u && submitted.data.draw.index_count == 6u &&
+        memcmp(captured_indices, indexed, sizeof indexed) == 0);
+    CHECK(memcmp(ram + INDICES, source, sizeof source) == 0);
+    invoke(0x3483b0u, 4u, 2u, 4u, 0u);
+    CHECK(submitted.data.draw.vertex_bytes == ram + VERTICES + 32u &&
+        memcmp(captured_indices, strip, sizeof strip) == 0);
+    const uint32_t before = submits;
+    invoke(0x348240u, 4u, 0u, 0u, 0u);
+    invoke(0x348240u, 4u, 1u, VERTICES, 16u);
+    CHECK(submits == before);
+    invoke(0x348240u, 4u, 2u, VERTICES, 16u);
+    CHECK(submits == before + 1u && submitted.data.draw.index_count == 2u && captured_indices[1] == 1u);
+    invoke(0x348240u, 4u, 65536u, VERTICES, 16u);
+    CHECK(submitted.data.draw.vertex_count == 65536u && submitted.data.draw.index_count == 131070u &&
+        captured_indices[131068] == 65534u && captured_indices[131069] == UINT16_MAX);
     CHECK(recomp_d3d_set_edge_antialias(&state, 0u));
     invoke(0x348240u, 2u, 2u, VERTICES, 16u);
     CHECK(!submitted.data.draw.line_antialias && submitted.data.draw.line_width == 1.25f);

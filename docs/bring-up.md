@@ -365,7 +365,11 @@ select. The game supplies 1440-wide back and depth headers and a 720-wide front
 header; the guest device keeps the SDK's scale, physical size and swap-filter
 fields, while the host target and vertex-shader viewport constants stay in
 logical 720x480 units. PersistDisplay publishes an SDK-shaped saved surface
-without host pixels. Line lists draw natively; pretransformed widths above
+without host pixels. Line lists draw natively; line strips expand adjacent
+index pairs through the same path without closing the strip. The line-history
+effects at `0x19d920`, `0x19de50` and `0x19e9a0` use these strips with
+XYZ|DIFFUSE vertices. UP, stream and indexed draws retain their vertex order,
+line width and antialias state. Pretransformed widths above
 one pixel become screen-space quads. Untextured, unlit XYZ|DIFFUSE lines
 (FVF 0x42) also support transformed widths and EdgeAntiAlias. The effect at
 `0x254dd0` draws those lines with widths 0.3, 0.6, 0.9 and 1.2; the adapter
