@@ -22,5 +22,13 @@
   {
     "start": "0x002ADCA0",
     "note": "Four-entry handler group entry reached only through data"
+  },
+  {
+    "start": "0x002A8247",
+    "note": "Tail-jump case of the 0x2A82BC table at 0x2A81B6"
+  },
+  {
+    "start": "0x002A8286",
+    "note": "Tail-jump case of the 0x2A82BC table at 0x2A81B6"
   }
 ]
