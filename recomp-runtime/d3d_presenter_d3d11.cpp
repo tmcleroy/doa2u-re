@@ -1494,7 +1494,8 @@ bool drawShaderSource(
         const auto fields = compiled_source.find(declaration);
         if (fields == std::string::npos) return false;
         compiled_source.insert(fields + declaration.size(), "\n    float2 program_q : TEXCOORD5;\n"
-            "    float program_fog : TEXCOORD8;\n    float4 program_t23 : TEXCOORD9;\n");
+            "    float program_fog : TEXCOORD8;\n    float4 program_t23 : TEXCOORD9;\n"
+            "    float4 program_d1 : COLOR1;\n");
         const std::string pixel = "float4 ps_main(VSOut input) : SV_TARGET {";
         const auto sample = compiled_source.find(pixel);
         if (sample == std::string::npos) return false;
@@ -1506,7 +1507,20 @@ bool drawShaderSource(
         const auto branch = compiled_source.find(shaded);
         if (branch == std::string::npos) return false;
         compiled_source.insert(branch + shaded.size(),
-            "    if (bump_fog.w > 0.5f) {\n"
+            "    if (bump_fog.w > 1.5f) {\n"
+            "        float2 n = bump_map.Sample(bump_sampler, input.texcoord).rg;\n"
+            "        float4 t1 = guest_texture.Sample(guest_sampler, (input.reflection_coord +\n"
+            "            float2(dot(bump_matrix[0].xz, n), dot(bump_matrix[0].yw, n))) * texture_flags.xy);\n"
+            "        float4 t3 = alpha_mask.Sample(mask_sampler, input.program_t23.zw +\n"
+            "            float2(dot(bump_matrix[1].xz, n), dot(bump_matrix[1].yw, n)));\n"
+            "        float4 v0 = saturate(input.color), v1 = saturate(input.program_d1);\n"
+            "        float s = saturate(dot(v0.rgb * 2.0f - 1.0f, t3.rgb * 2.0f - 1.0f));\n"
+            "        s *= s; s *= s; s *= s;\n"
+            "        float3 r0 = clamp(s + v1.rgb * t1.a - 1.0f, -1.0f, 1.0f);\n"
+            "        r0 = clamp(r0 + t3.a * t1.rgb, -1.0f, 1.0f);\n"
+            "        float f = bump_fog.z > 0.5f ? saturate(bump_fog.x + bump_fog.y * input.program_fog) : 1.0f;\n"
+            "        shaded = float4(lerp(fog_color.rgb, saturate(r0), f), t3.a * v0.a);\n"
+            "    } else if (bump_fog.w > 0.5f) {\n"
             "        float2 n = bump_map.Sample(bump_sampler, input.texcoord).rg;\n"
             "        float4 t2 = guest_texture.Sample(guest_sampler, (input.program_t23.xy +\n"
             "            float2(dot(bump_matrix[0].xz, n), dot(bump_matrix[0].yw, n))) * texture_flags.xy);\n"
@@ -2883,7 +2897,7 @@ RecompD3dPresenterError submitDraw(
         float *bump = draw_constants + 140 + 192 * 4 + 380;
         std::memcpy(bump, draw.bump_matrices, sizeof draw.bump_matrices);
         std::memcpy(bump + 8, draw.bump_fog, sizeof draw.bump_fog);
-        bump[11] = 1.0f;
+        bump[11] = draw.bump_water ? 2.0f : 1.0f;
         bump[12] = ((draw.fog_color >> 16u) & 0xffu) / 255.0f;
         bump[13] = ((draw.fog_color >> 8u) & 0xffu) / 255.0f;
         bump[14] = (draw.fog_color & 0xffu) / 255.0f;

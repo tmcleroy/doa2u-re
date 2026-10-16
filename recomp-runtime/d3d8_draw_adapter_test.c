@@ -1043,12 +1043,36 @@ static int bump_tests(void)
     *recomp_memory_u32(0x3553d0u) = 0u;
     set_stage(0u, 10u, 0u);
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
-    CHECK(submits == 2u && strncmp(stop_reason, "d3d8:stage-bump-inputs:28:16:0:", 31) == 0);
+    CHECK(submits == 2u && strncmp(stop_reason, "d3d8:stage-bump-inputs:2:28:16:0:", 33) == 0);
     set_stage(0u, 10u, 0xe0000000u);
     *recomp_memory_u32(definition + 0xd8u) = 0x318c2u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
     CHECK(submits == 2u && strncmp(stop_reason, "d3d8:vertex-program-stages:", 27) == 0 &&
         strstr(stop_reason, ":n=1") != NULL);
+    /* The water shader (FUN_0026bd20) reads stages 1 and 3 and needs SPECULARENABLE. */
+    static const uint32_t water[][2] = {
+        {0x00u, 0u}, {0x04u, 0x1d1d1010u}, {0x08u, 0xdddd1010u}, {0x0cu, 0xdddd1010u},
+        {0x10u, 0u}, {0x14u, 0u}, {0x18u, 0xdbd41010u}, {0x20u, 0x130c0300u}, {0x24u, 0x1c80u},
+        {0x68u, 0u}, {0x6cu, 0xd0u}, {0x70u, 0xd0u}, {0x74u, 0xd0u}, {0x78u, 0u}, {0x7cu, 0u},
+        {0x80u, 0xc0u}, {0x88u, 0x444b0000u}, {0x8cu, 0x0d0d0000u}, {0x90u, 0xcdcd0000u},
+        {0x94u, 0xc5d90000u}, {0x98u, 0x9d208c20u}, {0x9cu, 0xdbc9200cu}, {0xa0u, 0u},
+        {0xa8u, 0u}, {0xb4u, 0x820d0u}, {0xb8u, 0xd0u}, {0xbcu, 0xd0u}, {0xc0u, 0xc0u},
+        {0xc4u, 0xc00u}, {0xc8u, 0xc00u}, {0xccu, 0u}, {0xd4u, 0x11107u}, {0xd8u, 0x300c1u},
+        {0xdcu, 0u}, {0xe0u, 0u},
+    };
+    for (uint32_t i = 0u; i < sizeof water / sizeof water[0]; ++i)
+        *recomp_memory_u32(definition + water[i][0]) = water[i][1];
+    *recomp_memory_u32(DEVICE + 0xf8cu) = 0x7000u;
+    set_stage(1u, 3u, 2u); set_stage(1u, 4u, 2u);
+    const float m1[4] = {0.75f, 0.0f, 0.0f, 0.75f};
+    recomp_guest_store(STAGES + 1u * 128u + 22u * 4u, m1, sizeof m1);
+    *recomp_memory_u32(0x3553fcu) = 1u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    CHECK(submits == 3u && draw->bump_env && draw->bump_water && draw->has_texture &&
+        memcmp(draw->bump_matrices[0], m1, sizeof m1) == 0 && memcmp(draw->bump_matrices[1], m3, sizeof m3) == 0);
+    *recomp_memory_u32(0x3553fcu) = 0u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
+    CHECK(submits == 3u && strcmp(stop_reason, "d3d8:stage-water-specular") == 0);
     return 0;
 }
 

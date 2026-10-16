@@ -187,6 +187,11 @@ typedef struct RecompD3dPresenterDrawCommand {
        saturate(bump_fog[0] + bump_fog[1] * oFog) when bump_fog[2] is set and
        1 otherwise. bump_matrices hold BUMPENVMAT00, 01, 10, 11 of stages 2-3. */
     bool bump_env;
+    /* Water variant (FUN_0026bd20): texture is t1 at oT1.xy + M1 n and
+       reflection_texture t3 at oT3.xy + M3 n; bump_matrices hold stages 1
+       and 3. s = saturate(dot(2 oD0 - 1, 2 t3 - 1))^8, r0 = clamp(s + oD1 t1.a
+       - 1) then clamp(r0 + t3.a t1), alpha t3.a oD0.a, with the same fog. */
+    bool bump_water;
     float bump_matrices[2][4];
     float bump_fog[3];
     uint32_t fog_color;

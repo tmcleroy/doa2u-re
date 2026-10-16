@@ -248,9 +248,9 @@ and LOD bias. The other program on that declaration (0x7add80, FUN_0026bd20)
 and the stage effect's 0x7afb48 (FUN_0027ffc0) use LIT, SGE, oD1, oFog and
 oT2/oT3. The translator follows D3D8 vs.1.1 LIT: y = max(x, 0), and z =
 pow(y, w) with w clamped to +-127.9961 only when x and y are positive. oD1 is
-computed and discarded; oFog and oT2/oT3 reach the pixel shader as separate
-fields. Program draws through the fixed-function stage path still ignore fog
-and specular. 0x7add80 also binds a pixel shader, which that path stops on.
+passed to the pixel shader for the water combiner; oFog and oT2/oT3 also
+reach it as separate fields. Program draws through the fixed-function stage
+path still ignore fog and specular.
 The stage effect's declaration 0x7afd0c (position, D3DCOLOR at 12, v9-v12 as
 float2 at 16-40) binds as FVF 0x442, a 48-byte stride.
 
@@ -272,6 +272,20 @@ transition with stage state that matches FUN_002807f0, but its bound program
 declared 0x112. Its 30-instruction pipeline fits 0x7af0f0 (FUN_002786e0), but
 why that handle was bound there is unverified. The host draws the bound
 program with this shader, and oT2/oT3 read as zero when it does not write them.
+
+Water draws in an unanalyzed function at 0x26c980 with program 0x7add80
+(FVF 0x142; it writes oPos, oD0, oD1, oFog, oT0, oT1 and oT3.xy) and the
+pixel shader that FUN_0026bd20 builds: t0 PROJECT2D, t1 and t3 BUMPENVMAP of
+t0, no t2 (texture modes 0x300c1). Its seven combiners compute s =
+max(0, dot(expand v0, expand t3))^8, r0 = v1 * t1.a, r0 = (s - 0.5) +
+(r0 - 0.5), r0 += t3.a * t1 and r0.a = t3.a * v0.a, with the stage effect's
+final combiner. The draw binds one of the 17 V8U8 maps on stage 0, the water
+reflection target (FUN_0026d610) on stage 1 and a filtered environment map
+(0xe5b0a8) on stage 3, with matrices on stages 1 and 3, fog off and
+SPECULARENABLE on. The adapter matches those words and reuses the bump path
+with stage 1 in place of stage 2; the presenter computes the water combiner.
+Register clamps are applied after each step. Water with SPECULARENABLE off
+stops, since V1's source without it is unverified.
 BGRA8 offscreen color targets and D24S8 custom depth targets bind through the
 shared presenter; clears and draws
 snapshot their storage descriptors. Binding counts retain parent textures,

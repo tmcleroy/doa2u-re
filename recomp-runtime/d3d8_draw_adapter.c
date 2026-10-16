@@ -385,29 +385,51 @@ static uint8_t *distortion(uint32_t device, uint32_t stride, RecompD3dPresenterD
    FUN_002807f0): t0 PROJECT2D, t1-t3 BUMPENVMAP of t0 (PSInputTexture 0).
    Combiners 0-1 square T3.a twice, 2 sets r0 = t2 * (1 - t3.a), 3 sets
    r0 *= v0; the final combiner is lerp(fog.rgb, r0, fog.a) with v0.a. T1 is
-   never read. 0x34f5f0 keeps these final words because they are nonzero. */
-static bool bump_shader(uint32_t device)
+   never read. 0x34f5f0 keeps these final words because they are nonzero.
+   The water shader (built by FUN_0026bd20, bound by the unanalyzed draw at
+   0x26c980) has t0 PROJECT2D, t1 and t3 BUMPENVMAP of t0 and no t2 (0x300c1).
+   Its seven combiners give s = max(0, dot(expand v0, expand t3))^8, then
+   r0 = v1 t1.a, r0 = (s - 0.5) + (r0 - 0.5), r0 += t3.a t1 and r0.a =
+   t3.a v0.a, with the same final combiner. Returns 1 (effect), 2 (water) or 0. */
+static uint32_t bump_shader(uint32_t device)
 {
-    static const uint32_t words[][2] = {
+    static const uint32_t effect[][2] = {
         {0x00u, 0xdbdb1010u}, {0x04u, 0xdbdb1010u}, {0x08u, 0u}, {0x0cu, 0u},
         {0x20u, 0x130c0300u}, {0x24u, 0x1480u}, {0x68u, 0xb0u}, {0x6cu, 0xb0u}, {0x70u, 0u},
         {0x74u, 0u}, {0x88u, 0u}, {0x8cu, 0u}, {0x90u, 0xca3b0000u}, {0x94u, 0xccc40000u},
         {0xa8u, 0u}, {0xb4u, 0u}, {0xb8u, 0u}, {0xbcu, 0xc0u}, {0xc0u, 0xc0u},
         {0xd4u, 0x11104u}, {0xd8u, 0x318c1u}, {0xdcu, 0u}, {0xe0u, 0u},
     };
+    static const uint32_t water[][2] = {
+        {0x00u, 0u}, {0x04u, 0x1d1d1010u}, {0x08u, 0xdddd1010u}, {0x0cu, 0xdddd1010u},
+        {0x10u, 0u}, {0x14u, 0u}, {0x18u, 0xdbd41010u}, {0x20u, 0x130c0300u}, {0x24u, 0x1c80u},
+        {0x68u, 0u}, {0x6cu, 0xd0u}, {0x70u, 0xd0u}, {0x74u, 0xd0u}, {0x78u, 0u}, {0x7cu, 0u},
+        {0x80u, 0xc0u}, {0x88u, 0x444b0000u}, {0x8cu, 0x0d0d0000u}, {0x90u, 0xcdcd0000u},
+        {0x94u, 0xc5d90000u}, {0x98u, 0x9d208c20u}, {0x9cu, 0xdbc9200cu}, {0xa0u, 0u},
+        {0xa8u, 0u}, {0xb4u, 0x820d0u}, {0xb8u, 0xd0u}, {0xbcu, 0xd0u}, {0xc0u, 0xc0u},
+        {0xc4u, 0xc00u}, {0xc8u, 0xc00u}, {0xccu, 0u}, {0xd4u, 0x11107u}, {0xd8u, 0x300c1u},
+        {0xdcu, 0u}, {0xe0u, 0u},
+    };
     const uint32_t handle = *recomp_memory_u32(device + PIXEL_HANDLE);
-    if (handle == 0u) return false;
+    if (handle == 0u) return 0u;
     const uint32_t data = definition(handle);
-    for (uint32_t i = 0u; i < sizeof words / sizeof words[0]; ++i)
-        if (*recomp_memory_u32(data + words[i][0]) != words[i][1]) return false;
-    return true;
+    bool is_effect = true, is_water = true;
+    for (uint32_t i = 0u; i < sizeof effect / sizeof effect[0]; ++i)
+        is_effect = is_effect && *recomp_memory_u32(data + effect[i][0]) == effect[i][1];
+    for (uint32_t i = 0u; i < sizeof water / sizeof water[0]; ++i)
+        is_water = is_water && *recomp_memory_u32(data + water[i][0]) == water[i][1];
+    return is_effect ? 1u : is_water ? 2u : 0u;
 }
 
 /* FUN_002807f0 binds a 16-bit V8U8 (format 0x28) map on stage 0 with R/G/B
    COLORSIGN (0x355088 = 0xe0000000), the scene on stage 2 and a mask on
-   stage 3, each with linear min/mag, and BUMPENVMAT00-11 on stages 1-3. */
-static void bump_stages(uint32_t device, RecompD3dPresenterDrawCommand *draw)
+   stage 3, each with linear min/mag, and BUMPENVMAT00-11 on stages 1-3.
+   The water draw (0x26c980) binds the same kind of map, its reflection on
+   stage 1 and an environment map on stage 3, with matrices on stages 1 and 3,
+   fog off and SPECULARENABLE on. */
+static void bump_stages(uint32_t device, bool water, RecompD3dPresenterDrawCommand *draw)
 {
+    const uint32_t first = water ? 1u : 2u;
     uint32_t stage[4][32];
     recomp_guest_load(stage, STAGES, sizeof stage);
     const RecompD3dTextureDesc map = draw->texture;
@@ -415,28 +437,31 @@ static void bump_stages(uint32_t device, RecompD3dPresenterDrawCommand *draw)
     const uint32_t map_byte_count = draw->texture_byte_count;
     const bool has_map = draw->has_texture && draw->palette_bytes == NULL;
     draw->has_texture = draw->texture_is_backbuffer = draw->texture_is_front_buffer = false;
-    attach_texture(device, 2u, draw);
+    attach_texture(device, first, draw);
     RecompD3dPresenterDrawCommand mask = {0};
     attach_texture(device, 3u, &mask);
     bool admitted = has_map && draw->has_texture && mask.has_texture && map.format_byte == 0x28u &&
         !map.linear && map.bits_per_pixel == 16u && !mask.texture.linear &&
         draw->palette_bytes == NULL && mask.palette_bytes == NULL && stage[0][10] == 0xe0000000u;
-    static const uint32_t sampled[3] = {0u, 2u, 3u};
+    const uint32_t sampled[3] = {0u, first, 3u};
     for (uint32_t i = 0u; i < 3u; ++i) {
         const uint32_t *t = stage[sampled[i]];
         admitted = admitted && t[3] == 2u && t[4] == 2u && t[9] == 0u && t[11] == 0u &&
             (i == 0u || t[10] == 0u);
     }
     if (!admitted)
-        recomp_stop(2, "d3d8:stage-bump-inputs:%x:%u:%x:%u:%u", map.format_byte, map.bits_per_pixel,
-            stage[0][10], draw->has_texture, mask.has_texture);
+        recomp_stop(2, "d3d8:stage-bump-inputs:%u:%x:%u:%x:%u:%u", first, map.format_byte,
+            map.bits_per_pixel, stage[0][10], draw->has_texture, mask.has_texture);
+    /* shortcut: water V1 is oD1 only as observed with SPECULARENABLE on; other
+       states stop until the hardware's V1 source without it is known. */
+    if (water && *recomp_memory_u32(0x3553fcu) == 0u) recomp_stop(2, "d3d8:stage-water-specular");
     draw->alpha_mask = map;
     draw->alpha_mask_bytes = map_bytes;
     draw->alpha_mask_byte_count = map_byte_count;
     draw->bump_address_u = stage[0][0];
     draw->bump_address_v = stage[0][1];
-    draw->point_mip_filter = stage[2][5] == 1u;
-    draw->mip_lod_bias = lod_bias(stage[2][6]);
+    draw->point_mip_filter = stage[first][5] == 1u;
+    draw->mip_lod_bias = lod_bias(stage[first][6]);
     draw->reflection_texture = mask.texture;
     draw->reflection_bytes = mask.texture_bytes;
     draw->reflection_byte_count = mask.texture_byte_count;
@@ -445,7 +470,7 @@ static void bump_stages(uint32_t device, RecompD3dPresenterDrawCommand *draw)
     draw->reflection_point_mip_filter = stage[3][5] == 1u;
     draw->reflection_mip_lod_bias = lod_bias(stage[3][6]);
     for (uint32_t i = 0u; i < 2u; ++i) {
-        memcpy(draw->bump_matrices[i], &stage[2u + i][22], sizeof draw->bump_matrices[i]);
+        memcpy(draw->bump_matrices[i], &stage[i == 0u ? first : 3u][22], sizeof draw->bump_matrices[i]);
         for (uint32_t k = 0u; k < 4u; ++k)
             if (!isfinite(draw->bump_matrices[i][k])) recomp_stop(2, "d3d8:stage-bump-matrix");
     }
@@ -474,6 +499,7 @@ static void bump_stages(uint32_t device, RecompD3dPresenterDrawCommand *draw)
     draw->bump_fog[2] = fog != 0u ? 1.0f : 0.0f;
     draw->fog_color = *recomp_memory_u32(0x355488u);
     draw->bump_env = true;
+    draw->bump_water = water;
 }
 
 /* Stage-0 color and alpha as products of texture and diffuse: the first
@@ -1216,8 +1242,8 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
         recomp_stop(2, "d3d8:draw-points-unbound");
     } else if (points) {
         expanded = point_sprites(device, &layout, draw);
-    } else if (program && bump_shader(device)) {
-        bump_stages(device, draw);
+    } else if (program && bump_shader(device) != 0u) {
+        bump_stages(device, bump_shader(device) == 2u, draw);
     } else if (program) {
         program_stages(device, draw);
     } else if (*recomp_memory_u32(device + PIXEL_HANDLE) != 0u) {

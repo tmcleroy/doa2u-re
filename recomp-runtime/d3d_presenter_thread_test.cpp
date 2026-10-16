@@ -1302,6 +1302,97 @@ static bool testStageBump()
     return passed;
 }
 
+// Water bump pass: t1 at oT1 + M1 n, s = dot(expand oD0, expand t3)^8, then
+// r0 = s + oD1 t1.a - 1 + t3.a t1.
+static bool testStageWater()
+{
+    char folder[MAX_PATH], path[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "wtr", 0, path)) return false;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", path);
+    RecompD3dPresenter *presenter = nullptr;
+    bool passed = expect("create water", d3d11_backend_create(&config, &presenter));
+    if (passed) {
+        auto clear = clearCommand();
+        clear.data.clear.color = 0xff000000u;
+        passed &= expect("water clear", d3d11_backend_submit(presenter, &clear));
+        struct Vertex { float x, y, z; uint32_t color; float uv[8]; };
+        const uint16_t indices[] = {0, 1, 2, 3};
+        // Opaque red at u = 0.25; half-alpha green where the +64 U offset lands.
+        const uint32_t reflection[2] = {0xffff0000u, 0x8000ff00u}, environment = 0x808080ffu;
+        const uint8_t map[2] = {0x40u, 0x00u};
+        const uint32_t xyzw = 0x1bu;
+        Vertex quad[4]{};
+        for (unsigned i = 0; i < 4; ++i)
+            quad[i] = {-1.0f + 2.0f * (i & 1), 1.0f - 2.0f * (i >> 1), 0.5f, 0xff8080ffu,
+                {0, 0, 0.25f, 0.5f, 0, 0, 0.5f, 0.5f}};
+        RecompD3dPresenterCommand command{RECOMP_D3D_PRESENTER_COMMAND_DRAW};
+        auto &draw = command.data.draw;
+        draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+        draw.index_count = draw.vertex_count = 4;
+        draw.triangle_count = 2;
+        draw.vertex_stride = sizeof(Vertex);
+        draw.fvf = 0x442u;
+        draw.vertex_bytes = quad;
+        draw.index_bytes = indices;
+        draw.blend.color_write_mask = 15;
+        draw.address_u = draw.address_v = 3;
+        draw.has_texture = true;
+        draw.texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
+        draw.texture.bits_per_pixel = 32;
+        draw.texture.width = 2;
+        draw.texture.height = 1;
+        draw.texture.mip_levels = 1;
+        draw.texture.data = 0x1000u;
+        draw.texture_bytes = reflection;
+        draw.texture_byte_count = sizeof reflection;
+        draw.reflection_texture = draw.texture;
+        draw.reflection_texture.width = 1;
+        draw.reflection_texture.data = 0x2000u;
+        draw.reflection_bytes = &environment;
+        draw.reflection_byte_count = sizeof environment;
+        draw.reflection_address_u = draw.reflection_address_v = 3;
+        draw.alpha_mask.format_byte = 0x28u;
+        draw.alpha_mask.bits_per_pixel = 16;
+        draw.alpha_mask.width = draw.alpha_mask.height = draw.alpha_mask.mip_levels = 1;
+        draw.alpha_mask.data = 0x3000u;
+        draw.alpha_mask_bytes = map;
+        draw.alpha_mask_byte_count = sizeof map;
+        draw.bump_address_u = draw.bump_address_v = 1;
+        draw.bump_env = draw.bump_water = true;
+        draw.bump_matrices[0][0] = draw.bump_matrices[0][3] = 1.0f;
+        // oPos = v0, oD0 = v3, oT0 = v9, oT1 = v10, oT3 = v12, oD1 = c6.
+        const uint32_t moves[6][2] = {{0u, 0u}, {3u, 3u}, {9u, 9u}, {10u, 10u}, {12u, 12u}, {6u, 4u}};
+        draw.program_count = 6;
+        for (unsigned i = 0; i < 6; ++i) {
+            const bool constant = i == 5;
+            draw.program[i][1] = (1u << 21) | (constant ? moves[i][0] << 13 : moves[i][0] << 9) | xyzw;
+            draw.program[i][2] = (constant ? 3u : 2u) << 26;
+            draw.program[i][3] = (15u << 12) | (moves[i][1] << 3) | 2048u | (constant ? 1u : 0u);
+        }
+        draw.program_constants[6][0] = 0.5f;
+        draw.program_constants[58][0] = draw.program_constants[58][1] = draw.program_constants[58][2] = 1;
+        passed &= expect("water draw", d3d11_backend_submit(presenter, &command));
+        RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
+        present.data.present = {5, 1};
+        passed &= expect("water present", d3d11_backend_submit(presenter, &present));
+        passed &= expect("destroy water", d3d11_backend_destroy(&presenter));
+        if (FILE *file = std::fopen(path, "rb")) {
+            // s = 1, t1 = green at 0.502 alpha, t3.a = 0.502: r0 = (0.25, 0.5, 0).
+            unsigned char bgr[3]{};
+            std::fseek(file, 54 + (239 - 120) * 960 + 160 * 3, SEEK_SET);
+            passed &= std::fread(bgr, 1, 3, file) == 3;
+            const bool pixel_ok = bgr[0] < 4 && std::abs(bgr[1] - 128) <= 4 && std::abs(bgr[2] - 64) <= 4;
+            if (!pixel_ok) std::fprintf(stderr, "FAIL stage water pixel BGR=%u,%u,%u\n", bgr[0], bgr[1], bgr[2]);
+            passed &= pixel_ok;
+            std::fclose(file);
+        } else passed = false;
+    }
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
+    DeleteFileA(path);
+    if (passed) std::puts("PASS stage water bump: offset reflection, oD1 and dot^8 highlight");
+    return passed;
+}
+
 static bool testClose(bool idle)
 {
     RecompD3dPresenter *presenter = nullptr;
@@ -1407,6 +1498,7 @@ int main()
         !testProgramMaxSlt() ||
         !testProgramLitSge() ||
         !testStageBump() ||
+        !testStageWater() ||
         !testVisibility() ||
         !testClose(false) || !testClose(true)) return 1;
     std::puts("PASS presenter render thread");
