@@ -117,7 +117,10 @@ DrawIndexedVertices to the existing D3D11 presenter. It snapshots fixed-function
 layouts, transforms, viewport, depth/blend state, stage-0 texture and palette.
 Supported combinations include texture/diffuse modulation, white diffuse alpha
 selection, texture alpha selection and texture factors. Linear min/mag filters
-support point or linear mip selection with finite native-range LOD bias.
+support point or linear mip selection with LOD bias encoded as the lazy
+texture-state upload (0x34f400) does: 1/256 steps, truncated after +0.5 and
+clamped to the 13-bit field, so NaN and out-of-range biases clamp to -16 or
+15.99 (D3D11's maximum).
 Pixel-shader creation, deletion, binding and
 constants retain the 5849 layout; native custom shading supports the sister
 presenter's four-tap filter in its doubled and identity-scale variants, with
@@ -128,11 +131,26 @@ bloom composite binds stage-0 MODULATE2X of texture and texture factor over
 white vertices; quad strips draw as triangle strips. The fixed-function draw snapshot
 binds up to eight directional/point light slots, front material and ambient,
 normalization, blended world/normal transforms and infinite-view specular.
-Missing vertex colors resolve material sources as the SDK does. Native pixel
+Missing vertex colors resolve material sources as the SDK does. On stage 0 a
+CURRENT argument reads diffuse: the combiner compiler flags the first stage
+(0x352aba) and its arg mapper (0x3529c0) then maps CURRENT to V0, so a fight's
+lit MODULATE(TEXTURE, CURRENT) binds as texture times lit diffuse. Material
+checks cover only what the SDK uploads: diffuse RGBA, ambient and emissive
+RGB (0x34fb90), and specular RGB and power (0x34fe40) only while specular is
+enabled. Non-finite unused terms draw; a used one stops with its index and bits.
+Native pixel
 tests cover diffuse/ambient, point range/attenuation, specular, normal transforms
 and alpha. The reflection material binds the sister presenter's two-texture
 straight or premultiplied texture-alpha blend and final diffuse modulation,
-with generated reflection coordinates or mesh UV0 and matching samplers.
+with generated reflection coordinates or mesh UV0. Both stages share mip
+filter and LOD bias; each keeps its own WRAP or CLAMP addressing, so the
+fight's chrome (Zack, Stage 01) clamps its environment map while the base
+texture wraps. BORDER and MIRROR addressing stay guarded. Other fight chrome
+(draw 0x28708b, FVF 0x112) swaps the coordinate sources: stage 0 samples the
+environment through camera-space reflection texgen (TEXTURE0 matrix) and
+stage 1 blends the mesh-UV0 base by its own alpha. The combiner is the same,
+so the presenter runs stage-0 texgen alongside the mesh-UV blend. Texgen on
+both stages would need two texture matrices and still stops.
 Unlit vertex diffuse and lit material diffuse retain their respective alpha
 sources. Blended reflection coordinates, vertex color lighting sources,
 local-view specular, two-sided/spot lighting, other
@@ -158,8 +176,16 @@ BGRA8 offscreen color targets and D24S8 custom depth targets bind through the
 shared presenter; clears and draws
 snapshot their storage descriptors. Binding counts retain parent textures,
 and viewport extents follow the target. Front-buffer targets, offscreen sharing
-of main depth, and partial clears remain guarded. Synthetic draw tests establish
-these contracts, not title acceptance.
+of a supersampled main depth, and partial clears remain guarded. Synthetic draw
+tests establish these contracts, not title acceptance.
+
+SetRenderTarget (0x3447d0) programs the depth offset and pitch from the depth
+header alone, so an offscreen color can test against the main depth. The fight
+bloom source pass (0x2756f0) binds a 720x480 texture with the main depth,
+clears color only and draws its glow objects behind the scene's occluders. The
+adapter admits that pairing when the guest back buffer is not supersampled. The
+host then binds its main depth at scale 1 without MSAA; scaled or multisampled
+presentation draws such targets without depth.
 
 KickPushBuffer publishes queued native commands. WaitForIdle drains them.
 InsertFence returns an even sequence after draining; BlockOnFence drains too.
@@ -176,6 +202,17 @@ fields, while the host target and vertex-shader viewport constants stay in
 logical 720x480 units. PersistDisplay publishes an SDK-shaped saved surface
 without host pixels. Line lists draw natively; widths above one pixel become
 screen-space quads, and transformed wide lines stay guarded.
+Point lists draw as Xbox point sprites. With POINTSPRITEENABLE the 5849
+combiner compiler (0x352a60) compiles stage 3 only, and that stage's texture
+receives the sprite coordinates. The fight's particles (0x2345c0) use
+POINTSCALEENABLE. The adapter expands each point to an eye-space quad that is
+square in pixels and draws it with the projection alone. Its size is
+Vh * Si / sqrt(A + B*De + C*De^2), clamped to [MIN, MAX], which is the D3D8
+formula the SDK's point parameters (0x34ef10) encode. Stage 3 admits SELECTARG1
+of texture or diffuse, or their MODULATE. Unscaled sizes, lit points, shaders and
+projections that mix eye x/y into w stay guarded. Hardware size rounding and
+frustum culling of whole points are not modelled: a quad that crosses the
+screen edge is clipped instead.
 there is no separate guest CPU cache or direct GPU consumer of guest bytes.
 
 Leaving character select, the game (0x282770) widens the old headers, persists
@@ -188,11 +225,23 @@ this restore. It stops if a color clear or draw has written the target since
 the Swap before PersistDisplay. Other copies, such as the render-target
 snapshot at 0x277670, need a presenter copy command.
 
+Reset's mode set (0x34d58d) raises device+0x1de0. The next Swap (0x34af40)
+then programs the mode and frees the persisted copy (0x34a600). Both mode
+switches (0x282770, 0x282880) free their 0x175000-byte scratch arena, persist,
+Reset, Swap, and only then allocate the arena again (0x282390). That arena holds
+a matrix stack growing down from its end. If the persisted copy were kept, the
+arena allocation would fail with guest memory full. The stack would then start
+at 0x175000 and overwrite the switch table at 0x174530, a crash seen in fights.
+
 Fixed-function stage 0 also admits D3DTSS_ALPHAKILL ENABLE (4), which discards
 fragments whose sampled texel alpha is zero, and camera-space reflection
 texgen (TCI 0x30000) with COUNT2. That texgen reuses the reflection inputs
 with the TEXTURE0 matrix (0xce0) and writes UV0; without a normal stream it
-uses a zero normal, as the stage-1 path does. When a lit world matrix is
+uses a zero normal, as the stage-1 path does. COUNT2 over mesh UV0, which a
+fight stage uses to scroll a texture, follows the texture-matrix upload
+(0x34f7d0, case 0x220): s and t take the first two columns with the third row
+as translation and q is 1, so UV0 becomes (u, v, 1, 0) times TEXTURE0.
+Projected and other counts stop. When a lit world matrix is
 singular, the SDK inverse (0x34b530) fails and uploads an unset matrix. The
 adapter then uses zero normals, so only ambient and emissive light remain.
 MultiSampleMode and MultiSampleRenderTargetMode (0x3477a0/0x3477d0) store
@@ -207,7 +256,10 @@ instead and reports the calling API's return address.
 SetTextureState_BumpEnv (`0x346bc0`, stdcall stage/state/value) stores
 BUMPENVMAT00 through BUMPENVLOFFSET (states 22-27) in the deferred stage array
 `0x355060`, which the draw adapter reads; its NV2A method has no host use.
-Draws do not consume those states yet. A stage-1 combiner the draw path cannot
+Draws do not consume those states yet. SetTextureState_BorderColor
+(`0x346c30`, stdcall stage/color) likewise only shadows D3DTSS_BORDERCOLOR
+(state 29) there; BORDER addressing itself still stops in the draw sampler
+checks. A stage-1 combiner the draw path cannot
 express stops with `d3d8:draw-texture-stages` and reports the color/alpha ops
 and arguments of stages 0-1 and the stage-2 ops.
 

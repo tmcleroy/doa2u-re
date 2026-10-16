@@ -153,7 +153,8 @@ static LevelView level_view(uint32_t resource, uint32_t level)
     LevelView view = {0};
     if (!recomp_d3d8_resource_describe(resource, &view.desc) ||
         level >= view.desc.mip_levels || (view.desc.linear && level != 0u)) {
-        recomp_stop(2, "d3d8:resource-level:%u", level);
+        recomp_stop(2, "d3d8:resource-level:%u:%08x:%08x:%08x:ret=%08x", level, common(resource),
+            word(resource + 12u), word(resource + 16u), word(recomp_runtime.registers.esp));
     }
     uint32_t width = view.desc.width, height = view.desc.height;
     uint32_t format = view.desc.format_byte, bits = view.desc.bits_per_pixel;

@@ -490,14 +490,21 @@ bool recomp_d3d_reflection_material(const uint32_t stages[4][32])
         if (stages[stage][20] != 0u) return false;
     }
     for (uint32_t stage = 0u; stage < 2u; ++stage) {
-        if (stages[stage][0] != 1u || stages[stage][1] != 1u ||
+        /* D3DTADDRESS WRAP (1) or CLAMP (3); BORDER needs D3DTSS_BORDERCOLOR. */
+        if ((stages[stage][0] != 1u && stages[stage][0] != 3u) ||
+            (stages[stage][1] != 1u && stages[stage][1] != 3u) ||
             stages[stage][3] != 2u || stages[stage][4] != 2u ||
             stages[stage][9] != 0u || stages[stage][10] != 0u ||
             stages[stage][11] != 0u) return false;
     }
-    return stages[0][21] == 0u && stages[0][28] == 0u &&
-        ((stages[1][21] == 2u && stages[1][28] == 0x30000u) ||
-         (stages[1][21] == 0u && stages[1][28] == 0u));
+    /* Either stage may take camera-space reflection coordinates (COUNT2); the
+       other reads mesh UV0. Both generating would need two texture matrices. */
+    bool generated[2], mesh[2];
+    for (uint32_t stage = 0u; stage < 2u; ++stage) {
+        generated[stage] = stages[stage][21] == 2u && stages[stage][28] == 0x30000u;
+        mesh[stage] = stages[stage][21] == 0u && stages[stage][28] == 0u;
+    }
+    return mesh[1] ? mesh[0] || generated[0] : mesh[0] && generated[1];
 }
 
 bool recomp_d3d_diffuse_rgb_is_zero(

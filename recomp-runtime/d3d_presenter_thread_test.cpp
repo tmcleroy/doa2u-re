@@ -387,6 +387,106 @@ static bool testLighting()
     return passed;
 }
 
+// texgen: stage 0 samples the base at generated coordinates (TEXTURE0 matrix)
+// while the half-alpha environment keeps mesh UV, as the fight's chrome does.
+// uv_transform: no reflection; UV0 is (u, v, 1, 0) times TEXTURE0.
+static bool testReflectionAddress(bool texgen, bool uv_transform = false)
+{
+    char folder[MAX_PATH], path[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "env", 0, path)) return false;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", path);
+    RecompD3dPresenter *presenter = nullptr;
+    bool passed = expect("create reflection", d3d11_backend_create(&config, &presenter));
+    if (passed) {
+        struct Vertex { float x, y, z, nx, ny, nz, u, v; };
+        const Vertex vertices[] = {
+            {-1, 1, 0.5f, 0, 0, 1, 0, 0}, {1, 1, 0.5f, 0, 0, 1, 2, 0},
+            {-1, -1, 0.5f, 0, 0, 1, 0, 1}, {1, -1, 0.5f, 0, 0, 1, 2, 1}};
+        const uint16_t indices[] = {0, 1, 2, 3};
+        const uint32_t base_pixels[2] = {0xff0000ffu, 0xffffff00u};
+        const uint32_t environment[2] = {texgen ? 0x80ff0000u : 0xffff0000u,
+            texgen ? 0x8000ff00u : 0xff00ff00u};
+        const float white[] = {1, 1, 1, 1};
+        RecompD3dPresenterCommand command{RECOMP_D3D_PRESENTER_COMMAND_DRAW};
+        auto &draw = command.data.draw;
+        draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+        draw.index_count = draw.vertex_count = 4;
+        draw.triangle_count = 2;
+        draw.vertex_stride = sizeof(Vertex);
+        draw.fvf = 0x112u;
+        draw.vertex_bytes = vertices;
+        draw.index_bytes = indices;
+        draw.blend.color_write_mask = 15;
+        draw.has_transform = true;
+        draw.transform[0] = draw.transform[5] = draw.transform[10] = draw.transform[15] = 1;
+        draw.has_texture = draw.has_reflection = draw.reflection_mesh_uv = true;
+        draw.texture.data = 0x1000u;
+        draw.texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
+        draw.texture.bits_per_pixel = 32;
+        draw.texture.width = draw.texture.height = 1;
+        draw.texture_bytes = base_pixels;
+        draw.texture_byte_count = sizeof base_pixels[0];
+        draw.reflection_texture = draw.texture;
+        draw.reflection_texture.data = 0x2000u;
+        draw.reflection_texture.width = 2;
+        draw.reflection_bytes = environment;
+        draw.reflection_byte_count = sizeof environment;
+        draw.reflection_address_u = draw.reflection_address_v = 3u;
+        std::memcpy(draw.reflection_diffuse, white, sizeof white);
+        if (texgen) {
+            draw.texture.width = 2;
+            draw.texture_byte_count = sizeof base_pixels;
+            draw.texgen_reflection = true;
+            draw.reflection_world_view[0] = draw.reflection_world_view[5] = 1;
+            draw.reflection_world_view[10] = draw.reflection_world_view[15] = 1;
+            std::memcpy(draw.reflection_normal, draw.reflection_world_view, sizeof draw.reflection_normal);
+            // Every generated coordinate lands on the yellow base texel.
+            draw.reflection_transform[12] = 0.75f;
+            draw.reflection_transform[13] = 0.25f;
+            draw.reflection_transform[15] = 1;
+        }
+        if (uv_transform) {
+            draw.texgen_reflection = draw.has_reflection = draw.reflection_mesh_uv = false;
+            draw.texture_transform_uv = true;
+            std::memset(draw.reflection_transform, 0, sizeof draw.reflection_transform);
+            draw.reflection_transform[0] = draw.reflection_transform[5] = 1;
+            // The third row translates 2D coordinates; the fourth must not.
+            draw.reflection_transform[8] = 0.5f;
+            draw.reflection_transform[12] = 0.125f;
+        }
+        passed &= expect("clamped reflection draw", d3d11_backend_submit(presenter, &command));
+        RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
+        present.data.present = {5, 1};
+        passed &= expect("reflection present", d3d11_backend_submit(presenter, &present));
+        passed &= expect("destroy reflection", d3d11_backend_destroy(&presenter));
+        if (FILE *file = std::fopen(path, "rb")) {
+            // U 0.25 samples the red texel; U 1.25 clamps to green (WRAP would give red).
+            // With texgen, yellow base halves with them (mesh UV would give blue base).
+            const unsigned xs[] = {40, 200};
+            for (unsigned i = 0; i < 2; ++i) {
+                unsigned char bgr[3]{};
+                std::fseek(file, 54 + (239 - 120) * 960 + xs[i] * 3, SEEK_SET);
+                passed &= std::fread(bgr, 1, 3, file) == 3;
+                // U 0.25 and 1.25 move to the yellow texel centre (0.75, wrapping).
+                const bool pixel_ok = uv_transform ? bgr[2] > 245 && bgr[1] > 245 && bgr[0] < 10
+                    : texgen
+                    ? bgr[0] < 10 && std::abs(int(bgr[2 - i]) - 255) <= 3 && std::abs(int(bgr[1 + i]) - 128) <= 3
+                    : i == 0 ? bgr[2] > 245 && bgr[1] < 10 : bgr[1] > 245 && bgr[2] < 10;
+                if (!pixel_ok) std::fprintf(stderr, "FAIL reflection address pixel %u BGR=%u,%u,%u\n",
+                    i, bgr[0], bgr[1], bgr[2]);
+                passed &= pixel_ok;
+            }
+            std::fclose(file);
+        } else passed = false;
+    }
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
+    DeleteFileA(path);
+    if (passed) std::puts(uv_transform ? "PASS stage-0 texture matrix translates 2D UV by its third row"
+        : texgen ? "PASS stage-0 texgen pairs with a mesh-UV reflection blend"
+        : "PASS reflection texture samples with its own stage address mode");
+    return passed;
+}
+
 static bool testScreenSpaceOffsetAndScissor()
 {
     char folder[MAX_PATH], path[MAX_PATH];
@@ -756,6 +856,7 @@ int main()
 {
     recomp_d3d_presenter_set_immediate_present(false);
     if (!testTicks() || !testCapturedDraw() || !testMipSampler() || !testLighting() ||
+        !testReflectionAddress(false) || !testReflectionAddress(true) || !testReflectionAddress(true, true) ||
         !testScreenSpaceOffsetAndScissor() || !testBrightPass() || !testVisibility() ||
         !testClose(false) || !testClose(true)) return 1;
     std::puts("PASS presenter render thread");

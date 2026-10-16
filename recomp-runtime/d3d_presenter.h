@@ -148,6 +148,8 @@ typedef struct RecompD3dPresenterDrawCommand {
     float material_alpha;
     /* ponytail: exact zero illumination; full lighting needs light evaluation. */
     bool zero_diffuse_rgb;
+    /* The sampled texel contributes alpha only, as for SELECTARG1(DIFFUSE) color. */
+    bool texture_alpha_only;
     /* Four-source register-combiner filter over all four UV sets:
        sum_scale * (sat(scale * (f0*t0 + f1*t1)) + sat(scale * (f2*t2 + f3*t3))),
        with packed ARGB factors. */
@@ -172,6 +174,9 @@ typedef struct RecompD3dPresenterDrawCommand {
     /* Stage-0 TCI_CAMERASPACEREFLECTIONVECTOR with COUNT2: UV0 is generated from
        reflection_world_view/normal and reflection_transform (TEXTURE0). */
     bool texgen_reflection;
+    /* Stage-0 COUNT2 over mesh UV0: UV0 becomes (u, v, 1, 0) times
+       reflection_transform (TEXTURE0), so the third row translates. */
+    bool texture_transform_uv;
     /* Storage aliases the current guest backbuffer, whose pixels are host-owned. */
     bool texture_is_backbuffer;
     /* GetBackBuffer(-1): the frame Present last showed, not the one in progress. */
@@ -194,6 +199,8 @@ typedef struct RecompD3dPresenterDrawCommand {
     bool reflection_mesh_uv;
     bool reflection_premultiplied;
     RecompD3dTextureDesc reflection_texture;
+    /* Stage-1 D3DTADDRESS U/V for reflection_texture; 0 (unknown) wraps. */
+    uint32_t reflection_address_u, reflection_address_v;
     const void *reflection_bytes;
     uint32_t reflection_byte_count;
     float reflection_world_view[16];

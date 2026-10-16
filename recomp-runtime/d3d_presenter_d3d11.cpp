@@ -191,7 +191,7 @@ void buildDrawShaderSource(
         "        if (directional_flags.x > 0.5f) diffuse.rgb = input.color.rgb;\n"
         "        float4 base = guest_texture.Sample(guest_sampler, input.texcoord);\n"
         "        base.a *= diffuse.a;\n"
-        "        float4 env = alpha_mask.Sample(guest_sampler, input.reflection_coord);\n"
+        "        float4 env = alpha_mask.Sample(mask_sampler, input.reflection_coord);\n"
         "        shaded = (reflection_flags.w > 0.5f\n"
         "            ? saturate(env + base * (1.0f - env.a)) : lerp(base, env, env.a)) * diffuse;\n"
         "    } else\n"
@@ -263,9 +263,10 @@ void buildDrawShaderSource(
             : layout.texcoord_count == 2u ? "    output.texcoord1 = input.texcoord1;\n" : "",
         has_texcoord && !layout.pretransformed
             ? (has_normal
-                ? "    if (reflection_flags.x > 1.5f) {\n"
-                  "        output.reflection_coord = input.texcoord;\n"
-                  "    } else if (reflection_flags.x > 0.5f || filter_texel.z > 0.5f) {\n"
+                /* Mesh-UV reflections (x == 2) may pair with stage-0 texgen. */
+                ? "    if (reflection_flags.x > 1.5f) output.reflection_coord = input.texcoord;\n"
+                  "    if (filter_texel.z > 1.5f) output.texcoord = mul(float4(input.texcoord, 1, 0), reflection_transform).xy;\n"
+                  "    if (abs(reflection_flags.x - 1.0f) < 0.5f || abs(filter_texel.z - 1.0f) < 0.5f) {\n"
                   "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
                   "        float3 n = mul(float4(input.normal, 0), reflection_normal).xyz;\n"
                   "        if (reflection_flags.y > 0.5f) n = normalize(n);\n"
@@ -276,9 +277,9 @@ void buildDrawShaderSource(
                   "    }\n"
                 /* shortcut: without a normal stream NV2A reads a zero inline normal, so
                    r is the eye direction; check the inline register if env maps look wrong. */
-                : "    if (reflection_flags.x > 1.5f) {\n"
-                  "        output.reflection_coord = input.texcoord;\n"
-                  "    } else if (reflection_flags.x > 0.5f || filter_texel.z > 0.5f) {\n"
+                : "    if (reflection_flags.x > 1.5f) output.reflection_coord = input.texcoord;\n"
+                  "    if (filter_texel.z > 1.5f) output.texcoord = mul(float4(input.texcoord, 1, 0), reflection_transform).xy;\n"
+                  "    if (abs(reflection_flags.x - 1.0f) < 0.5f || abs(filter_texel.z - 1.0f) < 0.5f) {\n"
                   "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
                   "        float3 r = normalize(eye);\n"
                   "        float2 generated = mul(float4(r, 1), reflection_transform).xy;\n"
@@ -2138,22 +2139,21 @@ ID3D11ShaderResourceView *lookupBackBufferTexture(
 
 /* Xbox D3DTADDRESS WRAP..BORDER (1..4) share D3D11's values and CLAMPTOEDGE
    clamps. The casino Zack sprite draws V 0..2 with CLAMP; wrap shows it twice. */
-ID3D11SamplerState *lookupDrawSampler(
-    RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw)
+ID3D11SamplerState *lookupDrawSampler(RecompD3dPresenter *presenter,
+    uint32_t address_u, uint32_t address_v, bool point_mip_filter, float bias)
 {
     const auto host = [](uint32_t mode) {
         return mode == 5u ? D3D11_TEXTURE_ADDRESS_CLAMP : mode >= 1u && mode <= 4u
             ? static_cast<D3D11_TEXTURE_ADDRESS_MODE>(mode) : D3D11_TEXTURE_ADDRESS_WRAP;
     };
     if (presenter->draw_sampler == nullptr) return nullptr;
-    const D3D11_TEXTURE_ADDRESS_MODE u = host(draw.address_u), v = host(draw.address_v);
-    const float bias = draw.mip_lod_bias;
+    const D3D11_TEXTURE_ADDRESS_MODE u = host(address_u), v = host(address_v);
     if (u == D3D11_TEXTURE_ADDRESS_WRAP && v == D3D11_TEXTURE_ADDRESS_WRAP &&
-        !draw.point_mip_filter && bias == 0.0f) return presenter->draw_sampler;
+        !point_mip_filter && bias == 0.0f) return presenter->draw_sampler;
     for (uint32_t i = 0u; i < presenter->sampler_count; ++i) {
         const SamplerEntry &entry = presenter->samplers[i];
         if (entry.u == u && entry.v == v &&
-            entry.point_mip_filter == draw.point_mip_filter && entry.mip_lod_bias == bias) {
+            entry.point_mip_filter == point_mip_filter && entry.mip_lod_bias == bias) {
             return entry.state;
         }
     }
@@ -2161,14 +2161,14 @@ ID3D11SamplerState *lookupDrawSampler(
     presenter->draw_sampler->GetDesc(&desc);
     desc.AddressU = u;
     desc.AddressV = v;
-    desc.Filter = draw.point_mip_filter
+    desc.Filter = point_mip_filter
         ? D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT : D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     desc.MipLODBias = bias;
     ID3D11SamplerState *state = nullptr;
     if (FAILED(presenter->device->CreateSamplerState(&desc, &state))) return nullptr;
     SamplerEntry &entry = presenter->samplers[presenter->next_sampler_slot];
     releaseCom(entry.state);
-    entry = {u, v, draw.point_mip_filter, bias, state};
+    entry = {u, v, point_mip_filter, bias, state};
     presenter->next_sampler_slot = (presenter->next_sampler_slot + 1u) % kSamplerSlots;
     if (presenter->sampler_count < kSamplerSlots) ++presenter->sampler_count;
     return state;
@@ -2705,8 +2705,8 @@ RecompD3dPresenterError submitDraw(
     draw_constants[75] = ((draw.texture_factor >> 24u) & 0xffu) / 255.0f;
     draw_constants[76] = draw.zero_diffuse_rgb ? 1.0f : 0.0f;
     /* NV2A A8 supplies white RGB; DXGI A8 supplies only alpha. */
-    draw_constants[77] = draw.texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8
-        ? 1.0f : 0.0f;
+    draw_constants[77] = draw.texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8 ||
+        draw.texture_alpha_only ? 1.0f : 0.0f;
     draw_constants[80] = draw.texture.linear && draw.texture.width != 0u
         ? 1.0f / draw.texture.width : 1.0f;
     draw_constants[81] = draw.texture.linear && draw.texture.height != 0u
@@ -2732,14 +2732,14 @@ RecompD3dPresenterError submitDraw(
             unpack(draw.bright_pass_threshold, filter + 8);
         }
         filter[3] = draw.alpha_kill ? 1.0f : 0.0f;
-        filter[6] = draw.texgen_reflection ? 1.0f : 0.0f;
+        filter[6] = draw.texgen_reflection ? 1.0f : draw.texture_transform_uv ? 2.0f : 0.0f;
         if (draw.four_tap_filter) {
             filter[1] = draw.four_tap_scale;
             filter[2] = draw.four_tap_sum_scale;
             for (unsigned i = 0u; i < 4u; ++i) unpack(draw.four_tap_factors[i], filter + 8 + i * 4);
         }
     }
-    if (draw.has_reflection || draw.texgen_reflection) {
+    if (draw.has_reflection || draw.texgen_reflection || draw.texture_transform_uv) {
         std::memcpy(draw_constants + 84, draw.reflection_world_view, 64u);
         std::memcpy(draw_constants + 100, draw.reflection_normal, 64u);
         std::memcpy(draw_constants + 116, draw.reflection_transform, 64u);
@@ -2778,14 +2778,21 @@ RecompD3dPresenterError submitDraw(
         0u, 1u, &presenter->draw_constant_buffer);
     ID3D11ShaderResourceView *views[] = {texture_view, mask_view};
     presenter->context->PSSetShaderResources(0u, 2u, views);
-    ID3D11SamplerState *samplers[] = {
+    ID3D11SamplerState *sampler =
         draw.four_tap_filter || draw.has_alpha_mask ||
                 (draw.program_count && (!draw.address_u || !draw.address_v))
             ? presenter->filter_sampler
-            : lookupDrawSampler(presenter, draw),
-        draw.program_alpha_mask ? presenter->program_mask_sampler : presenter->filter_sampler};
-    if (samplers[0] == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
-    presenter->context->PSSetSamplers(0u, 2u, samplers);
+            : lookupDrawSampler(presenter, draw.address_u, draw.address_v,
+                draw.point_mip_filter, draw.mip_lod_bias);
+    if (sampler == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+    // Bind before the next lookup, which may evict this cache entry.
+    presenter->context->PSSetSamplers(0u, 1u, &sampler);
+    sampler = draw.program_alpha_mask ? presenter->program_mask_sampler
+            : draw.has_reflection ? lookupDrawSampler(presenter, draw.reflection_address_u,
+                draw.reflection_address_v, draw.point_mip_filter, draw.mip_lod_bias)
+            : presenter->filter_sampler;
+    if (sampler == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+    presenter->context->PSSetSamplers(1u, 1u, &sampler);
     presenter->context->RSSetState(presenter->draw_rasterizer_states[draw.cull_mode]);
     presenter->context->RSSetScissorRects(1u, &scissor);
     ID3D11DepthStencilState *depth_state = lookupDepthState(presenter, draw.depth);
