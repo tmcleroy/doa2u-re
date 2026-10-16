@@ -465,8 +465,8 @@ static void fixed_stages(const RecompD3dVertexLayout *layout, RecompD3dPresenter
             ((stage[0][16] == 2u && stage[0][18] <= 1u) ||
              (stage[0][16] == 3u && stage[0][19] <= 1u));
         if (vertex_alpha) draw->material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_SELECT_VERTEX_DIFFUSE;
-        /* shortcut: stage-0 ALPHAOP DISABLE passes diffuse alpha, an unverified SDK rule;
-           its observed ONE/ONE composite only adds into ignored back-buffer alpha. */
+        /* Xbox D3D compiles stage-0 ALPHAOP DISABLE as R0.a = V0.a * 1 (0x352b1e), and
+           the final combiner reads R0.a, so it matches SELECTARG1(DIFFUSE). */
         const bool diffuse_alpha = stage[0][16] == 1u;
         if (diffuse_alpha) {
             draw->material_alpha_mode = white ? RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE
