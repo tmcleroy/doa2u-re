@@ -252,6 +252,9 @@ int main(void)
     CHECK(*recomp_memory_u32(0x355060u + (32u + 23u) * 4u) == 0x3f000000u);
     if (setjmp(stopped) == 0) { invoke(0x346bc0u, 1u, 21u); return 1; }
     CHECK(strcmp(stop_reason, "d3d8:unsupported-bump-env:1:21") == 0);
+    /* BorderColor shadows stage 2's D3DTSS_BORDERCOLOR and pops two arguments. */
+    CHECK(invoke(0x346c30u, 2u, 0xff336699u) == 0u && recomp_runtime.registers.esp == STACK + 12u);
+    CHECK(*recomp_memory_u32(0x355060u + (64u + 29u) * 4u) == 0xff336699u);
     passed &= check_frame_state() == 0;
     if (passed) puts("PASS D3D8 gamma, transform, fog, light, shader and frame-state ABI/shadow state");
     return passed ? 0 : 1;

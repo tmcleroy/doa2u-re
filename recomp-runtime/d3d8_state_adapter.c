@@ -517,6 +517,18 @@ static void bump_env(void)
     kernel_return(3u, 0u);
 }
 
+/* SetTextureState_BorderColor (0x346c30, stdcall stage/color) shadows
+   D3DTSS_BORDERCOLOR (29) for BORDER addressing; its NV2A method 0x1b24 has no
+   host consumer. */
+static void border_color(void)
+{
+    (void)recomp_d3d8_require_device();
+    const uint32_t stage = kernel_arg(1u);
+    if (stage >= 4u) recomp_stop(2, "d3d8:texture-stage:%u", stage);
+    *recomp_memory_u32(0x355060u + (stage * 32u + 29u) * 4u) = kernel_arg(2u);
+    kernel_return(2u, 0u);
+}
+
 RecompFunction recomp_d3d8_state_lookup_manual(uint32_t address)
 {
     /* Verified 5849 API entries; unsupported state values stop explicitly. */
@@ -539,6 +551,7 @@ RecompFunction recomp_d3d8_state_lookup_manual(uint32_t address)
     case 0x00346a60u: return vertex_blend;
     case 0x00346ab0u: return texcoord_index;
     case 0x00346bc0u: return bump_env;
+    case 0x00346c30u: return border_color;
     case 0x003475c0u: return stencil_fail;
     case 0x00346930u: return fill_mode;
     case 0x00347490u: return z_enable;
