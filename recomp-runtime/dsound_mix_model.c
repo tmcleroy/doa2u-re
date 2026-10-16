@@ -33,17 +33,23 @@ bool recomp_dsound_mix_matrices(const RecompDsoundMixModel *model, uint32_t chan
     for (uint32_t i = 0; i < model->count; ++i) {
         uint32_t bin = model->bins[i];
         if (bin >= 32u) return false;
-        /* Stereo callers retain muted center/LFE/rear routes in their table. */
-        if (bin >= 2u && bin <= 5u && model->volumes[bin] == -10000) continue;
-        /* Crosstalk and recording sends need their own native signal services. */
-        if (bin != 0u && bin != 1u && bin != 10u) return false;
-        float gain = model->volumes[bin] == -10000 ? 0.0f :
-            powf(10.0f, model->volumes[bin] / 2000.0f);
+        /* A fully attenuated send is silent wherever it is routed. */
+        if (model->volumes[bin] == -10000) continue;
+        /* Crosstalk and FX sends need their own native signal services. */
+        if (bin > 5u && bin != 10u) return false;
+        float gain = powf(10.0f, model->volumes[bin] / 2000.0f);
         gain = ldexpf(gain, -(int)(headroom[bin] & 7u));
         if (bin == 10u) {
             wet[0] += gain;
             wet[channels == 1u ? 1u : 3u] += gain;
-        } else dry[bin * channels + (channels == 2u ? bin : 0u)] += gain;
+        } else if (bin <= 1u) dry[bin * channels + (channels == 2u ? bin : 0u)] += gain;
+        else if (bin != 3u) {
+            /* shortcut: fixed -3 dB stereo fold of center/rear with LFE dropped;
+               add speaker-config-aware routing when a surround host output exists. */
+            uint32_t in = i % channels; /* hardware feeds stereo channels to alternating slots */
+            if (bin != 5u) dry[in] += gain * 0.70710678f;
+            if (bin != 4u) dry[channels + in] += gain * 0.70710678f;
+        }
     }
     return true;
 }
