@@ -167,9 +167,13 @@ Missing vertex colors resolve material sources as the SDK does. On stage 0 a
 CURRENT argument reads diffuse: the combiner compiler flags the first stage
 (0x352aba) and its arg mapper (0x3529c0) then maps CURRENT to V0, so a fight's
 lit MODULATE(TEXTURE, CURRENT) binds as texture times lit diffuse. Material
-checks cover only what the SDK uploads: diffuse RGBA, ambient and emissive
-RGB (0x34fb90), and specular RGB and power (0x34fe40) only while specular is
-enabled. Non-finite unused terms draw; a used one stops with its index and bits.
+checks cover only what the SDK uploads: diffuse, ambient and specular RGB
+(0x34fb90), emissive RGB and diffuse alpha (0x34fc80), and specular RGB and
+power (0x34fe40) only while specular is enabled. Non-finite unused terms draw;
+a used one stops with its index and bits. Diffuse alpha is the exception:
+0x34fc80 sends it unchanged as the lit alpha, so a NaN there (a play session
+wrote 7fc08080) saturates by sign to 1 or 0 as a passthrough vertex color does
+on hardware. That rule is unverified for material alpha.
 Native pixel
 tests cover diffuse/ambient, point range/attenuation, specular, normal transforms
 and alpha. The reflection material binds the sister presenter's two-texture

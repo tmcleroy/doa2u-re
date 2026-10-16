@@ -429,10 +429,16 @@ static void attach_lighting(uint32_t device, const RecompD3dVertexLayout *layout
             stage[16], stage[18], stage[19]);
     float material[17];
     recomp_guest_load(material, device + 0xf00u, sizeof material);
+    /* 0x34fc80 sends diffuse alpha unchanged as the lit alpha (NV097 0x3b4),
+       where a passthrough NaN saturates by its sign bit. */
+    /* shortcut: sign saturation is observed for vertex-color passthrough, not
+       material alpha; verify on hardware if a lit NaN alpha looks wrong. */
+    if (isnan(material[3])) material[3] = signbit(material[3]) ? 0.0f : 1.0f;
     const bool specular = *recomp_memory_u32(0x3553fcu) != 0u || (*recomp_memory_u32(device + 8u) & 0x40u) != 0u;
-    /* The light upload (0x34fb90) reads diffuse, ambient and specular RGB; the
-       specular LUT (0x34fe40) reads power. Specular terms and the ambient,
-       specular and emissive alphas never reach the image when unused. */
+    /* The light upload (0x34fb90) reads diffuse, ambient and specular RGB;
+       0x34fc80 reads emissive RGB and diffuse alpha; the specular LUT
+       (0x34fe40) reads power. Specular terms and the ambient, specular and
+       emissive alphas never reach the image when unused. */
     for (uint32_t i = 0u; i < 17u; ++i) {
         const bool used = i <= 6u || (i >= 12u && i <= 14u) ||
             (specular && ((i >= 8u && i <= 10u) || i == 16u));

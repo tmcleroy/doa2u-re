@@ -602,6 +602,15 @@ static int lighting_tests(void)
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 36u); return 1; }
     CHECK(strcmp(stop_reason, "d3d8:lighting-material:9:7fc00000") == 0);
     *recomp_memory_u32(DEVICE + 0xf24u) = specular_green;
+    /* A NaN diffuse alpha saturates by sign instead of stopping. */
+    const uint32_t diffuse_alpha = *recomp_memory_u32(DEVICE + 0xf0cu);
+    *recomp_memory_u32(DEVICE + 0xf0cu) = 0x7fc08080u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 36u);
+    CHECK(lit->enabled && lit->material_diffuse[3] == 1.0f);
+    *recomp_memory_u32(DEVICE + 0xf0cu) = 0xffc00000u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 36u);
+    CHECK(lit->enabled && lit->material_diffuse[3] == 0.0f);
+    *recomp_memory_u32(DEVICE + 0xf0cu) = diffuse_alpha;
     *recomp_memory_u32(0x3553fcu) = 1u;
     *recomp_memory_u32(0x355400u) = 1u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 36u); return 1; }
