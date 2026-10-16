@@ -111,6 +111,7 @@ constexpr char kDrawShaderPrologue[] =
     "    float4 filter_flags;\n"
     "    float4 filter_texel;\n"
     "    float4 filter_constants[4];\n"
+    "    row_major float4x4 reflection_transform1;\n"
     "}\n"
     "Texture2D guest_texture : register(t0);\n"
     "SamplerState guest_sampler : register(s0);\n"
@@ -226,11 +227,11 @@ void buildDrawShaderSource(
         "    }\n"
         /* Fixed function adds specular after the texture stages, textured or not. */
         "    if (directional_flags.w > 0.5f) shaded.rgb += input.lit_specular;\n"
-        /* A stage-1 mask; z > 1.5 adds its ALPHAKILL. */
+        /* A stage-1 mask; z > 1.5 adds its ALPHAKILL, and z > 2.5 only kills. */
         "    if (reflection_flags.z > 0.5f) {\n"
         "        float mask = alpha_mask.SampleBias(mask_sampler, input.reflection_coord, reflection_flags.w).a;\n"
         "        if (reflection_flags.z > 1.5f && mask == 0.0f) discard;\n"
-        "        shaded.a *= mask;\n"
+        "        if (reflection_flags.z < 2.5f) shaded.a *= mask;\n"
         "    }\n"
         /* NV2A compares rounded 8-bit alpha. Function values follow
            RecompD3dCompareFunc, from NEVER (0) to ALWAYS (7). */
@@ -274,7 +275,10 @@ void buildDrawShaderSource(
               "    output.texcoord2 = input.texcoord2;\n"
               "    output.texcoord3 = input.texcoord3;\n"
             : layout.texcoord_count == 2u ? "    output.texcoord1 = input.texcoord1;\n" : "",
-        layout.texcoord_count == 2u ? "    if (reflection_flags.z > 0.5f) output.reflection_coord = input.texcoord1;\n" : "",
+        /* z > 2.5: a kill-only stage-1 mask reads UV0. */
+        layout.texcoord_count == 2u
+            ? "    if (reflection_flags.z > 0.5f) output.reflection_coord = reflection_flags.z > 2.5f ? input.texcoord : input.texcoord1;\n"
+            : has_texcoord ? "    if (reflection_flags.z > 2.5f) output.reflection_coord = input.texcoord;\n" : "",
         has_texcoord && !layout.pretransformed
             ? (has_normal
                 /* Mesh-UV reflections (x == 2) may pair with stage-0 texgen. */
@@ -292,7 +296,8 @@ void buildDrawShaderSource(
                   "        float3 r = reflect(normalize(eye), n);\n"
                   "        float2 generated = mul(float4(r, 1), reflection_transform).xy;\n"
                   "        if (filter_texel.z > 0.5f) output.texcoord = generated;\n"
-                  "        else output.reflection_coord = generated;\n"
+                  "        if (abs(reflection_flags.x - 1.0f) < 0.5f) output.reflection_coord = filter_texel.z > 0.5f\n"
+                  "            ? mul(float4(r, 1), reflection_transform1).xy : generated;\n"
                   "    }\n"
                 /* shortcut: without a normal stream NV2A reads a zero inline normal, so
                    r is the eye direction; check the inline register if env maps look wrong. */
@@ -308,7 +313,8 @@ void buildDrawShaderSource(
                   "        float3 r = normalize(eye);\n"
                   "        float2 generated = mul(float4(r, 1), reflection_transform).xy;\n"
                   "        if (filter_texel.z > 0.5f) output.texcoord = generated;\n"
-                  "        else output.reflection_coord = generated;\n"
+                  "        if (abs(reflection_flags.x - 1.0f) < 0.5f) output.reflection_coord = filter_texel.z > 0.5f\n"
+                  "            ? mul(float4(r, 1), reflection_transform1).xy : generated;\n"
                   "    }\n")
             : "",
         has_diffuse ? "input.color" : "reflection_diffuse",
@@ -1652,7 +1658,7 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
        normal transforms, material/base, directions/colors/flags, world transforms,
        point positions, attenuation/range and material-scaled ambient, then specular, view and stage (340 floats),
        then post-filter flags, texel size and four constants (24 floats). */
-    constant_desc.ByteWidth = (140u + 192u * 4u + 364u) * sizeof(float);
+    constant_desc.ByteWidth = (140u + 192u * 4u + 380u) * sizeof(float);
     constant_desc.Usage = D3D11_USAGE_DYNAMIC;
     constant_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constant_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -2644,7 +2650,8 @@ RecompD3dPresenterError submitDraw(
     }
     if (draw.stage1_alpha_mask) {
         if (draw.has_alpha_mask || draw.has_reflection || draw.program_count || draw.distortion ||
-            draw.four_tap_filter || layout.texcoord_count != 2u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+            draw.four_tap_filter || (draw.stage1_kill_only ? layout.texcoord_count == 0u
+                : layout.texcoord_count != 2u)) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
         RecompD3dPresenterDrawCommand mask{};
         mask.texture = draw.reflection_texture;
         mask.texture_bytes = draw.reflection_bytes;
@@ -2665,7 +2672,7 @@ RecompD3dPresenterError submitDraw(
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
     recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
-    float draw_constants[140 + 192 * 4 + 364]{};
+    float draw_constants[140 + 192 * 4 + 380]{};
     std::memcpy(draw_constants, draw.transform, sizeof draw.transform);
     std::memcpy(draw_constants + 16, draw.blend_transforms, sizeof draw.blend_transforms);
     if (layout.pretransformed || draw.program_count || screen_offset) {
@@ -2816,8 +2823,11 @@ RecompD3dPresenterError submitDraw(
         draw_constants[136] = draw.reflection_mesh_uv ? 2.0f : 1.0f;
         draw_constants[139] = (draw.reflection_premultiplied ? 1.0f : 0.0f) +
             (draw.reflection_skip_diffuse ? 2.0f : 0.0f);
+        if (draw.texgen_reflection && !draw.reflection_mesh_uv)
+            std::memcpy(draw_constants + 140 + 192 * 4 + 364, draw.reflection_stage1_transform, 64u);
     }
-    if (draw.stage1_alpha_mask) draw_constants[138] = draw.stage1_alpha_kill ? 2.0f : 1.0f;
+    if (draw.stage1_alpha_mask)
+        draw_constants[138] = draw.stage1_kill_only ? 3.0f : draw.stage1_alpha_kill ? 2.0f : 1.0f;
 
     UINT index_offset = 0u;
     if (!uploadRing(presenter, &presenter->draw_index_buffer,

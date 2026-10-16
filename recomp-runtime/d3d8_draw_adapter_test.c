@@ -536,9 +536,18 @@ static int lighting_tests(void)
     invoke(0x348240u, 5u, 3u, VERTICES, 32u);
     CHECK(submitted.data.draw.has_reflection && submitted.data.draw.reflection_mesh_uv &&
         submitted.data.draw.texgen_reflection && submitted.data.draw.reflection_transform[12] == 7.0f);
-    /* Generating on both stages would need two texture matrices. */
+    /* Both stages generating (fight materials 3 and 4 with coordinate mode 1):
+       stage 0 reads TEXTURE0, stage 1 keeps TEXTURE1. */
+    const float texture1[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 3,0,0,1};
+    recomp_guest_store(DEVICE + 0xd20u, texture1, sizeof texture1);
     *recomp_memory_u32(STAGES + 128u + 21u * 4u) = 2u;
     *recomp_memory_u32(STAGES + 128u + 28u * 4u) = 0x30000u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    CHECK(submitted.data.draw.has_reflection && !submitted.data.draw.reflection_mesh_uv &&
+        submitted.data.draw.texgen_reflection && submitted.data.draw.reflection_transform[12] == 7.0f &&
+        submitted.data.draw.reflection_stage1_transform[12] == 3.0f);
+    /* Other stage-1 coordinate sources stay guarded. */
+    *recomp_memory_u32(STAGES + 128u + 28u * 4u) = 0x10000u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
     CHECK(strncmp(stop_reason, "d3d8:draw-texture-stages:", 25) == 0);
     recomp_guest_store(STAGES, saved_stages, sizeof saved_stages);
@@ -892,10 +901,17 @@ static int effect_tests(void)
         !draw->stage1_alpha_mask && !draw->directional.enabled && draw->directional.stage_mode);
     CHECK(draw->directional.stage[0] == 1.0f && draw->directional.stage[1] == 0.0f &&
         draw->directional.stage[2] == 1.0f && draw->directional.stage[3] == 1.0f);
-    /* A bound stage-1 texture would apply its ALPHAKILL. */
+    /* FUN_0027be10 then binds a stage-1 texture (0x27c370) that its ops never
+       read; it only applies its ALPHAKILL at UV0. */
     *recomp_memory_u32(DEVICE + 0xf8cu) = 0x7000u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 24u);
+    CHECK(submits == 2u && draw->stage1_alpha_mask && draw->stage1_alpha_kill && draw->stage1_kill_only &&
+        draw->modulate_texture_factor_alpha && draw->texgen_projected &&
+        draw->reflection_bytes == ram + texture.data);
+    set_stage(1u, 28u, 1u);
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 24u); return 1; }
-    CHECK(submits == 1u && strncmp(stop_reason, "d3d8:draw-texture-stages:", 25) == 0);
+    CHECK(submits == 2u && strncmp(stop_reason, "d3d8:stage1-mask:", 17) == 0);
+    set_stage(1u, 28u, 0u);
     /* Pass 3: a pretransformed quad, stage-0 alpha MODULATE(TFACTOR, CURRENT)
        and stage 1 alpha MODULATE(TEXTURE, CURRENT) over UV1 with ALPHAKILL. */
     if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected stop: %s\n", stop_reason); return 1; }
@@ -903,7 +919,7 @@ static int effect_tests(void)
     set_stage(1u, 18u, 2u); set_stage(1u, 28u, 1u); set_stage(1u, 0u, 3u);
     *recomp_memory_u32(DEVICE + 0x798u) = 0x244u;
     invoke(0x348240u, 6u, 4u, VERTICES, 36u);
-    CHECK(submits == 2u && draw->stage1_alpha_mask && draw->stage1_alpha_kill &&
+    CHECK(submits == 3u && draw->stage1_alpha_mask && draw->stage1_alpha_kill && !draw->stage1_kill_only &&
         draw->modulate_texture_factor_alpha && !draw->texgen_projected &&
         draw->reflection_bytes == ram + texture.data && draw->reflection_address_u == 3u);
     CHECK(draw->directional.stage[0] == 1.0f && draw->directional.stage[1] == 0.0f &&
@@ -911,11 +927,11 @@ static int effect_tests(void)
     /* An unbound mask compiles to a pass-through (0x352e46). */
     *recomp_memory_u32(DEVICE + 0xf8cu) = 0u;
     invoke(0x348240u, 6u, 4u, VERTICES, 36u);
-    CHECK(submits == 3u && !draw->stage1_alpha_mask && draw->modulate_texture_factor_alpha);
+    CHECK(submits == 4u && !draw->stage1_alpha_mask && draw->modulate_texture_factor_alpha);
     *recomp_memory_u32(DEVICE + 0xf8cu) = 0x7000u;
     set_stage(1u, 28u, 0u);
     if (setjmp(stopped) == 0) { invoke(0x348240u, 6u, 4u, VERTICES, 36u); return 1; }
-    CHECK(submits == 3u && strncmp(stop_reason, "d3d8:stage1-mask:", 17) == 0);
+    CHECK(submits == 4u && strncmp(stop_reason, "d3d8:stage1-mask:", 17) == 0);
     return 0;
 }
 

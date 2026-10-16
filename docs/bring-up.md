@@ -148,14 +148,18 @@ MODULATE(TEXTURE, CURRENT), where stage-0 CURRENT is diffuse. Its texcoords come
 from TCI_CAMERASPACEPOSITION with COUNT3|PROJECTED. For that case the TEXTURE0
 upload (0x34f7d0, case 0x331) emits S, T and Q as matrix columns 0, 1 and 2.
 The presenter interpolates (s, t) and q and divides per pixel. Stage 1 keeps
-the color and applies alpha MODULATE(TFACTOR, CURRENT). FUN_0027c400 then draws
+the color and applies alpha MODULATE(TFACTOR, CURRENT) with ALPHAKILL. Per
+object, FUN_0027be10 binds a stage-1 texture (0x27c370, table 0xeaad20) before
+its fan (DrawVerticesUP, 0x27c388) or model (FUN_002878b0 without the material
+binder). Stage 1's ops never read it, so it only discards pixels whose texel
+alpha at UV0 (TCI 0) is zero; alpha is not multiplied. FUN_0027c400 then draws
 a pretransformed quad (FVF 0x244). Its stage-0 alpha takes TFACTOR times diffuse.
 Stage 1 applies alpha MODULATE(TEXTURE, CURRENT) from a mask sampled at UV1,
 with ALPHAKILL, which discards zero mask alpha. An unbound mask passes
 through, as 0x352e46 compiles it. Unlit stage-0 selection reuses the lit
 path's per-channel choice of texture and diffuse. A bound stage-1 texture
-under the TFACTOR variant, a mask on another coordinate set or a linear or
-paletted mask still stop.
+under the TFACTOR variant on another coordinate set, a mask on another
+coordinate set or a linear or paletted mask still stop.
 The fixed-function draw snapshot
 binds up to eight directional/point light slots, front material and ambient,
 normalization, blended world/normal transforms and infinite-view specular.
@@ -186,7 +190,14 @@ Other fight chrome
 environment through camera-space reflection texgen (TEXTURE0 matrix) and
 stage 1 blends the mesh-UV0 base by its own alpha. The combiner is the same,
 so the presenter runs stage-0 texgen alongside the mesh-UV blend. Texgen on
-both stages would need two texture matrices and still stops. Generated
+both stages (material modes 3, 4 and 5 with coordinate mode 1 on stages 0 and
+1, byte +0xf through 0x7b018c) generates one camera-space reflection vector and
+transforms it by each stage's own matrix: TEXTURE0 for stage 0, which
+FUN_00289680 sets to the 0.5/-0.5 sphere-map scale and offset, and TEXTURE1
+for stage 1, which the game leaves at Reset's identity (FUN_0034bc80) apart
+from the FUN_00268de0/FUN_00269010 and FUN_0027b700/FUN_0027b900 save and
+restore pairs. Stage 2's MODULATE(DIFFUSE,
+CURRENT) is the blend's final diffuse multiply. Generated
 coordinates on a draw without a normal stream (fight FVF 0x142) take the zero
 inline normal: no SDK path writes v2 inline data (0x34aac0 sets only v0 and v9
 through SetVertexData2f), so the reflection vector is the eye direction.

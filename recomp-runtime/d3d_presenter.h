@@ -192,6 +192,8 @@ typedef struct RecompD3dPresenterDrawCommand {
        multiplies alpha; with ALPHAKILL a zero texel alpha discards. */
     bool stage1_alpha_mask;
     bool stage1_alpha_kill;
+    /* The stage-1 texture only applies its ALPHAKILL, at UV0; alpha is not multiplied. */
+    bool stage1_kill_only;
     /* Storage aliases the current guest backbuffer, whose pixels are host-owned. */
     bool texture_is_backbuffer;
     /* GetBackBuffer(-1): the frame Present last showed, not the one in progress. */
@@ -227,6 +229,9 @@ typedef struct RecompD3dPresenterDrawCommand {
     float reflection_world_view[16];
     float reflection_normal[16];
     float reflection_transform[16];
+    /* TEXTURE1 for stage-1 generated coordinates when stage 0 also generates
+       (texgen_reflection with has_reflection and !reflection_mesh_uv). */
+    float reflection_stage1_transform[16];
     float reflection_diffuse[4];
     RecompD3dPresenterTarget target;
 } RecompD3dPresenterDrawCommand;

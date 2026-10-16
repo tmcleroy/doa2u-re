@@ -390,7 +390,9 @@ static bool testLighting()
 // texgen: stage 0 samples the base at generated coordinates (TEXTURE0 matrix)
 // while the half-alpha environment keeps mesh UV, as the fight's chrome does.
 // uv_transform: no reflection; UV0 is (u, v, 1, 0) times TEXTURE0.
-static bool testReflectionAddress(bool texgen, bool uv_transform = false, bool skip_diffuse = false)
+// stage1_texgen: with texgen, stage 1 also generates through its own TEXTURE1 matrix.
+static bool testReflectionAddress(bool texgen, bool uv_transform = false, bool skip_diffuse = false,
+    bool stage1_texgen = false)
 {
     char folder[MAX_PATH], path[MAX_PATH];
     if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "env", 0, path)) return false;
@@ -451,6 +453,15 @@ static bool testReflectionAddress(bool texgen, bool uv_transform = false, bool s
             draw.reflection_transform[13] = 0.25f;
             draw.reflection_transform[15] = 1;
         }
+        if (stage1_texgen) {
+            // Base U -0.25 wraps to yellow; environment U 0.75 picks green, and TEXTURE0
+            // or an ungenerated (0, 0) coordinate would clamp to red.
+            draw.reflection_mesh_uv = false;
+            draw.reflection_transform[12] = -0.25f;
+            draw.reflection_stage1_transform[12] = 0.75f;
+            draw.reflection_stage1_transform[13] = 0.25f;
+            draw.reflection_stage1_transform[15] = 1;
+        }
         if (uv_transform) {
             draw.texgen_reflection = draw.has_reflection = draw.reflection_mesh_uv = false;
             draw.texture_transform_uv = true;
@@ -475,6 +486,8 @@ static bool testReflectionAddress(bool texgen, bool uv_transform = false, bool s
                 passed &= std::fread(bgr, 1, 3, file) == 3;
                 // U 0.25 and 1.25 move to the yellow texel centre (0.75, wrapping).
                 const bool pixel_ok = uv_transform ? bgr[2] > 245 && bgr[1] > 245 && bgr[0] < 10
+                    : stage1_texgen
+                    ? bgr[0] < 10 && bgr[1] > 250 && std::abs(int(bgr[2]) - 128) <= 3
                     : texgen
                     ? bgr[0] < 10 && std::abs(int(bgr[2 - i]) - 255) <= 3 && std::abs(int(bgr[1 + i]) - 128) <= 3
                     : i == 0 ? bgr[2] > 245 && bgr[1] < 10 : bgr[1] > 245 && bgr[2] < 10;
@@ -487,7 +500,8 @@ static bool testReflectionAddress(bool texgen, bool uv_transform = false, bool s
     }
     _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
     DeleteFileA(path);
-    if (passed) std::puts(skip_diffuse ? "PASS reflection stage-2 pass-through skips the final diffuse"
+    if (passed) std::puts(stage1_texgen ? "PASS both stages generate through their own texture matrices"
+        : skip_diffuse ? "PASS reflection stage-2 pass-through skips the final diffuse"
         : uv_transform ? "PASS stage-0 texture matrix translates 2D UV by its third row"
         : texgen ? "PASS stage-0 texgen pairs with a mesh-UV reflection blend"
         : "PASS reflection texture samples with its own stage address mode");
@@ -868,24 +882,26 @@ static bool testStageEffect()
         passed &= expect("effect clear", d3d11_backend_submit(presenter, &clear));
         const uint16_t indices[] = {0, 1, 2, 3};
         const uint32_t green = 0xff00ff00u;
-        const uint32_t masks[2][2] = {{0xff000000u, 0x80000000u}, {0xff000000u, 0x00000000u}};
+        // Pass 2 is FUN_0027be10's kill-only mask over UV0 (FVF 0x144).
+        const uint32_t masks[3][2] = {{0xff000000u, 0x80000000u}, {0xff000000u, 0x00000000u},
+            {0x80000000u, 0x00000000u}};
         struct Screen { float x, y, z, rhw; uint32_t diffuse; float u0, v0, u1, v1; };
-        for (unsigned pass = 0; pass < 2 && passed; ++pass) {
+        for (unsigned pass = 0; pass < 3 && passed; ++pass) {
             Screen quad[4];
             for (unsigned i = 0; i < 4; ++i)
                 quad[i] = {20.0f + pass * 60 + (i & 1) * 40, 20.0f + (i >> 1) * 40, 0, 1, 0xffff0000u,
-                    0.5f, 0.5f, float(i & 1), 0.5f};
+                    pass == 2 ? float(i & 1) : 0.5f, 0.5f, pass == 2 ? 0.5f : float(i & 1), 0.5f};
             RecompD3dPresenterCommand command{RECOMP_D3D_PRESENTER_COMMAND_DRAW};
             auto &draw = command.data.draw;
             draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
             draw.index_count = draw.vertex_count = 4;
             draw.triangle_count = 2;
             draw.vertex_stride = sizeof(Screen);
-            draw.fvf = 0x244u;
+            draw.fvf = pass == 2 ? 0x144u : 0x244u;
             draw.vertex_bytes = quad;
             draw.index_bytes = indices;
             draw.blend.color_write_mask = 15;
-            draw.blend.blend_enable = pass == 0;
+            draw.blend.blend_enable = pass != 1;
             draw.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
             draw.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
             draw.blend.op = RECOMP_D3D_BLEND_OP_ADD;
@@ -909,6 +925,7 @@ static bool testStageEffect()
             draw.texture_factor = 0x80ffffffu;
             draw.modulate_texture_factor_alpha = true;
             draw.stage1_alpha_mask = draw.stage1_alpha_kill = true;
+            draw.stage1_kill_only = pass == 2;
             passed &= expect("masked overlay draw", d3d11_backend_submit(presenter, &command));
         }
         // Eight texels, red then green; s / q = (x + 1) / 2 across the screen.
@@ -959,10 +976,11 @@ static bool testStageEffect()
         passed &= expect("effect present", d3d11_backend_submit(presenter, &present));
         passed &= expect("destroy stage effect", d3d11_backend_destroy(&presenter));
         if (FILE *file = std::fopen(path, "rb")) {
-            // {x, y, R, G}: masked green at alpha 0.5 and 0.25, then 1.0 and killed;
+            // {x, y, R, G}: masked green at alpha 0.5 and 0.25, then 1.0 and killed, then
+            // kill-only at factor alpha 0.5 and killed;
             // the projected quad reads red at s/q 0.31 (s 0.63 would be green), green at 0.69.
             const int pixels[][4] = {{25, 40, 0, 128}, {55, 40, 0, 64}, {85, 40, 0, 255}, {115, 40, 0, 0},
-                {100, 200, 255, 0}, {220, 200, 0, 255}};
+                {145, 40, 0, 128}, {175, 40, 0, 0}, {100, 200, 255, 0}, {220, 200, 0, 255}};
             for (const auto &pixel : pixels) {
                 unsigned char bgr[3]{};
                 std::fseek(file, 54 + (239 - pixel[1]) * 960 + pixel[0] * 3, SEEK_SET);
@@ -978,7 +996,7 @@ static bool testStageEffect()
     }
     _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
     DeleteFileA(path);
-    if (passed) std::puts("PASS stage-effect overlays: texture select, factor alpha, UV1 mask/kill, projected texgen");
+    if (passed) std::puts("PASS stage-effect overlays: texture select, factor alpha, UV1 mask/kill, UV0 kill, projected texgen");
     return passed;
 }
 
@@ -1191,7 +1209,7 @@ int main()
     recomp_d3d_presenter_set_immediate_present(false);
     if (!testTicks() || !testCapturedDraw() || !testMipSampler() || !testLighting() ||
         !testReflectionAddress(false) || !testReflectionAddress(true) || !testReflectionAddress(true, true) ||
-        !testReflectionAddress(false, false, true) ||
+        !testReflectionAddress(false, false, true) || !testReflectionAddress(true, false, false, true) ||
         !testScreenSpaceOffsetAndScissor() || !testBrightPass() || !testDistortion() || !testStageEffect() ||
         !testProgramMaxSlt() ||
         !testVisibility() ||

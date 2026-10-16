@@ -567,14 +567,18 @@ static void attach_reflection(uint32_t device, const RecompD3dVertexLayout *layo
 }
 
 /* Stage-1 alpha mask over UV1. An op that reads an empty texture slot
-   compiles to a CURRENT pass-through (0x352e46), so an unbound mask is a no-op. */
+   compiles to a CURRENT pass-through (0x352e46), so an unbound mask is a no-op.
+   kill_only: the stage's ops ignore its texture, which applies only its
+   ALPHAKILL at UV0 (FUN_0027be10 binds it at 0x27c370). */
 static void stage1_mask(uint32_t device, const RecompD3dVertexLayout *layout, uint32_t stage[][32],
-    RecompD3dPresenterDrawCommand *draw)
+    bool kill_only, RecompD3dPresenterDrawCommand *draw)
 {
     RecompD3dPresenterDrawCommand mask = {0};
     attach_texture(device, 1u, &mask);
     if (!mask.has_texture) return;
-    if (layout->texcoord_count != 2u || stage[1][28] != 1u || stage[1][21] != 0u || stage[1][20] != 0u ||
+    if ((kill_only ? layout->texcoord_count == 0u || stage[1][28] != 0u
+                   : layout->texcoord_count != 2u || stage[1][28] != 1u) ||
+        stage[1][21] != 0u || stage[1][20] != 0u ||
         mask.texture.linear || mask.palette_bytes != NULL || stage[1][3] != 2u || stage[1][4] != 2u ||
         stage[1][9] != 0u || stage[1][10] != 0u || (stage[1][11] != 0u && stage[1][11] != 4u) ||
         (mask.texture.mip_levels > 1u && stage[1][5] != 1u && stage[1][5] != 2u))
@@ -591,6 +595,7 @@ static void stage1_mask(uint32_t device, const RecompD3dVertexLayout *layout, ui
     draw->reflection_mip_lod_bias = lod_bias(stage[1][6]);
     draw->stage1_alpha_mask = true;
     draw->stage1_alpha_kill = stage[1][11] == 4u;
+    draw->stage1_kill_only = kill_only;
 }
 
 static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
@@ -664,10 +669,9 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
                 stage[0][12], stage[0][14], stage[0][15], stage[0][16], stage[0][18], stage[0][19],
                 draw->fvf, *recomp_memory_u32(recomp_runtime.registers.esp));
         /* TEXTURETRANSFORMFLAGS COUNT2 over TCI_CAMERASPACEREFLECTIONVECTOR, alone
-           or under a reflection material whose stage 1 reads mesh UV0. */
+           or under a reflection material. */
         const bool texgen = stage[0][21] == 2u && stage[0][28] == 0x30000u &&
-            (!draw->has_reflection || draw->reflection_mesh_uv) && !layout->pretransformed &&
-            layout->blend_weight_count == 0u;
+            !layout->pretransformed && layout->blend_weight_count == 0u;
         /* COUNT2 over 2D UV0: the texture-matrix upload (0x34f7d0, case 0x220)
            emits s = (m00, m10, 0, m20), t = (m01, m11, 0, m21) and q = 1. */
         const bool uv_transform = stage[0][21] == 2u && stage[0][28] == 0u &&
@@ -680,6 +684,10 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
             (!texgen && !uv_transform && !projected && (stage[0][21] != 0u || stage[0][28] != 0u)))
             recomp_stop(2, "d3d8:draw-texture-coordinates");
         if (texgen || projected) {
+            /* Both stages generating: stage 1 keeps TEXTURE1 (FUN_00289680 sets only TEXTURE0). */
+            if (draw->has_reflection && !draw->reflection_mesh_uv)
+                memcpy(draw->reflection_stage1_transform, draw->reflection_transform,
+                    sizeof draw->reflection_stage1_transform);
             reflection_inputs(device, 0xce0u, draw);
             draw->texgen_reflection = texgen;
             draw->texgen_projected = projected;
@@ -697,10 +705,11 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
            by its own texture (FUN_0027be10, FUN_0027c400). */
         const bool stage1_alpha = !draw->has_reflection && stage[1][12] == 2u && stage[1][14] == 1u &&
             stage[1][16] == 4u && stage[1][19] == 1u && stage[2][12] == 1u &&
-            ((stage[1][18] == 3u && !alpha_tfactor &&
-              (stage[1][11] == 0u || *recomp_memory_u32(device + 0xf8cu) == 0u)) || stage[1][18] == 2u);
+            ((stage[1][18] == 3u && !alpha_tfactor && (stage[1][11] == 0u || stage[1][11] == 4u)) ||
+             stage[1][18] == 2u);
         if (stage1_alpha && stage[1][18] == 3u) alpha_tfactor = true;
-        if (stage1_alpha && stage[1][18] == 2u) stage1_mask(device, layout, stage, draw);
+        if (stage1_alpha && (stage[1][18] == 2u || stage[1][11] == 4u))
+            stage1_mask(device, layout, stage, stage[1][18] == 3u, draw);
         draw->modulate_texture_factor_alpha = alpha_tfactor;
         /* The presenter applies one texture-factor mode per draw. */
         if ((alpha_tfactor && (draw->modulate_texture_factor || draw->texture_factor_modulate ||
