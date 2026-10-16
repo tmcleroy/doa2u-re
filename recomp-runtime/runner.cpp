@@ -56,11 +56,22 @@ int main(int argc, char **argv)
             }
             continue;
         }
+        if (argument == "--input-a-pulse-at" && i + 1 < argc) {
+            const std::string value = argv[++i];
+            std::uint64_t poll = 0u;
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), poll);
+            if (parsed.ec != std::errc() || parsed.ptr != value.data() + value.size() ||
+                !recomp_input_pulse_source_add_a_poll(&inputPulses, poll)) {
+                std::cerr << "recomp runner: invalid A poll or too many pulses\n";
+                return 64;
+            }
+            continue;
+        }
         if ((argument != "--xbe" && argument != "--disc-root" &&
              argument != "--expect-stop" && argument != "--milestone-log") || i + 1 >= argc) {
             std::cerr << "usage: recomp_program_runner --xbe <path> [--disc-root <path>]"
                 " [--expect-stop <id>] [--milestone-log <path>]"
-                " [--input-start-pulse-at <poll>]\n";
+                " [--input-start-pulse-at <poll>] [--input-a-pulse-at <poll>]\n";
             return 64;
         }
         const std::string value = argv[++i];

@@ -490,7 +490,12 @@ static void reset_device(void)
     RecompD3dSurfaceHeader colors[2], depth;
     if (parameters == 0u) recomp_stop(2, "d3d8:reset-pointer");
     load(&request.presentation, parameters, sizeof request.presentation);
-    if (!recomp_d3d_create_request_supported(&request)) recomp_stop(2, "d3d8:reset-mode");
+    if (!recomp_d3d_create_request_supported(&request)) {
+        const uint32_t *words = (const uint32_t *)(const void *)&request.presentation;
+        for (uint32_t i = 0u; i < sizeof request.presentation / sizeof *words; ++i)
+            fprintf(stderr, "recomp d3d8: reset-presentation[%u]=%08x\n", i, words[i]);
+        recomp_stop(2, "d3d8:reset-mode");
+    }
     for (uint32_t i = 0u; i < 2u; ++i)
         load(&colors[i], request.presentation.buffer_surfaces[i], sizeof colors[i]);
     load(&depth, request.presentation.depth_stencil_surface, sizeof depth);
