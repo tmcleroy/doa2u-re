@@ -497,7 +497,7 @@ static bool testLighting()
 // uv_transform: no reflection; UV0 is (u, v, 1, 0) times TEXTURE0.
 // stage1_texgen: with texgen, stage 1 also generates through its own TEXTURE1 matrix.
 static bool testReflectionAddress(bool texgen, bool uv_transform = false, bool skip_diffuse = false,
-    bool stage1_texgen = false)
+    bool stage1_texgen = false, float skin_weight = -1.0f)
 {
     char folder[MAX_PATH], path[MAX_PATH];
     if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "env", 0, path)) return false;
@@ -509,6 +509,12 @@ static bool testReflectionAddress(bool texgen, bool uv_transform = false, bool s
         const Vertex vertices[] = {
             {-1, 1, 0.5f, 0, 0, 1, 0, 0}, {1, 1, 0.5f, 0, 0, 1, 2, 0},
             {-1, -1, 0.5f, 0, 0, 1, 0, 1}, {1, -1, 0.5f, 0, 0, 1, 2, 1}};
+        struct SkinVertex { float x, y, z, weight, nx, ny, nz, u, v; };
+        SkinVertex skinned[4];
+        for (unsigned i = 0; i < 4; ++i) {
+            const auto &v = vertices[i];
+            skinned[i] = {v.x, v.y, v.z, skin_weight, v.nx, v.ny, v.nz, v.u, v.v};
+        }
         const uint16_t indices[] = {0, 1, 2, 3};
         const uint32_t base_pixels[2] = {0xff0000ffu, 0xffffff00u};
         const uint32_t environment[2] = {texgen ? 0x80ff0000u : 0xffff0000u,
@@ -576,6 +582,24 @@ static bool testReflectionAddress(bool texgen, bool uv_transform = false, bool s
             draw.reflection_transform[8] = 0.5f;
             draw.reflection_transform[12] = 0.125f;
         }
+        if (skin_weight >= 0.0f) {
+            draw.fvf = 0x116u;
+            draw.vertex_bytes = skinned;
+            draw.vertex_stride = sizeof(SkinVertex);
+            draw.blend_weight_count = 1u;
+            std::memcpy(draw.blend_transforms[0], draw.transform, sizeof draw.transform);
+            draw.reflection_mesh_uv = false;
+            draw.reflection_normalize = true;
+            // Endpoint eyes (1,0,1), (-1,0,1) and normals Z, X reflect right.
+            // Their equal-weight blend reflects left; either missing blend fails.
+            draw.reflection_world_view[12] = draw.reflection_world_view[14] = 1;
+            draw.reflection_blend_world_view[0][12] = -1;
+            draw.reflection_blend_world_view[0][14] = 1;
+            draw.reflection_normal[10] = 1;
+            draw.reflection_blend_normal[0][8] = 1;
+            draw.reflection_transform[0] = draw.reflection_transform[12] = 0.5f;
+            draw.reflection_transform[13] = 0.25f;
+        }
         passed &= expect("clamped reflection draw", d3d11_backend_submit(presenter, &command));
         RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
         present.data.present = {5, 1};
@@ -590,7 +614,10 @@ static bool testReflectionAddress(bool texgen, bool uv_transform = false, bool s
                 std::fseek(file, 54 + (239 - 120) * 960 + xs[i] * 3, SEEK_SET);
                 passed &= std::fread(bgr, 1, 3, file) == 3;
                 // U 0.25 and 1.25 move to the yellow texel centre (0.75, wrapping).
-                const bool pixel_ok = uv_transform ? bgr[2] > 245 && bgr[1] > 245 && bgr[0] < 10
+                const bool pixel_ok = skin_weight >= 0.0f
+                    ? bgr[0] < 10 && (skin_weight == 0.5f
+                        ? bgr[2] > 245 && bgr[1] < 10 : bgr[1] > 245 && bgr[2] < 10)
+                    : uv_transform ? bgr[2] > 245 && bgr[1] > 245 && bgr[0] < 10
                     : stage1_texgen
                     ? bgr[0] < 10 && bgr[1] > 250 && std::abs(int(bgr[2]) - 128) <= 3
                     : texgen
@@ -605,7 +632,8 @@ static bool testReflectionAddress(bool texgen, bool uv_transform = false, bool s
     }
     _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
     DeleteFileA(path);
-    if (passed) std::puts(stage1_texgen ? "PASS both stages generate through their own texture matrices"
+    if (passed) std::puts(skin_weight >= 0.0f ? "PASS skinned reflection eye, normal and remainder weights"
+        : stage1_texgen ? "PASS both stages generate through their own texture matrices"
         : skip_diffuse ? "PASS reflection stage-2 pass-through skips the final diffuse"
         : uv_transform ? "PASS stage-0 texture matrix translates 2D UV by its third row"
         : texgen ? "PASS stage-0 texgen pairs with a mesh-UV reflection blend"
@@ -1599,6 +1627,9 @@ int main()
     if (!testTicks() || !testCapturedDraw() || !testMipSampler() || !testLines() || !testLighting() ||
         !testReflectionAddress(false) || !testReflectionAddress(true) || !testReflectionAddress(true, true) ||
         !testReflectionAddress(false, false, true) || !testReflectionAddress(true, false, false, true) ||
+        !testReflectionAddress(false, false, false, false, 0.0f) ||
+        !testReflectionAddress(false, false, false, false, 0.5f) ||
+        !testReflectionAddress(false, false, false, false, 1.0f) ||
         !testScreenSpaceOffsetAndScissor() || !testBrightPass() || !testDistortion() || !testStageEffect() ||
         !testProgramMaxSlt() ||
         !testProgramLitSge() ||

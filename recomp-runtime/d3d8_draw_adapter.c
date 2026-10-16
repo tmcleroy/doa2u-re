@@ -642,15 +642,30 @@ static void attach_lighting(uint32_t device, const RecompD3dVertexLayout *layout
 static void reflection_inputs(uint32_t device, uint32_t texture_matrix, RecompD3dPresenterDrawCommand *draw)
 {
     float world[16], view[16];
-    recomp_guest_load(world, device + 0xde0u, sizeof world);
     recomp_guest_load(view, device + 0xc60u, sizeof view);
-    multiply(world, view, draw->reflection_world_view);
-    if (!recomp_d3d_normal_transform(draw->reflection_world_view, draw->reflection_normal))
-        recomp_stop(2, "d3d8:reflection-normal");
+    draw->reflection_normalize = *recomp_memory_u32(0x355498u) != 0u;
+    /* 0x3502d0 uploads world-view and normal matrices for every blend influence. */
+    for (uint32_t i = 0u; i <= draw->blend_weight_count; ++i) {
+        float *wv = i == 0u ? draw->reflection_world_view : draw->reflection_blend_world_view[i - 1u];
+        float *normal = i == 0u ? draw->reflection_normal : draw->reflection_blend_normal[i - 1u];
+        recomp_guest_load(world, device + 0xde0u + i * 64u, sizeof world);
+        multiply(world, view, wv);
+        if (!recomp_d3d_normal_transform(wv, normal)) recomp_stop(2, "d3d8:reflection-normal");
+        /* With normalization, 0x34b530 omits |det| division. Its per-matrix
+           scale matters when normals from different influences are blended. */
+        if (draw->reflection_normalize && draw->blend_weight_count != 0u) {
+            const float determinant = wv[0] * (wv[5] * wv[10] - wv[6] * wv[9]) -
+                wv[1] * (wv[4] * wv[10] - wv[6] * wv[8]) +
+                wv[2] * (wv[4] * wv[9] - wv[5] * wv[8]);
+            for (uint32_t j = 0u; j < 16u; ++j) {
+                normal[j] *= fabsf(determinant);
+                if (!isfinite(normal[j])) recomp_stop(2, "d3d8:reflection-normal");
+            }
+        }
+    }
     recomp_guest_load(draw->reflection_transform, device + texture_matrix, sizeof draw->reflection_transform);
     for (uint32_t i = 0u; i < 16u; ++i)
         if (!isfinite(draw->reflection_transform[i])) recomp_stop(2, "d3d8:reflection-transform");
-    draw->reflection_normalize = *recomp_memory_u32(0x355498u) != 0u;
 }
 
 static void attach_reflection(uint32_t device, const RecompD3dVertexLayout *layout,
@@ -659,10 +674,9 @@ static void attach_reflection(uint32_t device, const RecompD3dVertexLayout *layo
     uint32_t stages[4][32];
     recomp_guest_load(stages, STAGES, sizeof stages);
     if (!recomp_d3d_reflection_material(stages)) return;
-    /* shortcut: generated reflection coordinates need blended world/view inputs before admitting skinning.
-       Without a normal stream the presenter's zero inline normal applies: no SDK
+    /* Without a normal stream the presenter's zero inline normal applies: no SDK
        path writes v2 inline data (only 0x34aac0's v0/v9 via SetVertexData2f). */
-    if (layout->pretransformed || layout->blend_weight_count != 0u || layout->texcoord_count == 0u ||
+    if (layout->pretransformed || layout->texcoord_count == 0u ||
         !draw->has_texture ||
         draw->texture.linear || draw->texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8 ||
         draw->palette_bytes != NULL)
@@ -805,7 +819,7 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
         /* TEXTURETRANSFORMFLAGS COUNT2 over TCI_CAMERASPACEREFLECTIONVECTOR, alone
            or under a reflection material. */
         const bool texgen = stage[0][21] == 2u && stage[0][28] == 0x30000u &&
-            !layout->pretransformed && layout->blend_weight_count == 0u;
+            !layout->pretransformed;
         /* COUNT2 over 2D UV0: the texture-matrix upload (0x34f7d0, case 0x220)
            emits s = (m00, m10, 0, m20), t = (m01, m11, 0, m21) and q = 1. */
         const bool uv_transform = stage[0][21] == 2u && stage[0][28] == 0u &&

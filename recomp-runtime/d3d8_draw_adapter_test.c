@@ -540,6 +540,34 @@ static int lighting_tests(void)
     CHECK(submitted.data.draw.reflection_bytes == ram + texture.data &&
         submitted.data.draw.reflection_byte_count == 64u);
     CHECK(!submitted.data.draw.reflection_skip_diffuse);
+    /* FVF XYZB1|NORMAL|TEX1 also reaches the generated environment stage. */
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x116u;
+    *recomp_memory_u32(0x355484u) = 1u;
+    *recomp_memory_u32(0x355498u) = 0u;
+    const float reflection_world1[16] = {1,0,0,0, 0,2,0,0, 0,0,1,0, 9,3,0,1};
+    recomp_guest_store(DEVICE + 0xe20u, reflection_world1, sizeof reflection_world1);
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected skinned reflection stop: %s\n", stop_reason); return 1; }
+    invoke(0x348240u, 5u, 3u, VERTICES, 36u);
+    CHECK(submitted.data.draw.has_reflection && submitted.data.draw.blend_weight_count == 1u);
+    CHECK(submitted.data.draw.reflection_blend_world_view[0][12] == 9.0f &&
+        submitted.data.draw.reflection_blend_normal[0][5] == 0.5f);
+    *recomp_memory_u32(0x355498u) = 1u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 36u);
+    CHECK(submitted.data.draw.reflection_normalize &&
+        submitted.data.draw.reflection_blend_normal[0][0] == 2.0f &&
+        submitted.data.draw.reflection_blend_normal[0][5] == 1.0f);
+    *recomp_memory_u32(0x355498u) = 0u;
+    for (uint32_t weights = 2u; weights <= 3u; ++weights) {
+        recomp_guest_store(DEVICE + 0xde0u + weights * 64u, reflection_world1, sizeof reflection_world1);
+        *recomp_memory_u32(DEVICE + 0x798u) = 0x114u + weights * 2u;
+        *recomp_memory_u32(0x355484u) = weights;
+        invoke(0x348240u, 5u, 3u, VERTICES, 32u + weights * 4u);
+        CHECK(submitted.data.draw.blend_weight_count == weights &&
+            submitted.data.draw.reflection_blend_world_view[weights - 1u][12] == 9.0f);
+    }
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x112u;
+    *recomp_memory_u32(0x355484u) = 0u;
+    *recomp_memory_u32(0x355498u) = 1u;
     /* Material modes 9 and 11 end with MODULATE(TEXTURE, CURRENT); without a
        stage-2 texture 0x352e46 compiles it to a CURRENT pass-through. */
     if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected stage-2 stop: %s\n", stop_reason); return 1; }

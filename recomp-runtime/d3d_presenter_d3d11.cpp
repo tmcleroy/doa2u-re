@@ -115,6 +115,8 @@ constexpr char kDrawShaderPrologue[] =
     "    float4 bump_matrix[2];\n"
     "    float4 bump_fog;\n"
     "    float4 fog_color;\n"
+    "    row_major float4x4 reflection_blend_world_view[3];\n"
+    "    row_major float4x4 reflection_blend_normal[3];\n"
     "}\n"
     "Texture2D guest_texture : register(t0);\n"
     "SamplerState guest_sampler : register(s0);\n"
@@ -1438,6 +1440,26 @@ bool drawShaderSource(
     char source[8192];
     buildDrawShaderSource(layout, source, sizeof source);
     compiled_source = source;
+    if (layout.blend_weight_count != 0u && !layout.pretransformed &&
+        layout.texcoord_offset != RECOMP_D3D_FVF_ABSENT) {
+        std::string reflection = "        if (blend_flags.x > 0.5f) {\n"
+            "            eye *= input.weights[0];\n";
+        const bool normal = layout.normal_offset != RECOMP_D3D_FVF_ABSENT;
+        if (normal) reflection += "            n *= input.weights[0];\n";
+        reflection += "            float remainder = 1.0f - input.weights[0];\n";
+        for (uint32_t i = 1u; i <= layout.blend_weight_count; ++i) {
+            const auto matrix = std::to_string(i - 1u);
+            const auto weight = i == layout.blend_weight_count ? "remainder" :
+                "input.weights[" + std::to_string(i) + "]";
+            reflection += "            eye += " + weight + " * mul(float4(input.position, 1), reflection_blend_world_view[" + matrix + "]).xyz;\n";
+            if (normal) reflection += "            n += " + weight + " * mul(float4(input.normal, 0), reflection_blend_normal[" + matrix + "]).xyz;\n";
+            if (i != layout.blend_weight_count) reflection += "            remainder -= " + weight + ";\n";
+        }
+        reflection += "        }\n";
+        const auto point = compiled_source.find(normal ? "        if (reflection_flags.y" : "        float3 r = normalize(eye);");
+        if (point == std::string::npos) return false;
+        compiled_source.insert(point, reflection);
+    }
     if (layout.normal_offset != RECOMP_D3D_FVF_ABSENT && !layout.pretransformed &&
         layout.diffuse_offset == RECOMP_D3D_FVF_ABSENT) {
         std::string lighting = "    if (directional_flags.x > 0.5f) {\n"
@@ -1735,8 +1757,9 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
        normal transforms, material/base, directions/colors/flags, world transforms,
        point positions, attenuation/range and material-scaled ambient, then specular, view and stage (340 floats),
        then post-filter flags, texel size and four constants (24 floats), the
-       stage-1 texture matrix (16), and bump matrices, bump fog and fog color (16). */
-    constant_desc.ByteWidth = (140u + 192u * 4u + 396u) * sizeof(float);
+       stage-1 texture matrix (16), bump matrices, bump fog and fog color (16),
+       and the extra reflection world-view/normal transforms (96). */
+    constant_desc.ByteWidth = (140u + 192u * 4u + 492u) * sizeof(float);
     constant_desc.Usage = D3D11_USAGE_DYNAMIC;
     constant_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constant_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -2783,7 +2806,7 @@ RecompD3dPresenterError submitDraw(
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
     recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
-    float draw_constants[140 + 192 * 4 + 396]{};
+    float draw_constants[140 + 192 * 4 + 492]{};
     std::memcpy(draw_constants, draw.transform, sizeof draw.transform);
     std::memcpy(draw_constants + 16, draw.blend_transforms, sizeof draw.blend_transforms);
     if (layout.pretransformed || draw.program_count || screen_offset) {
@@ -2928,6 +2951,10 @@ RecompD3dPresenterError submitDraw(
         std::memcpy(draw_constants + 100, draw.reflection_normal, 64u);
         std::memcpy(draw_constants + 116, draw.reflection_transform, 64u);
         draw_constants[137] = draw.reflection_normalize ? 1.0f : 0.0f;
+        std::memcpy(draw_constants + 140 + 192 * 4 + 396, draw.reflection_blend_world_view,
+            sizeof draw.reflection_blend_world_view);
+        std::memcpy(draw_constants + 140 + 192 * 4 + 444, draw.reflection_blend_normal,
+            sizeof draw.reflection_blend_normal);
     }
     if (draw.has_reflection) {
         std::memcpy(draw_constants + 132, draw.reflection_diffuse, 16u);

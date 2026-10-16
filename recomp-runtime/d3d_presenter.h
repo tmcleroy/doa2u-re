@@ -248,6 +248,8 @@ typedef struct RecompD3dPresenterDrawCommand {
     uint32_t reflection_byte_count;
     float reflection_world_view[16];
     float reflection_normal[16];
+    float reflection_blend_world_view[3][16];
+    float reflection_blend_normal[3][16];
     float reflection_transform[16];
     /* TEXTURE1 for stage-1 generated coordinates when stage 0 also generates
        (texgen_reflection with has_reflection and !reflection_mesh_uv). */

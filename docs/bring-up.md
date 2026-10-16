@@ -220,7 +220,12 @@ coordinates on a draw without a normal stream (fight FVF 0x142) take the zero
 inline normal: no SDK path writes v2 inline data (0x34aac0 sets only v0 and v9
 through SetVertexData2f), so the reflection vector is the eye direction.
 Unlit vertex diffuse and lit material diffuse retain their respective alpha
-sources. Blended reflection coordinates, vertex color lighting sources,
+sources. Skinned reflection draws (including FVF 0x116) blend camera-space
+positions and normal-matrix results with the position weights and final
+remainder. The SDK upload at 0x3502d0 supplies each world-view matrix; with
+NORMALIZENORMALS, 0x34b530 supplies signed cofactors before the final normalize.
+Native pixel tests cover both endpoint weights and an equal blend. Exact
+hardware rounding remains unverified. Vertex color lighting sources,
 local-view specular, two-sided/spot lighting, other
 combiners and multiple streams stop explicitly. The premultiplied blend clamps
 its intermediate result before diffuse modulation and post-stage specular.
