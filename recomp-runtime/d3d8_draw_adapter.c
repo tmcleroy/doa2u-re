@@ -342,8 +342,9 @@ static bool bright_pass(uint32_t device, RecompD3dPresenterDrawCommand *draw)
 
 /* Stage distortion pass (FUN_0027b070, definition 0x7af5d8): t0 PROJECT2D,
    t1 DOTPRODUCT and t2 DOT_ST with MINUS1_TO_1_D3D dot mapping, one combiner
-   r0 = t2 and zero final-combiner words. 0x34f5f0 then pushes D = r0 and
-   G = r0.a only with FogEnable (0x3553d0) and specular (0x3553fc) off. */
+   r0 = t2 and zero final-combiner words. With fog off, 0x34f5f0 outputs
+   r0 + (SpecularEnable ? v1 : 0) and r0.a. For the caller's FVF 0x140404,
+   SetVertexShader (0x3493de) supplies zero for the absent specular attribute. */
 static bool distortion_shader(uint32_t device)
 {
     static const uint32_t words[][2] = {
@@ -356,7 +357,7 @@ static bool distortion_shader(uint32_t device)
     const uint32_t data = definition(handle);
     for (uint32_t i = 0u; i < sizeof words / sizeof words[0]; ++i)
         if (*recomp_memory_u32(data + words[i][0]) != words[i][1]) return false;
-    return *recomp_memory_u32(0x3553d0u) == 0u && *recomp_memory_u32(0x3553fcu) == 0u;
+    return *recomp_memory_u32(0x3553d0u) == 0u;
 }
 
 /* DOT_ST samples t2 at (dot(tc1.str, n), dot(tc2.str, n)) with n the signed

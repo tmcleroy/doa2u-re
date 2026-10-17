@@ -1317,14 +1317,21 @@ static int distortion_tests(void)
     CHECK(draw->address_u == 3u && draw->reflection_address_u == 1u && draw->has_texture);
     for (uint32_t v = 0u; v < 3u; ++v)
         for (uint32_t i = 0u; i < 12u; ++i) CHECK(captured_vertices[v * 12u + i] == source[v][i]);
+    /* With no specular attribute the SDK supplies zero, even when enabled. */
+    *recomp_memory_u32(0x3553fcu) = 1u;
+    invoke(0x348240u, 6u, 4u, VERTICES, 56u);
+    CHECK(submits == 2u && draw->distortion && draw->fvf == 0x404u && draw->vertex_stride == 48u);
+    CHECK(!draw->directional.enabled && *recomp_memory_u32(0x3553fcu) == 1u);
+    for (uint32_t v = 0u; v < 4u; ++v)
+        for (uint32_t i = 0u; i < 12u; ++i) CHECK(captured_vertices[v * 12u + i] == source[v][i]);
     /* Fog changes the SDK's final combiner. */
     *recomp_memory_u32(0x3553d0u) = 1u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 56u); return 1; }
-    CHECK(submits == 1u && strncmp(stop_reason, "d3d8:draw-vertex-layout", 23u) == 0);
+    CHECK(submits == 2u && strncmp(stop_reason, "d3d8:draw-vertex-layout", 23u) == 0);
     *recomp_memory_u32(0x3553d0u) = 0u;
     *recomp_memory_u32(*recomp_memory_u32(*recomp_memory_u32(OUTPUT) + 8u) + 0xdcu) = 0x22u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 56u); return 1; }
-    CHECK(submits == 1u && strncmp(stop_reason, "d3d8:draw-vertex-layout", 23u) == 0);
+    CHECK(submits == 2u && strncmp(stop_reason, "d3d8:draw-vertex-layout", 23u) == 0);
     return 0;
 }
 

@@ -185,12 +185,16 @@ texture times factor with the white diffuse alpha.
 The stage distortion pass (FUN_0027b070, definition 0x7af5d8) draws FVF
 0x140404 quads, 56 bytes each, with t0 PROJECT2D, t1 DOTPRODUCT and t2 DOT_ST
 using the MINUS1_TO_1_D3D dot mapping. One combiner sets r0 = t2, and the final
-combiner words are zero, so 0x34f5f0 outputs r0 and r0.a while FogEnable
-(0x3553d0) and specular (0x3553fc) are off. The adapter matches those words,
-keeps the 48 bytes the shader reads and swaps textures: the stage-2 scene copy
-becomes the primary texture and the stage-0 normal map the second. The
-presenter decodes n = (b - 128) / 127 from the normal texel and samples the
-scene at (dot(tc1.str, n), dot(tc2.str, n)). Fog, specular or different words
+combiner words are zero, so with FogEnable (0x3553d0) off, 0x34f5f0 outputs
+r0 plus v1 when specular (0x3553fc) is enabled, with r0.a as alpha.
+SetVertexShader (0x3493de) supplies zero for this FVF's absent specular
+attribute; the pretransformed passthrough programs copy it to v1. The result
+is therefore r0 regardless of SpecularEnable, including state left by water
+rendering. The adapter matches those words, keeps the 48 bytes the shader
+reads and swaps textures: the stage-2 scene copy becomes the primary texture
+and the stage-0 normal map the second. The presenter decodes n =
+(b - 128) / 127 from the normal texel and samples the scene at
+(dot(tc1.str, n), dot(tc2.str, n)). Fog, other layouts or different words
 keep the vertex-layout stop.
 The same effect's overlays bind with fixed-function stages. FUN_0027be10 draws
 scene objects (FVF 0x142, unlit). Stage 0 has color SELECTARG1(TEXTURE) and alpha
