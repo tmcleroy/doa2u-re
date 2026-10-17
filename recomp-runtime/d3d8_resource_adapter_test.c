@@ -83,6 +83,7 @@ static void texture(uint32_t address, uint32_t common, uint32_t format, uint32_t
 int main(void)
 {
     CHECK(recomp_d3d8_resource_lookup_manual(0u) == NULL);
+    CHECK(recomp_d3d8_resource_lookup_manual(0x3443f0u) != NULL);
     ram[0x3530b8u + 6u] = 32u;
     ram[0x3530b8u + 0xcu] = 4u;
     ram[0x3530b8u + 0xfu] = 8u;
@@ -98,6 +99,27 @@ int main(void)
     RecompD3dTextureDesc desc;
     CHECK(recomp_d3d8_resource_describe(TEXTURE, &desc));
     CHECK(desc.width == 8u && desc.height == 16u && desc.mip_levels == 3u && desc.bits_per_pixel == 32u);
+    CHECK(!recomp_d3d8_resource_inline_texture(3u, &desc));
+    invoke(0x345490u, 3u, TEXTURE, 0u, 0u, 0u);
+    const uint32_t retained = word(TEXTURE);
+    recomp_runtime.registers.ecx = 0x81bc0u;
+    recomp_runtime.registers.edx = DATA + 4096u;
+    CHECK(invoke(0x3443f0u, 0x02210f20u, 0u, 0u, 0u, 0u) == 0xaabbccddu);
+    CHECK(recomp_runtime.registers.esp == STACK + 8u && recomp_runtime.registers.ecx == 0x02210f20u &&
+        recomp_runtime.registers.edx == DATA + 4096u);
+    CHECK(recomp_d3d8_resource_inline_texture(3u, &desc) && desc.data == DATA + 4096u &&
+        desc.width == 4u && desc.height == 4u && desc.format_byte == 0xfu && desc.mip_levels == 1u);
+    CHECK(!recomp_d3d8_resource_inline_texture(0u, &desc) && !recomp_d3d8_resource_inline_texture(3u, NULL));
+    CHECK(word(DEVICE + 0xf94u) == TEXTURE && word(TEXTURE) == retained && word(TEXTURE + 4u) == DATA);
+    invoke(0x345490u, 3u, TEXTURE, 0u, 0u, 0u);
+    CHECK(!recomp_d3d8_resource_inline_texture(3u, &desc) && word(TEXTURE) == retained);
+    invoke(0x345490u, 3u, 0u, 0u, 0u, 0u);
+    recomp_runtime.registers.ecx = 0x81b00u;
+    if (setjmp(stopped) == 0) { invoke(0x3443f0u, 0x02210f20u, 0u, 0u, 0u, 0u); return 1; }
+    CHECK(strcmp(reason, "d3d8:inline-texture-method:00081b00") == 0);
+    recomp_runtime.registers.ecx = 0x81bc0u;
+    if (setjmp(stopped) == 0) { invoke(0x3443f0u, 0x00011220u, 0u, 0u, 0u, 0u); return 1; }
+    CHECK(strcmp(reason, "d3d8:inline-texture-format:00011220") == 0);
     CHECK(invoke(0x3480b0u, TEXTURE, 1u, OUTPUT, 0u, 0u) == 0xaabbccddu);
     CHECK(word(OUTPUT) == 16u && word(OUTPUT + 4u) == DATA + 512u);
     CHECK(recomp_runtime.registers.esp == STACK + 24u);
@@ -193,7 +215,12 @@ int main(void)
     texture(TEXTURE + 96u, 0x40001u, 0x12220c3au, 0u);
     if (setjmp(stopped) == 0) { invoke(0x347fa0u, TEXTURE + 96u, 0x80000000u, 0u, 0u, 0u); return 1; }
     CHECK(strcmp(reason, "d3d8:volume-register:12220c3a:00000000") == 0);
+    recomp_runtime.registers.ecx = 0x81bc0u;
+    recomp_runtime.registers.edx = DATA;
+    invoke(0x3443f0u, 0x02210620u, 0u, 0u, 0u, 0u);
+    CHECK(word(DEVICE + 0xf94u) == 0u && recomp_d3d8_resource_inline_texture(3u, &desc));
     recomp_d3d8_resource_reset();
+    CHECK(!recomp_d3d8_resource_inline_texture(3u, &desc));
     puts("PASS D3D8 resource ABI, mip views, bindings, retention and owned destruction");
     return 0;
 }

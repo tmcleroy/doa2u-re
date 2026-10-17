@@ -173,8 +173,12 @@ static void multiply(const float left[16], const float right[16], float result[1
 static void attach_texture(uint32_t device, uint32_t stage, RecompD3dPresenterDrawCommand *draw)
 {
     const uint32_t resource = *recomp_memory_u32(device + 0xf88u + stage * 4u);
-    if (resource == 0u) return;
-    if (!recomp_d3d8_resource_describe(resource, &draw->texture) || draw->texture.depth)
+    if (!recomp_d3d8_resource_inline_texture(stage, &draw->texture)) {
+        if (resource == 0u) return;
+        if (!recomp_d3d8_resource_describe(resource, &draw->texture))
+            recomp_stop(2, "d3d8:draw-texture-description");
+    }
+    if (draw->texture.depth)
         recomp_stop(2, "d3d8:draw-texture-description");
     const RecompD3dTextureDesc *desc = &draw->texture;
     uint64_t bytes = recomp_d3d_texture_compressed_mip_span(desc);
@@ -259,7 +263,8 @@ static bool four_tap(uint32_t device, RecompD3dPresenterDrawCommand *draw)
     }
     for (uint32_t stage = 0u; stage < 4u; ++stage) {
         RecompD3dTextureDesc desc;
-        if (!recomp_d3d8_resource_describe(*recomp_memory_u32(device + 0xf88u + stage * 4u), &desc) ||
+        if ((!recomp_d3d8_resource_inline_texture(stage, &desc) &&
+             !recomp_d3d8_resource_describe(*recomp_memory_u32(device + 0xf88u + stage * 4u), &desc)) ||
             desc.data != draw->texture.data || desc.format_byte != draw->texture.format_byte ||
             desc.width != draw->texture.width || desc.height != draw->texture.height ||
             desc.pitch != draw->texture.pitch || desc.mip_levels != 1u) return false;

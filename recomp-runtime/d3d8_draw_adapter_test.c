@@ -31,6 +31,7 @@ static bool fail_allocation;
 static jmp_buf stopped;
 static char stop_reason[128];
 static RecompD3dTextureDesc texture;
+static bool inline_texture_active;
 static RecompD3dPresenterTarget target;
 void recomp_d3d8_target(RecompD3dPresenterTarget *out) { *out = target; }
 
@@ -80,6 +81,12 @@ bool recomp_d3d8_resource_describe(uint32_t resource, RecompD3dTextureDesc *out)
     *out = texture;
     return true;
 }
+bool recomp_d3d8_resource_inline_texture(uint32_t stage, RecompD3dTextureDesc *out)
+{
+    if (stage != 3u || !inline_texture_active) return false;
+    *out = texture;
+    return true;
+}
 void recomp_d3d8_submit(const RecompD3dPresenterCommand *command)
 {
     submitted = *command;
@@ -106,6 +113,7 @@ static void initialize(void)
 {
     memset(ram, 0, sizeof ram);
     recomp_d3d_render_state_reset(&state);
+    inline_texture_active = false;
     submits = 0u;
     *recomp_memory_u32(DEVICE + 0x798u) = 0x144u;
     *recomp_memory_u32(DEVICE + 0x1a04u) = DEVICE + 0x1a24u;
@@ -451,6 +459,16 @@ static int point_tests(void)
     CHECK(fabsf(captured_vertices[18] - 2.0f / 9.0f) < 1e-6f && fabsf(captured_vertices[19] + 1.0f / 3.0f) < 1e-6f &&
         captured_vertices[22] == 1.0f && captured_vertices[23] == 1.0f);
     CHECK(diffuse == 0x80ffffffu);
+    /* Direct stage-3 writes can bind a texture without an API resource shadow. */
+    const uint32_t saved_data = texture.data;
+    *recomp_memory_u32(DEVICE + 0xf94u) = 0u;
+    texture.data = 0x11000u;
+    inline_texture_active = true;
+    invoke(0x348240u, 1u, 1u, VERTICES, 16u);
+    CHECK(draw->has_texture && draw->texture.data == 0x11000u && draw->texture_bytes == ram + 0x11000u);
+    inline_texture_active = false;
+    texture.data = saved_data;
+    *recomp_memory_u32(DEVICE + 0xf94u) = 0x7000u;
     /* 0x1f5030 leaves LIGHTING on for texture-RGB/material-alpha point sprites. */
     *recomp_memory_u32(0x3553f8u) = *recomp_memory_u32(0x355404u) = 1u;
     *recomp_memory_u32(0x355408u) = *recomp_memory_u32(0x355418u) = 2u;

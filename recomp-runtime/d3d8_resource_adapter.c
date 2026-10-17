@@ -18,6 +18,8 @@ typedef struct OwnedResource {
     uint32_t allocation;
 } OwnedResource;
 static OwnedResource owned[OWNED_SLOTS];
+static bool inline_texture_active;
+static RecompD3dTextureDesc inline_texture;
 
 static uint32_t word(uint32_t address) { return *recomp_memory_u32(address); }
 static void put(uint32_t address, uint32_t value) { *recomp_memory_u32(address) = value; }
@@ -32,6 +34,7 @@ void recomp_d3d8_resource_reset(void)
         }
     }
     memset(owned, 0, sizeof owned);
+    inline_texture_active = false;
 }
 
 static OwnedResource *ownership(uint32_t header)
@@ -347,6 +350,7 @@ static void set_texture(void)
     bind(texture);
     unbind(previous, device, true);
     put(slot, texture);
+    if (stage == 3u) inline_texture_active = false;
     uint32_t shadow_address = device + 12u + stage * 4u;
     if (texture == 0u) {
         put(shadow_address, 0x80000000u);
@@ -364,6 +368,32 @@ static void set_texture(void)
         }
     }
     kernel_return(2u, 0u);
+}
+
+bool recomp_d3d8_resource_inline_texture(uint32_t stage, RecompD3dTextureDesc *out)
+{
+    if (stage != 3u || !inline_texture_active || out == NULL) return false;
+    *out = inline_texture;
+    return true;
+}
+
+/* SDK 0x3443f0 is fastcall(method, data, format), ret 4. The reached game
+   callers use SetTexture's stage-3 pair without changing its resource shadow. */
+static void inline_texture_pair(void)
+{
+    (void)recomp_d3d8_require_device();
+    const uint32_t method = recomp_runtime.registers.ecx;
+    const uint32_t format = arg(0u), pixel = (format >> 8u) & 255u;
+    if (method != 0x81bc0u) recomp_stop(2, "d3d8:inline-texture-method:%08x", method);
+    /* The pair has no rectangle size; only verified swizzled formats apply. */
+    if ((format & 0xf4u) != 0x20u ||
+        (pixel != 6u && pixel != 0xbu && pixel != 0xcu && pixel != 0xeu && pixel != 0xfu && pixel != 0x19u))
+        recomp_stop(2, "d3d8:inline-texture-format:%08x", format);
+    recomp_d3d_texture_describe(format, 0u, recomp_runtime.registers.edx,
+        *recomp_memory(FORMAT_TABLE + pixel, 1u), &inline_texture);
+    inline_texture_active = true;
+    recomp_runtime.registers.ecx = format;
+    kernel_return(1u, recomp_runtime.registers.eax);
 }
 
 static void get_texture(void)
@@ -415,6 +445,7 @@ static void set_indices(void)
 RecompFunction recomp_d3d8_resource_lookup_manual(uint32_t address)
 {
     switch (address) {
+    case 0x003443f0u: return inline_texture_pair;
     case 0x00347e80u: return add_ref;
     case 0x00347ec0u: return release;
     case 0x00347f10u: return get_type;
