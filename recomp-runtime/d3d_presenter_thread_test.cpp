@@ -1863,7 +1863,7 @@ static bool testVisibility()
     return passed;
 }
 
-static bool testVolume()
+static bool testVolume(bool camera_position = false)
 {
     char folder[MAX_PATH], path[MAX_PATH];
     if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "vol", 0, path)) return false;
@@ -1908,6 +1908,19 @@ static bool testVolume()
             draw.texture_transform_uv = true;
             draw.reflection_transform[0] = draw.reflection_transform[5] = 1;
             draw.reflection_transform[10] = r[pass];
+            if (camera_position) {
+                // Mesh UVs select the opposite texel; translated eye Z selects the slice.
+                for (auto &vertex : quad) vertex.u = pass == 5 ? 0.25f : 0.75f;
+                draw.texture_transform_uv = false;
+                draw.texgen_projected = true;
+                draw.reflection_world_view[0] = draw.reflection_world_view[5] =
+                    draw.reflection_world_view[10] = draw.reflection_world_view[15] = 1;
+                draw.reflection_world_view[14] = r[pass] - 0.5f;
+                draw.reflection_transform[0] = draw.reflection_transform[5] = 0;
+                draw.reflection_transform[10] = 1;
+                draw.reflection_transform[12] = pass == 5 ? 0.75f : 0.25f;
+                draw.reflection_transform[13] = 0.5f;
+            }
             passed &= expect("volume sample", d3d11_backend_submit(presenter, &command));
         }
         RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
@@ -1933,7 +1946,9 @@ static bool testVolume()
     }
     _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
     DeleteFileA(path);
-    if (passed) std::puts("PASS volume slices, trilinear blend, W wrap/clamp, and BGRA channels");
+    if (passed) std::puts(camera_position
+        ? "PASS camera volume S/T/R, translated eye Z, slices, interpolation and W addressing"
+        : "PASS volume slices, trilinear blend, W wrap/clamp, and BGRA channels");
     return passed;
 }
 
@@ -2527,7 +2542,7 @@ int main()
         !testReflectionAddress(false, false, false, false, 0.5f) ||
         !testReflectionAddress(false, false, false, false, 1.0f) ||
         !testScreenSpaceOffsetAndScissor() || !testBrightPass() || !testDistortion() || !testStageEffect() ||
-        !testVolume() || !testFrameBufferBlend() || !testDepthBias() || !testDepthBias(true) ||
+        !testVolume() || !testVolume(true) || !testFrameBufferBlend() || !testDepthBias() || !testDepthBias(true) ||
         !testScaledMsaaDepthBias() || !testProgramMaxSlt() ||
         !testProgramLitSge() ||
         !testStageBump() ||

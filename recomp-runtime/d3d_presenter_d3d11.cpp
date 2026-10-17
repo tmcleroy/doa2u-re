@@ -322,7 +322,8 @@ void buildDrawShaderSource(
                   "    if (filter_texel.z > 2.5f) {\n"
                   "        float3 g = mul(mul(float4(input.position, 1), reflection_world_view), reflection_transform).xyz;\n"
                   "        output.texcoord = g.xy;\n"
-                  "        output.projected_q = g.z;\n"
+                  "        output.volume_coord = g.z;\n"
+                  "        output.projected_q = reflection_stage2_flags.z > 0.5f ? 1.0f : g.z;\n"
                   "    }\n"
                   "    if (abs(reflection_flags.x - 1.0f) < 0.5f || abs(filter_texel.z - 1.0f) < 0.5f) {\n"
                   "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
@@ -345,7 +346,8 @@ void buildDrawShaderSource(
                   "    if (filter_texel.z > 2.5f) {\n"
                   "        float3 g = mul(mul(float4(input.position, 1), reflection_world_view), reflection_transform).xyz;\n"
                   "        output.texcoord = g.xy;\n"
-                  "        output.projected_q = g.z;\n"
+                  "        output.volume_coord = g.z;\n"
+                  "        output.projected_q = reflection_stage2_flags.z > 0.5f ? 1.0f : g.z;\n"
                   "    }\n"
                   "    if (abs(reflection_flags.x - 1.0f) < 0.5f || abs(filter_texel.z - 1.0f) < 0.5f) {\n"
                   "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
@@ -2967,7 +2969,7 @@ RecompD3dPresenterError submitDraw(
     if (draw.texture.volume_depth != 0u) {
         if (draw.fvf != 0x142u || draw.program_count || draw.has_reflection || draw.has_alpha_mask ||
             draw.stage1_alpha_mask || draw.bump_env || draw.distortion || draw.four_tap_filter ||
-            draw.bright_pass || draw.texgen_projected || draw.texgen_reflection)
+            draw.bright_pass || draw.texgen_reflection)
             return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
         draw_constants[140 + 192 * 4 + 510] = 1.0f;
     }

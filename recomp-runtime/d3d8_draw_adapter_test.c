@@ -1581,6 +1581,18 @@ static int volume_tests(void)
     *recomp_memory_u32(STAGES + 21u * 4u) = 3u;
     invoke(0x348240u, 5u, 3u, VERTICES, 24u);
     CHECK(draw->texture_transform_uv && draw->reflection_transform[10] == 0.75f);
+    /* COUNT3 camera-space coordinates retain R for volume sampling. */
+    set_stage(0u, 28u, 0x20000u);
+    invoke(0x348240u, 5u, 3u, VERTICES, 24u);
+    CHECK(draw->texgen_projected && !draw->texture_transform_uv &&
+        memcmp(draw->reflection_transform, transform, sizeof transform) == 0);
+    for (uint32_t projected = 0u; projected < 2u; ++projected) {
+        set_stage(0u, 21u, projected ? 0x103u : 2u);
+        if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 24u); return 1; }
+        CHECK(strncmp(stop_reason, "d3d8:draw-texture-coordinates:", 29u) == 0);
+    }
+    set_stage(0u, 21u, 3u);
+    set_stage(0u, 28u, 0u);
     texture.data = RECOMP_XBOX_RAM_SIZE - 64u * 64u * 4u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 24u); return 1; }
     CHECK(strcmp(stop_reason, "test:guest-span") == 0);
