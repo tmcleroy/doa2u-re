@@ -1336,15 +1336,22 @@ static int position_texgen_tests(void)
     set_stage(0u, 21u, 2u); set_stage(0u, 28u, 0x20000u);
     const float matrix[16] = {2,3,4,5, 6,7,8,9, 10,11,12,13, 14,15,16,17};
     recomp_guest_store(DEVICE + 0xce0u, matrix, sizeof matrix);
+    const float singular[16] = {0,0,0,0, 0,1,0,0, 0,0,1,0, 5,6,7,1};
+    recomp_guest_store(DEVICE + 0xde0u, singular, sizeof singular);
     for (uint32_t normal = 0u; normal < 2u; ++normal) {
         *recomp_memory_u32(DEVICE + 0x798u) = normal ? 0x112u : 0x142u;
         invoke(0x348240u, 5u, 3u, VERTICES, normal ? 32u : 24u);
         const RecompD3dPresenterDrawCommand *draw = &submitted.data.draw;
         CHECK(draw->texgen_projected && !draw->texgen_reflection && !draw->texture_transform_uv);
+        CHECK(draw->reflection_world_view[0] == 0.0f && draw->reflection_world_view[12] == 5.0f);
         for (uint32_t i = 0u; i < 16u; ++i)
             CHECK(draw->reflection_transform[i] == (i % 4u == 2u ? (i == 14u ? 1.0f : 0.0f) : matrix[i]));
     }
     CHECK(submits == 2u);
+    set_stage(0u, 21u, 0x103u);
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    CHECK(submitted.data.draw.texgen_projected &&
+        memcmp(submitted.data.draw.reflection_transform, matrix, sizeof matrix) == 0);
     return 0;
 }
 
@@ -1552,11 +1559,62 @@ static int volume_tests(void)
     return 0;
 }
 
+static int reflection_inverse_tests(void)
+{
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected inverse stop: %s\n", stop_reason); return 1; }
+    const float singular[16] = {0,0,0,0, 0,1,0,0, 0,0,1,0, 5,6,7,1};
+    const uint32_t reflection[3][6] = {{2,2,1,4,2,0}, {14,2,1,14,2,1}, {4,0,1,4,0,1}};
+    const uint32_t fields[] = {12,14,15,16,18,19};
+    for (uint32_t normals = 0u; normals < 2u; ++normals) {
+        for (uint32_t generated = 0u; generated < 4u; ++generated) {
+            initialize();
+            *recomp_memory_u32(DEVICE + 0x798u) = normals ? 0x112u : 0x142u;
+            *recomp_memory_u32(DEVICE + 0xf88u) = *recomp_memory_u32(DEVICE + 0xf8cu) = 0x7000u;
+            recomp_guest_store(DEVICE + 0xde0u, singular, sizeof singular);
+            for (uint32_t stage = 0u; stage < 3u; ++stage)
+                for (uint32_t i = 0u; i < 6u; ++i) set_stage(stage, fields[i], reflection[stage][i]);
+            for (uint32_t stage = 0u; stage < 2u; ++stage) {
+                set_stage(stage, 21u, (generated & (1u << stage)) ? 2u : 0u);
+                set_stage(stage, 28u, (generated & (1u << stage)) ? 0x30000u : 0u);
+            }
+            if (normals && generated) {
+                if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
+                CHECK(strncmp(stop_reason, "d3d8:reflection-normal:", 22u) == 0 && submits == 0u);
+            } else {
+                invoke(0x348240u, 5u, 3u, VERTICES, normals ? 32u : 24u);
+                CHECK(submits == 1u && submitted.data.draw.has_reflection &&
+                    submitted.data.draw.reflection_world_view[12] == 5.0f &&
+                    submitted.data.draw.reflection_normal[0] == 0.0f);
+            }
+        }
+        /* A secondary blend influence follows the same consumed-normal rule. */
+        initialize();
+        *recomp_memory_u32(DEVICE + 0x798u) = normals ? 0x116u : 0x146u;
+        *recomp_memory_u32(0x355484u) = 1u;
+        *recomp_memory_u32(DEVICE + 0xf88u) = 0x7000u;
+        set_stage(0u, 21u, 2u); set_stage(0u, 28u, 0x30000u);
+        recomp_guest_store(DEVICE + 0xe20u, singular, sizeof singular);
+        if (normals) {
+            if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 36u); return 1; }
+            CHECK(strstr(stop_reason, "influence=1/1") != NULL && submits == 0u);
+        } else {
+            invoke(0x348240u, 5u, 3u, VERTICES, 28u);
+            CHECK(submitted.data.draw.texgen_reflection &&
+                submitted.data.draw.reflection_blend_world_view[0][12] == 5.0f);
+        }
+        *recomp_memory_u32(DEVICE + 0xe20u) = 0x7fc00000u;
+        if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, normals ? 36u : 28u); return 1; }
+        CHECK(strcmp(stop_reason, "d3d8:nonfinite-transform") == 0);
+    }
+    return 0;
+}
+
 int main(void)
 {
     initialize();
     if (pixel_tests() || draw_tests() || line_tests() || quad_tests() || point_tests() || lighting_tests() || filter_tests() || bright_tests() ||
-        distortion_tests() || factor_tests() || position_texgen_tests() || effect_tests() || program_tests() || bump_tests() || volume_tests()) return 1;
+        distortion_tests() || factor_tests() || position_texgen_tests() || effect_tests() || program_tests() || bump_tests() ||
+        volume_tests() || reflection_inverse_tests()) return 1;
     puts("PASS D3D8 pixel lifecycle/constants and semantic draw ABI/snapshots");
     return 0;
 }

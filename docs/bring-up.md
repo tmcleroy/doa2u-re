@@ -190,6 +190,10 @@ draws. The SDK upload (0x34f7d0, case 0x320) keeps the full S/T columns and
 sets Q to one; the adapter supplies that constant column to the same presenter
 path, so the texture matrix's third column cannot cause a divide. Native
 pixels check world-view position and S/T translation independently of mesh UVs.
+Normal inverses are captured only for generated reflections with a normal
+stream. Camera-position texgen, mesh UVs and the no-normal eye-vector path
+accept finite singular world-view matrices; a required invalid inverse stops
+with the layout, generating matrix, influence and caller.
 The fixed-function draw snapshot
 binds up to eight directional/point light slots, front material and ambient,
 normalization, blended world/normal transforms and infinite-view specular.

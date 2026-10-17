@@ -674,7 +674,8 @@ static void attach_lighting(uint32_t device, const RecompD3dVertexLayout *layout
 
 /* Camera-space reflection inputs: world-view, its normal matrix and the
    texture matrix of the generating stage (TEXTURE0 0xce0, TEXTURE1 0xd20). */
-static void reflection_inputs(uint32_t device, uint32_t texture_matrix, RecompD3dPresenterDrawCommand *draw)
+static void reflection_inputs(uint32_t device, uint32_t texture_matrix, bool needs_normal,
+    RecompD3dPresenterDrawCommand *draw)
 {
     float world[16], view[16];
     recomp_guest_load(view, device + 0xc60u, sizeof view);
@@ -685,7 +686,12 @@ static void reflection_inputs(uint32_t device, uint32_t texture_matrix, RecompD3
         float *normal = i == 0u ? draw->reflection_normal : draw->reflection_blend_normal[i - 1u];
         recomp_guest_load(world, device + 0xde0u + i * 64u, sizeof world);
         multiply(world, view, wv);
-        if (!recomp_d3d_normal_transform(wv, normal)) recomp_stop(2, "d3d8:reflection-normal");
+        /* Position texgen and the no-normal reflection shader never read an inverse. */
+        if (!needs_normal) continue;
+        if (!recomp_d3d_normal_transform(wv, normal))
+            recomp_stop(2, "d3d8:reflection-normal:fvf=%x:matrix=%x:influence=%u/%u:normalize=%u:ret=%08x",
+                draw->fvf, texture_matrix, i, draw->blend_weight_count, draw->reflection_normalize,
+                *recomp_memory_u32(recomp_runtime.registers.esp));
         /* With normalization, 0x34b530 omits |det| division. Its per-matrix
            scale matters when normals from different influences are blended. */
         if (draw->reflection_normalize && draw->blend_weight_count != 0u) {
@@ -694,7 +700,9 @@ static void reflection_inputs(uint32_t device, uint32_t texture_matrix, RecompD3
                 wv[2] * (wv[4] * wv[9] - wv[5] * wv[8]);
             for (uint32_t j = 0u; j < 16u; ++j) {
                 normal[j] *= fabsf(determinant);
-                if (!isfinite(normal[j])) recomp_stop(2, "d3d8:reflection-normal");
+                if (!isfinite(normal[j]))
+                    recomp_stop(2, "d3d8:reflection-normal-scale:fvf=%x:matrix=%x:influence=%u:field=%u:ret=%08x",
+                        draw->fvf, texture_matrix, i, j, *recomp_memory_u32(recomp_runtime.registers.esp));
             }
         }
     }
@@ -736,7 +744,8 @@ static void attach_reflection(uint32_t device, const RecompD3dVertexLayout *layo
     draw->reflection_address_v = texture.address_v;
     draw->reflection_bytes = texture.texture_bytes;
     draw->reflection_byte_count = texture.texture_byte_count;
-    reflection_inputs(device, 0xd20u, draw);
+    reflection_inputs(device, 0xd20u,
+        layout->normal_offset != RECOMP_D3D_FVF_ABSENT && stages[1][28] == 0x30000u, draw);
     recomp_guest_load(draw->reflection_diffuse, device + 0xf00u, sizeof draw->reflection_diffuse);
     for (uint32_t i = 0u; i < 4u; ++i)
         if (!isfinite(draw->reflection_diffuse[i])) recomp_stop(2, "d3d8:reflection-material");
@@ -901,7 +910,8 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
             if (draw->has_reflection && !draw->reflection_mesh_uv)
                 memcpy(draw->reflection_stage1_transform, draw->reflection_transform,
                     sizeof draw->reflection_stage1_transform);
-            reflection_inputs(device, 0xce0u, draw);
+            reflection_inputs(device, 0xce0u,
+                texgen && layout->normal_offset != RECOMP_D3D_FVF_ABSENT, draw);
             draw->texgen_reflection = texgen;
             draw->texgen_projected = camera_position;
             if (camera_position && stage[0][21] == 2u) {
