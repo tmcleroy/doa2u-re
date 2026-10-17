@@ -133,7 +133,7 @@ constexpr char kDrawShaderPrologue[] =
 /* Builds the draw shader for one decoded vertex layout. Only the components
    the layout actually carries appear in VSIn, so the input layout and the
    shader signature always agree. */
-void buildDrawShaderSource(
+int buildDrawShaderSource(
     const RecompD3dVertexLayout &layout,
     char *out,
     size_t out_size, bool coverage_only)
@@ -172,16 +172,15 @@ void buildDrawShaderSource(
             "    output.position = mul(float4(input.position, 1.0f), wvp[0]);\n");
     }
     if (coverage_only) {
-        std::snprintf(out, out_size,
+        return std::snprintf(out, out_size,
             "%sstruct VSIn { float3 position : POSITION; %s };\n"
             "struct VSOut { float4 position : SV_POSITION; };\n"
             "VSOut vs_main(VSIn input) { VSOut output;\n%s return output; }\n"
             "float4 ps_main(VSOut input) : SV_TARGET { return 0; }\n",
             kDrawShaderPrologue,
             layout.blend_weight_count ? "float3 weights : BLENDWEIGHT;" : "", position);
-        return;
     }
-    std::snprintf(
+    return std::snprintf(
         out,
         out_size,
         "%s"
@@ -252,7 +251,8 @@ void buildDrawShaderSource(
         "        shaded.a = blend_flags.w > 2.5f ? input.color.a\n"
             "            : blend_flags.w > 1.5f ? sampled.a\n"
             "            : blend_flags.w > 0.5f ? blend_flags.z : shaded.a * blend_flags.z;\n"
-        "        if (blend_flags.y > 4.5f) shaded.rgb *= texture_factor.rgb;\n"
+        "        if (blend_flags.y > 5.5f) shaded.rgb = saturate(4.0f * shaded.rgb * texture_factor.rgb);\n"
+        "        else if (blend_flags.y > 4.5f) shaded.rgb *= texture_factor.rgb;\n"
         "        else if (blend_flags.y > 3.5f) shaded.a *= texture_factor.a;\n"
         "        else if (blend_flags.y > 2.5f) shaded.rgb = saturate(2.0f * shaded.rgb * texture_factor.rgb);\n"
         "        else if (blend_flags.y > 1.5f) shaded *= texture_factor;\n"
@@ -1491,9 +1491,12 @@ bool drawShaderSource(
         return false;
     }
 
-    char source[8192];
-    buildDrawShaderSource(layout, source, sizeof source, pipeline.coverage_only);
-    compiled_source = source;
+    const int source_size = buildDrawShaderSource(layout, nullptr, 0u, pipeline.coverage_only);
+    if (source_size < 0) return false;
+    compiled_source.resize(static_cast<size_t>(source_size) + 1u);
+    if (buildDrawShaderSource(layout, compiled_source.data(), compiled_source.size(),
+            pipeline.coverage_only) != source_size) return false;
+    compiled_source.resize(static_cast<size_t>(source_size));
     if (pipeline.coverage_only) return true;
     if (layout.blend_weight_count != 0u && !layout.pretransformed &&
         layout.texcoord_offset != RECOMP_D3D_FVF_ABSENT) {
@@ -2736,6 +2739,8 @@ RecompD3dPresenterError submitDraw(
     const bool geometry_line = draw.line_antialias || draw.line_width > 1.0f;
     // shortcut: programmable offsets are unsupported, add their viewport contract when needed.
     if (draw.vertex_bytes == nullptr || draw.index_bytes == nullptr ||
+        (draw.texture_factor_color_scale != 0u && draw.texture_factor_color_scale != 2u &&
+         draw.texture_factor_color_scale != 4u) ||
         draw.vertex_stride == 0u || draw.vertex_count == 0u ||
         draw.index_count == 0u || !std::isfinite(draw.line_width) || draw.line_width < 0.0f ||
         (geometry_line && (draw.fvf != 0x42u || draw.program_count || draw.primitive_type != 2u ||
@@ -3063,7 +3068,8 @@ RecompD3dPresenterError submitDraw(
     draw_constants[68] = draw.blend_weight_count != 0u ? 1.0f : 0.0f;
     draw_constants[69] = draw.use_texture_factor ? 1.0f : draw.texture_factor_modulate ? 5.0f
         : draw.modulate_texture_factor_alpha ? 4.0f
-        : draw.modulate_texture_factor ? 2.0f : draw.texture_factor_modulate2x ? 3.0f : 0.0f;
+        : draw.modulate_texture_factor ? 2.0f : draw.texture_factor_color_scale == 4u ? 6.0f
+        : draw.texture_factor_color_scale == 2u ? 3.0f : 0.0f;
     draw_constants[70] = draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_NONE
         ? 1.0f : draw.material_alpha;
     draw_constants[71] = draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_SELECT_VERTEX_DIFFUSE

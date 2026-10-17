@@ -148,8 +148,8 @@ typedef struct RecompD3dPresenterDrawCommand {
     bool use_texture_factor;
     /* Stage 1 multiplies the sampled result by this factor. */
     bool modulate_texture_factor;
-    /* Stage 0 color is saturate(2 * texture * factor); alpha keeps its own selection. */
-    bool texture_factor_modulate2x;
+    /* Stage 0 color is saturate(scale * texture * factor), scale 2 or 4; zero disables. */
+    uint32_t texture_factor_color_scale;
     uint32_t texture_factor;
     /* Measured stage-0 selection or modulation of material alpha. */
     RecompD3dMaterialAlphaMode material_alpha_mode;

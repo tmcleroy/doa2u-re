@@ -177,8 +177,10 @@ presenter's four-tap filter in its doubled and identity-scale variants, with
 live C0/C1 factors, and the post-process bright pass. The bright pass matches
 its exact combiner words and Gaussian-cubic stage-0 filtering, then computes
 saturate(2 * (gauss3x3(t0) - c0) - 1) with the 1-2-1 kernel at level 0. The
-bloom composite binds stage-0 MODULATE2X of texture and texture factor over
-white vertices; quad strips draw as triangle strips. Quad lists (type 8,
+bloom composite binds stage-0 MODULATE2X or MODULATE4X of texture and texture
+factor over white vertices. The native color result clamps after scaling;
+alpha retains its independent stage operation. Adapter and GPU pixel checks
+cover both scales, clamping and alpha preservation. Quad strips draw as triangle strips. Quad lists (type 8,
 including FUN_0023d2a0's four-vertex draws) expand each group of four indices
 to two triangles, preserving vertex order and ignoring an incomplete final
 quad. UP, stream and indexed draws share the conversion. The split uses

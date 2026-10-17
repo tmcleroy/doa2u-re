@@ -1101,20 +1101,25 @@ static int bright_tests(void)
     *recomp_memory_u32(STAGES + 60u) = 3u;
     *recomp_memory_u32(STAGES + 64u) = 1u;
     invoke(0x348240u, 5u, 3u, VERTICES, 24u);
-    CHECK(submits == 1u && submitted.data.draw.texture_factor_modulate2x &&
+    CHECK(submits == 1u && submitted.data.draw.texture_factor_color_scale == 2u &&
         submitted.data.draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE &&
+        submitted.data.draw.material_alpha == 1.0f);
+    *recomp_memory_u32(STAGES + 48u) = 6u;
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected 4x composite stop: %s\n", stop_reason); return 1; }
+    invoke(0x348240u, 9u, 4u, VERTICES, 24u);
+    CHECK(submits == 2u && submitted.data.draw.texture_factor_color_scale == 4u &&
         submitted.data.draw.material_alpha == 1.0f);
     /* Trail strips (setup 0x23a42d): 1x MODULATE(TEXTURE, TFACTOR), alpha DISABLE. */
     *recomp_memory_u32(STAGES + 48u) = 4u;
     *recomp_memory_u32(DEVICE + 0x798u) = 0x102u;
     invoke(0x348240u, 5u, 3u, VERTICES, 20u);
-    CHECK(submits == 2u && submitted.data.draw.texture_factor_modulate &&
-        !submitted.data.draw.texture_factor_modulate2x &&
+    CHECK(submits == 3u && submitted.data.draw.texture_factor_modulate &&
+        !submitted.data.draw.texture_factor_color_scale &&
         submitted.data.draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE);
     *recomp_memory_u32(STAGES + 48u) = 5u;
     *recomp_memory_u32(DEVICE + 0x798u) = 0x144u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 28u); return 1; }
-    CHECK(submits == 2u && strncmp(stop_reason, "d3d8:draw-texture-combine:", 26) == 0);
+    CHECK(submits == 3u && strncmp(stop_reason, "d3d8:draw-texture-combine:", 26) == 0);
     return 0;
 }
 

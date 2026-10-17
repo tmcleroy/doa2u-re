@@ -868,9 +868,10 @@ static bool fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
                 : RECOMP_D3D_MATERIAL_ALPHA_SELECT_VERTEX_DIFFUSE;
             draw->material_alpha = 1.0f;
         }
-        /* MODULATE2X(TEXTURE, TFACTOR) reads no diffuse, so admit it only for white vertices. */
-        draw->texture_factor_modulate2x = white && stage[0][12] == 5u &&
-            stage[0][14] == 2u && stage[0][15] == 3u;
+        /* Scaled texture-times-factor reads no diffuse; this path requires white vertices. */
+        if (white && (stage[0][12] == 5u || stage[0][12] == 6u) &&
+            stage[0][14] == 2u && stage[0][15] == 3u)
+            draw->texture_factor_color_scale = stage[0][12] == 5u ? 2u : 4u;
         /* The trail strips (setup 0x23a42d, draw 0x23ca7e) use 1x MODULATE. */
         draw->texture_factor_modulate = !draw->directional.enabled && white && stage[0][12] == 4u &&
             ((stage[0][14] == 2u && stage[0][15] == 3u) || (stage[0][14] == 3u && stage[0][15] == 2u));
@@ -898,7 +899,7 @@ static bool fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
             draw->material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_NONE;
         } else alpha_tfactor = false;
         if (!draw->directional.enabled && !draw->has_reflection && !unlit_select &&
-            (!(color_modulate || draw->texture_factor_modulate2x || draw->texture_factor_modulate ||
+            (!(color_modulate || draw->texture_factor_color_scale || draw->texture_factor_modulate ||
                (white && stage[0][12] == 2u && stage[0][14] == 2u)) ||
              !(alpha_modulate || white_alpha || texture_alpha || vertex_alpha || diffuse_alpha)))
             recomp_stop(2, "d3d8:draw-texture-combine:%u,%u,%u/%u,%u,%u:fvf=%x:ret=%08x",
@@ -969,7 +970,7 @@ static bool fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
         draw->modulate_texture_factor_alpha = alpha_tfactor;
         /* The presenter applies one texture-factor mode per draw. */
         if ((alpha_tfactor && (draw->modulate_texture_factor || draw->texture_factor_modulate ||
-                draw->texture_factor_modulate2x)) ||
+                draw->texture_factor_color_scale)) ||
             (draw->modulate_texture_factor && draw->texture_factor_modulate))
             recomp_stop(2, "d3d8:texture-factor-twice");
         if (stage[1][12] != 1u && !draw->modulate_texture_factor && !draw->has_reflection && !stage1_alpha)

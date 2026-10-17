@@ -1038,7 +1038,7 @@ static bool testBrightPass()
         mod.texture_bytes = &composite_texel;
         mod.texture_byte_count = sizeof composite_texel;
         mod.texture_factor = 0xccccccccu;
-        mod.texture_factor_modulate2x = true;
+        mod.texture_factor_color_scale = 2u;
         mod.material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE;
         mod.material_alpha = 1.0f;
         Vertex composite_quad[4];
@@ -1047,13 +1047,25 @@ static bool testBrightPass()
         mod.vertex_bytes = composite_quad;
         passed &= expect("modulate2x draw", d3d11_backend_submit(presenter, &composite));
         // Trail strips: 1x texture * factor, red 0.6 and green 0.4.
-        mod.texture_factor_modulate2x = false;
+        mod.texture_factor_color_scale = 0u;
         mod.texture_factor_modulate = true;
         Vertex trail_quad[4];
         std::memcpy(trail_quad, composite_quad, sizeof composite_quad);
         for (auto &vertex : trail_quad) vertex.x += 40;
         mod.vertex_bytes = trail_quad;
         passed &= expect("modulate draw", d3d11_backend_submit(presenter, &composite));
+        // 4x color clamps red and leaves alpha independent of the factor's zero alpha.
+        mod.texture_factor_modulate = false;
+        mod.texture_factor_color_scale = 4u;
+        mod.texture_factor = 0x00663300u;
+        mod.depth.alpha_test_enable = true;
+        mod.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER;
+        mod.depth.alpha_ref = 128u;
+        for (auto &vertex : trail_quad) vertex.x += 40;
+        passed &= expect("modulate4x draw", d3d11_backend_submit(presenter, &composite));
+        mod.texture_factor_color_scale = 3u;
+        passed &= expect("invalid color scale", d3d11_backend_submit(presenter, &composite),
+            RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
         RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
         present.data.present = {5, 1};
         passed &= expect("bright present", d3d11_backend_submit(presenter, &present));
@@ -1061,7 +1073,7 @@ static bool testBrightPass()
         if (FILE *file = std::fopen(path, "rb")) {
             // Gaussian red 0.8125 -> 107; linear 1.0 would give 203, a box filter 90.
             const unsigned pixels[][5] = {{40, 40, 107, 152, 0}, {42, 41, 107, 152, 0}, {43, 43, 0, 0, 0},
-                {104, 44, 141, 255, 0}, {124, 44, 115, 255, 0}, {141, 41, 255, 204, 0}, {181, 41, 153, 102, 0}};
+                {104, 44, 141, 255, 0}, {124, 44, 115, 255, 0}, {141, 41, 255, 204, 0}, {181, 41, 153, 102, 0}, {221, 41, 255, 102, 0}};
             for (const auto &pixel : pixels) {
                 unsigned char bgr[3]{};
                 std::fseek(file, 54 + (239 - pixel[1]) * 960 + pixel[0] * 3, SEEK_SET);
@@ -1077,7 +1089,7 @@ static bool testBrightPass()
     }
     _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
     DeleteFileA(path);
-    if (passed) std::puts("PASS Gaussian-cubic bright pass, weighted four-tap filters and MODULATE2X composite");
+    if (passed) std::puts("PASS Gaussian-cubic bright pass, weighted four-tap filters and 2x/4x composites");
     return passed;
 }
 
