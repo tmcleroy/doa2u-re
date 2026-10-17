@@ -168,6 +168,10 @@ typedef struct RecompD3dPresenterDrawCommand {
        The threshold is stage-0 C0 in packed ARGB; UV0 is the only coordinate. */
     bool bright_pass;
     uint32_t bright_pass_threshold;
+    /* Two-stage tint: l = dot(t0.rgb, c0.rgb), output saturate(c1 * l) for RGB
+       and alpha. Factors are stage-0 C0 and stage-1 C0 in packed ARGB. */
+    bool luminance_tint;
+    uint32_t luminance_tint_factors[2];
     /* Stage 0 texture for this draw. `texture_bytes` is a host-readable view
        of guest pixel memory, valid only for the duration of the submit. */
     RecompD3dTextureDesc texture;

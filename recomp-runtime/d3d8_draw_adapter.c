@@ -340,6 +340,40 @@ static bool bright_pass(uint32_t device, RecompD3dPresenterDrawCommand *draw)
     return true;
 }
 
+/* Screen tint (definition 0xa74f0, drawn by 0xa75d0 over the back buffer):
+   stage 0 writes r1 = dot(t0, c0) to RGB and, by AB_BLUE_TO_ALPHA, alpha;
+   stage 1 writes r0 = C0 * r1 (alpha from r1.b). The final words are zero, so
+   with fog off 0x34f5f0 outputs r0 + (SpecularEnable ? v1 : 0) and r0.a. */
+static bool luminance_tint(uint32_t device, RecompD3dPresenterDrawCommand *draw)
+{
+    static const uint32_t simple[][2] = {
+        {0x40260u, 0u}, {0x40264u, 0xd1cd1010u}, {0x40aa0u, 0u}, {0x40aa4u, 0xc0u},
+        {0x40ac0u, 0xc8c10000u}, {0x40ac4u, 0xc1cd0000u}, {0x41e40u, 0x820d0u}, {0x41e44u, 0xc0u},
+        {0x41e60u, 0x11102u}, {0x417f8u, 0u}, {0x41e74u, 0u}, {0x41e78u, 0u},
+    };
+    /* Linear min/mag, no mips, UV0, no color key, kill or transform. */
+    static const uint32_t sampler[][2] = {
+        {3u, 2u}, {4u, 2u}, {5u, 0u}, {9u, 0u}, {10u, 0u}, {11u, 0u}, {21u, 0u}, {28u, 0u},
+    };
+    /* An absent specular attribute reads zero (0x3493de), as for the distortion pass. */
+    if (!draw->has_texture || ((draw->fvf >> 8u) & 15u) != 1u ||
+        *recomp_memory_u32(device + 0x788u) != 0u || *recomp_memory_u32(device + 0x790u) != 1u ||
+        *recomp_memory_u32(0x3553d0u) != 0u ||
+        ((draw->fvf & 0x80u) != 0u && *recomp_memory_u32(0x3553fcu) != 0u)) return false;
+    for (uint32_t i = 0u; i < sizeof sampler / sizeof sampler[0]; ++i)
+        if (*recomp_memory_u32(STAGES + sampler[i][0] * 4u) != sampler[i][1]) return false;
+    const RecompD3dRenderStateModel *state = recomp_d3d8_state_model();
+    uint32_t value;
+    for (uint32_t i = 0u; i < sizeof simple / sizeof simple[0]; ++i)
+        if (!recomp_d3d_get_simple_render_state(state, simple[i][0], &value) || value != simple[i][1])
+            return false;
+    if (!recomp_d3d_get_simple_render_state(state, 0x40a60u, &draw->luminance_tint_factors[0]) ||
+        !recomp_d3d_get_simple_render_state(state, 0x40a64u, &draw->luminance_tint_factors[1]))
+        return false;
+    draw->luminance_tint = true;
+    return true;
+}
+
 /* Stage distortion pass (FUN_0027b070, definition 0x7af5d8): t0 PROJECT2D,
    t1 DOTPRODUCT and t2 DOT_ST with MINUS1_TO_1_D3D dot mapping, one combiner
    r0 = t2 and zero final-combiner words. With fog off, 0x34f5f0 outputs
@@ -1537,7 +1571,7 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
         program_stages(device, draw);
     } else if (*recomp_memory_u32(device + PIXEL_HANDLE) != 0u) {
         if (distorted) expanded = distortion(device, stride, draw);
-        else if (!four_tap(device, draw) && !bright_pass(device, draw))
+        else if (!four_tap(device, draw) && !bright_pass(device, draw) && !luminance_tint(device, draw))
             recomp_stop(2, "d3d8:draw-pixel-shader-unsupported");
     } else {
         if (!attach_reflection(device, &layout, draw) || !fixed_stages(device, &layout, draw)) {

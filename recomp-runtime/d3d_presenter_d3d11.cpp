@@ -384,7 +384,11 @@ int buildDrawShaderSource(
               "    } else\n"
             : has_texcoord
             /* NV2A Gaussian-cubic: nine level-0 taps at one guest texel, 1-2-1 weights. */
-            ? "    if (filter_flags.x > 0.5f) {\n"
+            ? "    if (filter_flags.x > 1.5f) {\n"
+              "        float l = dot(guest_texture.Sample(guest_sampler, input.texcoord * texture_flags.xy).rgb,\n"
+              "            filter_constants[0].rgb);\n"
+              "        shaded = saturate(filter_constants[1] * clamp(l, -1.0f, 1.0f));\n"
+              "    } else if (filter_flags.x > 0.5f) {\n"
               "        float2 uv = input.texcoord * texture_flags.xy;\n"
               "        float4 t0 = 0.0f;\n"
               "        [unroll] for (int y = -1; y <= 1; ++y)\n"
@@ -2959,6 +2963,10 @@ RecompD3dPresenterError submitDraw(
             layout.texcoord_count != 1u || draw.texture.width == 0u || draw.texture.height == 0u)) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
+    if (draw.luminance_tint && (texture_view == nullptr || draw.four_tap_filter || draw.bright_pass ||
+            draw.has_alpha_mask || draw.has_reflection || draw.program_count || layout.texcoord_count != 1u)) {
+        return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    }
     if (draw.program_count) dumpProgramTexture(presenter, texture_view, draw.program_alpha_mask);
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
@@ -3107,6 +3115,11 @@ RecompD3dPresenterError submitDraw(
             filter[4] = 1.0f / draw.texture.width;
             filter[5] = 1.0f / draw.texture.height;
             unpack(draw.bright_pass_threshold, filter + 8);
+        }
+        if (draw.luminance_tint) {
+            filter[0] = 2.0f;
+            unpack(draw.luminance_tint_factors[0], filter + 8);
+            unpack(draw.luminance_tint_factors[1], filter + 12);
         }
         filter[3] = draw.alpha_kill ? 1.0f : 0.0f;
         filter[6] = draw.texgen_reflection ? 1.0f : draw.texture_transform_uv ? 2.0f

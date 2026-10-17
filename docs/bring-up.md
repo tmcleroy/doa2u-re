@@ -180,7 +180,12 @@ saturate(2 * (gauss3x3(t0) - c0) - 1) with the 1-2-1 kernel at level 0. The
 bloom composite binds stage-0 MODULATE2X or MODULATE4X of texture and texture
 factor over white vertices. The native color result clamps after scaling;
 alpha retains its independent stage operation. Adapter and GPU pixel checks
-cover both scales, clamping and alpha preservation. Quad strips draw as triangle strips. Quad lists (type 8,
+cover both scales, clamping and alpha preservation. The screen tint
+(definition 0xa74f0, drawn over the back buffer by 0xa75d0) matches its
+pushed combiner words and computes saturate(c1 * dot(t0.rgb, c0.rgb)) for RGB
+and alpha, with stage-0 C0 holding the luminance weights and stage-1 C0 the
+tint; fog must be off so 0x34f5f0's default final combiner outputs r0.
+Quad strips draw as triangle strips. Quad lists (type 8,
 including FUN_0023d2a0's four-vertex draws) expand each group of four indices
 to two triangles, preserving vertex order and ignoring an incomplete final
 quad. UP, stream and indexed draws share the conversion. The split uses

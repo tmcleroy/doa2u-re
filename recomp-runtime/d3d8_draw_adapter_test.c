@@ -1093,6 +1093,32 @@ static int bright_tests(void)
     CHECK(recomp_d3d8_state_set_simple(0x40ac4u, 0x4d200001u));
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 24u); return 1; }
     CHECK(submits == 2u && strcmp(stop_reason, "d3d8:draw-pixel-shader-unsupported") == 0);
+    /* 0xa74f0's screen tint, with 0xa75d0's SetPixelShaderConstant(1) reaching stage-1 C0. */
+    initialize();
+    memset(ram + INPUT, 0, 0xf0u);
+    static const uint32_t tint[][2] = {
+        {0x04u, 0xd1cd1010u}, {0x28u, 0x004c961du}, {0x6cu, 0xc0u}, {0x88u, 0xc8c10000u},
+        {0x8cu, 0xc1cd0000u}, {0xb4u, 0x820d0u}, {0xb8u, 0xc0u}, {0xd4u, 0x11102u}, {0xd8u, 1u},
+        {0xe4u, 0xffffff10u}, {0xe8u, 0xffffffffu}, {0xecu, 0x1ffu},
+    };
+    for (uint32_t i = 0u; i < sizeof tint / sizeof tint[0]; ++i)
+        *recomp_memory_u32(INPUT + tint[i][0]) = tint[i][1];
+    invoke(0x349490u, INPUT, OUTPUT, 0u, 0u);
+    invoke(0x349520u, *recomp_memory_u32(OUTPUT), 0u, 0u, 0u);
+    const float sepia[4] = {1.0f, 0.5f, 0.0f, 1.0f};
+    recomp_guest_store(INPUT + 0x100u, sepia, sizeof sepia);
+    invoke(0x349720u, 1u, INPUT + 0x100u, 1u, 0u);
+    *recomp_memory_u32(DEVICE + 0xf88u) = 0x7000u;
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x104u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 24u);
+    CHECK(submits == 1u && submitted.data.draw.luminance_tint && !submitted.data.draw.bright_pass &&
+        submitted.data.draw.luminance_tint_factors[0] == 0x004c961du &&
+        submitted.data.draw.luminance_tint_factors[1] == 0xffff8000u);
+    /* Fog replaces the default final combiner. */
+    *recomp_memory_u32(0x3553d0u) = 1u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 24u); return 1; }
+    CHECK(submits == 1u && strcmp(stop_reason, "d3d8:draw-pixel-shader-unsupported") == 0);
+    *recomp_memory_u32(0x3553d0u) = 0u;
     /* Bloom composite: MODULATE2X(TEXTURE, TFACTOR) with stage-0 alpha disabled. */
     initialize();
     *recomp_memory_u32(DEVICE + 0xf88u) = 0x7000u;

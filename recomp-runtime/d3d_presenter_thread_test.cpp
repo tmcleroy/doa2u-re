@@ -1066,6 +1066,18 @@ static bool testBrightPass()
         mod.texture_factor_color_scale = 3u;
         passed &= expect("invalid color scale", d3d11_backend_submit(presenter, &composite),
             RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
+        // Luminance tint: l = 0.298 + 0.588 * 0.502 = 0.593 times (1, 0.5, 0).
+        const uint32_t tint_texel = 0xffff8000u;
+        mod.texture_factor_color_scale = 0u;
+        mod.depth.alpha_test_enable = false;
+        mod.texture_bytes = &tint_texel;
+        mod.texture_byte_count = sizeof tint_texel;
+        mod.texture.data = 0x5000u;
+        mod.luminance_tint = true;
+        mod.luminance_tint_factors[0] = 0x004c961du;
+        mod.luminance_tint_factors[1] = 0xffff8000u;
+        for (auto &vertex : trail_quad) vertex.x += 40;
+        passed &= expect("luminance tint draw", d3d11_backend_submit(presenter, &composite));
         RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
         present.data.present = {5, 1};
         passed &= expect("bright present", d3d11_backend_submit(presenter, &present));
@@ -1073,7 +1085,8 @@ static bool testBrightPass()
         if (FILE *file = std::fopen(path, "rb")) {
             // Gaussian red 0.8125 -> 107; linear 1.0 would give 203, a box filter 90.
             const unsigned pixels[][5] = {{40, 40, 107, 152, 0}, {42, 41, 107, 152, 0}, {43, 43, 0, 0, 0},
-                {104, 44, 141, 255, 0}, {124, 44, 115, 255, 0}, {141, 41, 255, 204, 0}, {181, 41, 153, 102, 0}, {221, 41, 255, 102, 0}};
+                {104, 44, 141, 255, 0}, {124, 44, 115, 255, 0}, {141, 41, 255, 204, 0}, {181, 41, 153, 102, 0}, {221, 41, 255, 102, 0},
+                {261, 41, 151, 76, 0}};
             for (const auto &pixel : pixels) {
                 unsigned char bgr[3]{};
                 std::fseek(file, 54 + (239 - pixel[1]) * 960 + pixel[0] * 3, SEEK_SET);
@@ -1089,7 +1102,7 @@ static bool testBrightPass()
     }
     _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
     DeleteFileA(path);
-    if (passed) std::puts("PASS Gaussian-cubic bright pass, weighted four-tap filters and 2x/4x composites");
+    if (passed) std::puts("PASS Gaussian-cubic bright pass, four-tap filters, 2x/4x composites and luminance tint");
     return passed;
 }
 
