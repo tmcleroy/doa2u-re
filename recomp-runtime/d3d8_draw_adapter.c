@@ -907,9 +907,9 @@ static bool fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
         const bool uv_transform = (stage[0][21] == 2u ||
             (draw->texture.volume_depth != 0u && stage[0][21] == 3u)) && stage[0][28] == 0u &&
             !draw->has_reflection && !layout->pretransformed;
-        /* Camera-space position: 0x34f7d0 uploads S/T from TEXTURE0 columns 0/1;
-           COUNT3|PROJECTED takes Q from column 2, COUNT2 (case 0x320) sets Q=1. */
-        const bool camera_position = (stage[0][21] == 2u || stage[0][21] == 0x103u) &&
+        /* SDK 0x34f7d0: COUNT2/3 sample 2D S/T with Q=1; COUNT3|PROJECTED
+           takes Q from column 2. Unprojected COUNT3's R is unused by 2D textures. */
+        const bool camera_position = (stage[0][21] == 2u || stage[0][21] == 3u || stage[0][21] == 0x103u) &&
             stage[0][28] == 0x20000u &&
             !draw->has_reflection && !layout->pretransformed && layout->blend_weight_count == 0u;
         if (stage[0][20] != 0u ||
@@ -927,7 +927,7 @@ static bool fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
                 texgen && layout->normal_offset != RECOMP_D3D_FVF_ABSENT, draw)) return false;
             draw->texgen_reflection = texgen;
             draw->texgen_projected = camera_position;
-            if (camera_position && stage[0][21] == 2u) {
+            if (camera_position && (stage[0][21] & 0x100u) == 0u) {
                 draw->reflection_transform[2] = draw->reflection_transform[6] =
                     draw->reflection_transform[10] = 0.0f;
                 draw->reflection_transform[14] = 1.0f;

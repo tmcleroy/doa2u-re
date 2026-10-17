@@ -1352,15 +1352,18 @@ static int position_texgen_tests(void)
     const float singular[16] = {0,0,0,0, 0,1,0,0, 0,0,1,0, 5,6,7,1};
     recomp_guest_store(DEVICE + 0xde0u, singular, sizeof singular);
     for (uint32_t normal = 0u; normal < 2u; ++normal) {
-        *recomp_memory_u32(DEVICE + 0x798u) = normal ? 0x112u : 0x142u;
-        invoke(0x348240u, 5u, 3u, VERTICES, normal ? 32u : 24u);
-        const RecompD3dPresenterDrawCommand *draw = &submitted.data.draw;
-        CHECK(draw->texgen_projected && !draw->texgen_reflection && !draw->texture_transform_uv);
-        CHECK(draw->reflection_world_view[0] == 0.0f && draw->reflection_world_view[12] == 5.0f);
-        for (uint32_t i = 0u; i < 16u; ++i)
-            CHECK(draw->reflection_transform[i] == (i % 4u == 2u ? (i == 14u ? 1.0f : 0.0f) : matrix[i]));
+        for (uint32_t count = 2u; count <= 3u; ++count) {
+            set_stage(0u, 21u, count);
+            *recomp_memory_u32(DEVICE + 0x798u) = normal ? 0x112u : 0x142u;
+            invoke(0x348240u, 5u, 3u, VERTICES, normal ? 32u : 24u);
+            const RecompD3dPresenterDrawCommand *draw = &submitted.data.draw;
+            CHECK(draw->texgen_projected && !draw->texgen_reflection && !draw->texture_transform_uv);
+            CHECK(draw->reflection_world_view[0] == 0.0f && draw->reflection_world_view[12] == 5.0f);
+            for (uint32_t i = 0u; i < 16u; ++i)
+                CHECK(draw->reflection_transform[i] == (i % 4u == 2u ? (i == 14u ? 1.0f : 0.0f) : matrix[i]));
+        }
     }
-    CHECK(submits == 2u);
+    CHECK(submits == 4u);
     set_stage(0u, 21u, 0x103u);
     invoke(0x348240u, 5u, 3u, VERTICES, 32u);
     CHECK(submitted.data.draw.texgen_projected &&
