@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Run a bounded boot probe from a hardlinked disc and keep its evidence private."""
+"""Play the game or run a bounded probe, preserving saves and private logs."""
 import argparse
 import json
 import os
@@ -31,7 +31,7 @@ def prepare_disc(source, disc):
 
 
 def run(seconds, start_polls=(), a_polls=(), isolated=False, buttons_polls=(), analog_polls=()):
-    if seconds <= 0:
+    if seconds is not None and seconds <= 0:
         raise ValueError("Probe duration must be positive")
     if len(start_polls) > 4 or any(poll <= 0 or poll > 2**64 - 1 for poll in start_polls):
         raise ValueError("Start polls must be positive uint64 values, at most four")
@@ -57,9 +57,11 @@ def run(seconds, start_polls=(), a_polls=(), isolated=False, buttons_polls=(), a
     xbe = disc / selected.name
     if sha256(xbe) != sha256(selected):
         raise ValueError("Play disc belongs to a different game import")
-    logs = ROOT / "private/boot-logs"
+    logs = ROOT / ("private/play-logs" if seconds is None else "private/boot-logs")
     logs.mkdir(exist_ok=True)
     log_path = logs / (uuid.uuid4().hex[:8] + ".log")
+    if seconds is None:
+        print(f"Play session log={log_path}", flush=True)
     with log_path.open("x", encoding="utf-8") as log:
         log.write(f"runner_sha256={sha256(runner)}\nprogram_manifest={receipt['manifest_sha256']}\n")
         log.flush()
@@ -87,7 +89,10 @@ def run(seconds, start_polls=(), a_polls=(), isolated=False, buttons_polls=(), a
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--seconds", type=int, default=30)
+    duration = parser.add_mutually_exclusive_group()
+    duration.add_argument("--seconds", type=int, default=30)
+    duration.add_argument("--play", action="store_true",
+                          help="Play without a time limit; close the game window to exit")
     parser.add_argument("--input-start-pulse-at", type=int, action="append", default=[])
     parser.add_argument("--input-a-pulse-at", type=int, action="append", default=[])
     parser.add_argument("--input-buttons-pulse-at", type=int, nargs=2, action="append", default=[],
@@ -98,9 +103,9 @@ if __name__ == "__main__":
                         metavar=("POLL", "INDEX"), help="Press A/B/X/Y/Black/White/LTrig/RTrig (0..7)")
     args = parser.parse_args()
     try:
-        raise SystemExit(run(args.seconds, args.input_start_pulse_at,
+        raise SystemExit(run(None if args.play else args.seconds, args.input_start_pulse_at,
                              args.input_a_pulse_at, args.isolated, args.input_buttons_pulse_at,
                              args.input_analog_pulse_at))
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-        print(f"Cannot run boot probe: {error}", file=sys.stderr)
+        print(f"Cannot run game: {error}", file=sys.stderr)
         raise SystemExit(1)

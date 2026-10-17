@@ -10,6 +10,35 @@ from run_game import prepare_disc, run
 
 
 class DiscTests(unittest.TestCase):
+    def test_play_keeps_player_saves_and_has_no_deadline_or_script(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "private/program").mkdir(parents=True)
+            selected = root / "private/import/game.input"
+            selected.parent.mkdir()
+            selected.write_bytes(b"synthetic input")
+            receipt = dict(recipe=dict(xbe_sha256="hash"), manifest_sha256="hash",
+                           ebp_count=0, runner_sha256="hash")
+            (root / "private/program/receipt.json").write_text(json.dumps(receipt))
+            disc = root / "private/play-disc"
+            save = disc / ".recomp-storage/profile"
+            save.parent.mkdir(parents=True)
+            save.write_text("user save")
+            with patch("run_game.ROOT", root), patch("run_game.selected_xbe", return_value=selected), \
+                    patch("run_game.program_manifest", return_value=("hash", 0)), \
+                    patch("run_game.sha256", return_value="hash"), \
+                    patch("run_game.subprocess.run") as execute:
+                execute.return_value.returncode = 0
+                self.assertEqual(run(None), 0)
+                self.assertIsNone(execute.call_args.kwargs["timeout"])
+                self.assertEqual(execute.call_args.args[0], [
+                    str(root / "build/recomp-program/Release/recomp_program_runner.exe"),
+                    "--xbe", str(disc / selected.name), "--disc-root", str(disc)])
+            self.assertEqual(save.read_text(), "user save")
+            logs = list((root / "private/play-logs").glob("*.log"))
+            self.assertEqual(len(logs), 1)
+            self.assertIn("runner_sha256=hash", logs[0].read_text())
+
     def test_isolated_probe_uses_separate_saves_and_scripted_input(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
