@@ -215,6 +215,20 @@ static int draw_tests(void)
     CHECK(submitted.data.draw.screen_space_offset[0] == 0.0f && submitted.data.draw.screen_space_offset[1] == 0.0f);
     CHECK(submitted.data.draw.has_scissor && submitted.data.draw.scissor[2] == 720 &&
         submitted.data.draw.scissor[3] == 480);
+    const uint32_t binding = *recomp_memory_u32(DEVICE + 0xf88u);
+    *recomp_memory_u32(DEVICE + 0xf88u) = 0x7100u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 28u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:draw-texture-description:stage=0:resource=00007100:common=00000000:format=00000000:fvf=144:ret=12345678") == 0);
+    *recomp_memory_u32(0x7100u) = 0x40001u;
+    *recomp_memory_u32(0x710cu) = 0x02210624u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 28u); return 1; }
+    CHECK(strstr(stop_reason, ":common=00040001:format=02210624:") != NULL);
+    *recomp_memory_u32(DEVICE + 0xf88u) = 0x7000u;
+    texture.depth = true;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 28u); return 1; }
+    CHECK(strstr(stop_reason, "d3d8:draw-texture-description:depth:stage=0:") == stop_reason);
+    texture.depth = false;
+    *recomp_memory_u32(DEVICE + 0xf88u) = binding;
     const int32_t scissor[4] = {8, 12, 80, 120};
     recomp_guest_store(DEVICE + 0x1b80u, scissor, sizeof scissor);
     *recomp_memory_u32(DEVICE + 0x1c00u) = 1u;

@@ -175,11 +175,17 @@ static void attach_texture(uint32_t device, uint32_t stage, RecompD3dPresenterDr
     const uint32_t resource = *recomp_memory_u32(device + 0xf88u + stage * 4u);
     if (!recomp_d3d8_resource_inline_texture(stage, &draw->texture)) {
         if (resource == 0u) return;
-        if (!recomp_d3d8_resource_describe(resource, &draw->texture))
-            recomp_stop(2, "d3d8:draw-texture-description");
+        if (!recomp_d3d8_resource_describe(resource, &draw->texture)) {
+            const uint32_t common = *recomp_memory_u32(resource), type = common & 0x70000u;
+            const uint32_t format = type == 0x40000u || type == 0x50000u ?
+                *recomp_memory_u32(resource + 12u) : 0u;
+            recomp_stop(2, "d3d8:draw-texture-description:stage=%u:resource=%08x:common=%08x:format=%08x:fvf=%x:ret=%08x",
+                stage, resource, common, format, draw->fvf, *recomp_memory_u32(recomp_runtime.registers.esp));
+        }
     }
     if (draw->texture.depth)
-        recomp_stop(2, "d3d8:draw-texture-description");
+        recomp_stop(2, "d3d8:draw-texture-description:depth:stage=%u:resource=%08x:fvf=%x:ret=%08x",
+            stage, resource, draw->fvf, *recomp_memory_u32(recomp_runtime.registers.esp));
     const RecompD3dTextureDesc *desc = &draw->texture;
     uint64_t bytes = recomp_d3d_texture_compressed_mip_span(desc);
     if (bytes == 0u) bytes = desc->linear ? (uint64_t)desc->pitch * desc->height :
