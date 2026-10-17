@@ -558,6 +558,31 @@ static int lighting_tests(void)
     CHECK(lit->normal_transforms[0][0] == 0.5f && lit->normal_transforms[0][10] == 0.25f);
     CHECK(lit->world_transforms[0][12] == 5.0f && lit->view[2] == -1.0f && lit->view[3] == 16.0f);
     CHECK(lit->stage[0] == 1.0f && lit->stage[1] == 1.0f && lit->stage[2] == 1.0f && lit->stage[3] == 1.0f);
+    /* A disabled first color op ends both channels, even with a texture bound. */
+    *recomp_memory_u32(STAGES + 48u) = *recomp_memory_u32(STAGES + 64u) = 1u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    CHECK(lit->enabled && submitted.data.draw.has_texture && !submitted.data.draw.has_reflection);
+    CHECK(lit->stage[0] == 0.0f && lit->stage[1] == 1.0f &&
+        lit->stage[2] == 0.0f && lit->stage[3] == 1.0f);
+    CHECK(submitted.data.draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_NONE);
+    /* ALPHAOP, its arguments and later combiners are not read; sampling still runs. */
+    *recomp_memory_u32(STAGES + 64u) = 2u;
+    *recomp_memory_u32(STAGES + 72u) = 3u;
+    *recomp_memory_u32(STAGES + 128u + 48u) = 99u;
+    *recomp_memory_u32(STAGES + 44u) = 4u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    CHECK(lit->enabled && submitted.data.draw.has_texture && submitted.data.draw.alpha_kill &&
+        !submitted.data.draw.use_texture_factor && !submitted.data.draw.modulate_texture_factor_alpha);
+    *recomp_memory_u32(0x3553f8u) = 0u;
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x142u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 24u);
+    CHECK(!lit->enabled && lit->stage_mode && lit->stage[1] == 1.0f && lit->stage[3] == 1.0f);
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x112u;
+    *recomp_memory_u32(0x3553f8u) = 1u;
+    *recomp_memory_u32(STAGES + 44u) = 0u;
+    *recomp_memory_u32(STAGES + 48u) = *recomp_memory_u32(STAGES + 64u) = 4u;
+    *recomp_memory_u32(STAGES + 72u) = 2u;
+    *recomp_memory_u32(STAGES + 128u + 48u) = 1u;
     /* Stage-0 CURRENT reads diffuse (MODULATE(TEXTURE, CURRENT) in a fight). */
     *recomp_memory_u32(STAGES + 15u * 4u) = 1u;
     invoke(0x348240u, 5u, 3u, VERTICES, 32u);
@@ -1073,6 +1098,12 @@ static int program_tests(void)
         }
     }
     CHECK(submits == before + 10u);
+    /* Disabled combiner chains on programs remain outside this binding. */
+    *recomp_memory_u32(STAGES + 48u) = 1u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 48u); return 1; }
+    CHECK(strncmp(stop_reason, "d3d8:vertex-program-stages:", 26u) == 0);
+    *recomp_memory_u32(STAGES + 48u) = 2u;
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected restored stages stop: %s\n", stop_reason); return 1; }
     *recomp_memory_u32(STAGES) = *recomp_memory_u32(STAGES + 4u) = 3u;
     *recomp_memory_u32(STAGES + 44u) = 4u;
     invoke(0x348240u, 5u, 3u, VERTICES, 48u);

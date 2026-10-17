@@ -349,7 +349,7 @@ static bool testLighting()
         auto clear = clearCommand();
         clear.data.clear.color = 0xff000000u;
         passed &= expect("lighting clear", d3d11_backend_submit(presenter, &clear));
-        for (unsigned i = 0; i < 18 && passed; ++i) {
+        for (unsigned i = 0; i < 20 && passed; ++i) {
             struct Vertex { float x, y, z, nx, ny, nz, u, v; };
             Vertex vertices[] = {
                 {-0.1f, 0.1f, 0.5f, 0, 0, 1, 0, 0}, {0.1f, 0.1f, 0.5f, 0, 0, 1, 1, 0},
@@ -413,8 +413,8 @@ static bool testLighting()
                 light.normal_transforms[0][0] = light.normal_transforms[0][10] = 0;
                 light.normal_transforms[0][2] = 1;
             }
-            const bool vertex_diffuse = (i >= 9 && i < 14 && i != 11) || i >= 16;
-            const uint32_t base_pixel = i >= 14 ? 0x80c08040u : vertex_diffuse ? 0xc080e0ffu : 0x800000ffu;
+            const bool vertex_diffuse = (i >= 9 && i < 14 && i != 11) || (i >= 16 && i < 18);
+            const uint32_t base_pixel = i >= 18 ? 0x000000ffu : i >= 14 ? 0x80c08040u : vertex_diffuse ? 0xc080e0ffu : 0x800000ffu;
             const uint32_t environment_pixel = i == 12 ? 0u : i == 13 ? 0xff804020u
                 : vertex_diffuse ? 0x80ff8000u : 0x40ff0000u;
             if (i >= 8 && i < 14) {
@@ -439,7 +439,7 @@ static bool testLighting()
                 draw.reflection_byte_count = sizeof environment_pixel;
                 std::memcpy(draw.reflection_diffuse, material, sizeof material);
             }
-            if (i >= 14) {
+            if (i >= 14 && i < 18) {
                 draw.transform[12] = (i & 1) ? 0.5f : -0.5f;
                 draw.transform[13] = i >= 16 ? -0.85f : 0.85f;
                 draw.depth.alpha_test_enable = false;
@@ -464,6 +464,20 @@ static bool testLighting()
                     light.view[2] = 1;
                     light.view[3] = 8;
                 }
+            }
+            if (i >= 18) {
+                draw.transform[12] = (i & 1) ? 0.5f : -0.5f;
+                draw.transform[13] = 0.25f;
+                draw.transform[5] = 0.4f;
+                draw.has_texture = true;
+                draw.texture.data = 0x4000u;
+                draw.texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
+                draw.texture.bits_per_pixel = 32;
+                draw.texture.width = draw.texture.height = 1;
+                draw.texture_bytes = &base_pixel;
+                draw.texture_byte_count = sizeof base_pixel;
+                draw.alpha_kill = i == 19;
+                light.stage[1] = light.stage[3] = 1;
             }
             struct DiffuseVertex { float x, y, z; uint32_t diffuse; float u, v; };
             DiffuseVertex diffuse_vertices[4]{};
@@ -491,13 +505,13 @@ static bool testLighting()
         if (FILE *file = std::fopen(path, "rb")) {
             const int expected[][3] = {{102, 77, 108}, {26, 26, 32}, {54, 45, 67}, {6, 13, 26},
                 {108, 89, 77}, {255, 0, 0}, {0, 0, 0}, {102, 77, 108}, {30, 7, 10}, {21, 39, 21},
-                {33, 83, 44}, {46, 10, 48}, {36, 42, 12}, {12, 32, 32}, {12, 16, 12}, {15, 23, 25}, {12, 16, 12}, {6, 8, 6}};
+                {33, 83, 44}, {46, 10, 48}, {36, 42, 12}, {12, 32, 32}, {12, 16, 12}, {15, 23, 25}, {12, 16, 12}, {6, 8, 6}, {102, 77, 108}, {0, 0, 0}};
             // SRC_ALPHA over black checks reflection alpha as well as RGB. PM clamps before diffuse.
-            for (unsigned i = 0; i < 18; ++i) {
+            for (unsigned i = 0; i < 20; ++i) {
                 unsigned char bgr[3]{};
                 const unsigned x = i >= 14 ? 80 + 160 * (i & 1)
                     : i >= 8 ? (160 * (i - 8) + 80) / 3 : 40 + 80 * (i % 4);
-                const unsigned y = i >= 16 ? 222 : i >= 14 ? 18 : i >= 8 ? 120 : 60 + 120 * (i / 4);
+                const unsigned y = i >= 18 ? 90 : i >= 16 ? 222 : i >= 14 ? 18 : i >= 8 ? 120 : 60 + 120 * (i / 4);
                 std::fseek(file, 54 + (239 - y) * 960 + x * 3, SEEK_SET);
                 passed &= std::fread(bgr, 1, 3, file) == 3;
                 for (unsigned c = 0; c < 3; ++c) {

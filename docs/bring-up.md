@@ -199,6 +199,10 @@ specular ordering. Unlit streams without vertex color also admit texture times
 factor in both RGB and alpha (FVF 0x102, draw return 0x1a1edd), through the same
 per-channel selection. The RGB-only factor flag is cleared so it cannot apply
 twice; adapter tests cover world/screen layouts and native pixels check alpha.
+Stage-0 COLOROP DISABLE ends the fixed-function combiner chain with diffuse
+RGB and alpha (`0x352b1e`), ignoring ALPHAOP and later combiners. Bound texture
+sampling remains active (`0x34f080`), including stage-0 ALPHAKILL. Adapter and
+native pixel checks cover diffuse/material alpha passthrough and that rejection.
 Material
 checks cover only what the SDK uploads: diffuse, ambient and specular RGB
 (0x34fb90), emissive RGB and diffuse alpha (0x34fc80), and specular RGB and

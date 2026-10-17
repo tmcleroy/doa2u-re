@@ -508,6 +508,12 @@ static void bump_stages(uint32_t device, bool water, RecompD3dPresenterDrawComma
    TFACTOR as one argument, which the presenter applies as a factor. */
 static bool stage0_select(const uint32_t *stage, float select[4], bool *alpha_tfactor)
 {
+    /* 0x352b1e ends the chain with diffuse RGB/alpha when COLOROP is DISABLE. */
+    if (stage[12] == 1u) {
+        select[0] = select[2] = 0.0f;
+        select[1] = select[3] = 1.0f;
+        return true;
+    }
     for (uint32_t channel = 0u; channel < 2u; ++channel) {
         uint32_t op = stage[12u + channel * 4u];
         uint32_t arg1 = stage[14u + channel * 4u], arg2 = stage[15u + channel * 4u];
@@ -553,8 +559,10 @@ static void attach_lighting(uint32_t device, const RecompD3dVertexLayout *layout
     RecompD3dDirectionalLighting result = {0};
     const uint32_t *stage = recomp_memory_u32(STAGES);
     if (draw->has_texture && !stage0_select(stage, result.stage, NULL))
-        recomp_stop(2, "d3d8:lighting-stage:%u,%u,%u/%u,%u,%u", stage[12], stage[14], stage[15],
-            stage[16], stage[18], stage[19]);
+        recomp_stop(2, "d3d8:lighting-stage:%u,%u,%u/%u,%u,%u:fvf=%x:ps=%x:ret=%08x:s1=%u,%u",
+            stage[12], stage[14], stage[15], stage[16], stage[18], stage[19], draw->fvf,
+            *recomp_memory_u32(device + PIXEL_HANDLE), *recomp_memory_u32(recomp_runtime.registers.esp),
+            *recomp_memory_u32(STAGES + 128u + 48u), *recomp_memory_u32(STAGES + 128u + 64u));
     float material[17];
     recomp_guest_load(material, device + 0xf00u, sizeof material);
     /* 0x34fc80 sends diffuse alpha unchanged as the lit alpha (NV097 0x3b4),
@@ -829,8 +837,8 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
         const bool factor_alpha = stage[0][16] == 4u &&
             ((stage[0][18] == 2u && stage[0][19] == 3u) || (stage[0][18] == 3u && stage[0][19] == 2u));
         const bool unlit_select = !draw->directional.enabled && !draw->has_reflection &&
-            (!white || (factor_color && factor_alpha)) &&
-            (factor_color || (stage[0][12] == 2u && stage[0][14] == 2u)) &&
+            (!white || (factor_color && factor_alpha) || stage[0][12] == 1u) &&
+            (factor_color || stage[0][12] == 1u || (stage[0][12] == 2u && stage[0][14] == 2u)) &&
             stage0_select(stage[0], draw->directional.stage, factor_color ? NULL : &alpha_tfactor);
         if (unlit_select) {
             draw->directional.stage_mode = true;
@@ -879,6 +887,10 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
             for (uint32_t i = 0u; i < 16u; ++i)
                 if (!isfinite(draw->reflection_transform[i])) recomp_stop(2, "d3d8:texture-transform");
             draw->texture_transform_uv = true;
+        }
+        if (stage[0][12] == 1u) {
+            draw->material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_NONE;
+            return;
         }
         const uint32_t final[6] = {stage[1][12], stage[1][14], stage[1][15],
             stage[1][16], stage[1][18], stage[1][19]};
@@ -999,7 +1011,8 @@ static void program_stages(uint32_t device, RecompD3dPresenterDrawCommand *draw)
     /* Stage 0 selects texture and oD0 per channel; alpha may MODULATE by
        TFACTOR (the projected shadow FUN_0027a760, the effect FUN_002718e0). */
     bool alpha_tfactor = false;
-    const bool select_texture = stage0_select(stage[0], draw->directional.stage, &alpha_tfactor);
+    const bool select_texture = stage[0][12] != 1u &&
+        stage0_select(stage[0], draw->directional.stage, &alpha_tfactor);
     draw->directional.stage_mode = true;
     draw->modulate_texture_factor_alpha = alpha_tfactor;
     /* 5849's combiner compiler (0x352e46) compiles an op that reads a NULL
