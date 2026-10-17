@@ -13,6 +13,7 @@ void recomp_input_pulse_source_init(
     source->a_poll_count = 0u;
     source->buttons_poll_count = 0u;
     source->analog_poll_count = 0u;
+    source->repeat_count = 0u;
     source->sample_count = 0u;
     source->paused = false;
     source->pending_analog_index = 0u;
@@ -77,6 +78,24 @@ bool recomp_input_pulse_source_add_analog_poll(
     source->analog_indices[source->analog_poll_count] = index;
     source->analog_values[source->analog_poll_count] = value;
     ++source->analog_poll_count;
+    return true;
+}
+
+bool recomp_input_pulse_source_add_analog_repeat(
+    RecompInputPulseSource *source,
+    uint64_t first,
+    uint64_t period,
+    uint8_t index)
+{
+    if (source == NULL || first == 0u || period == 0u ||
+        index >= RECOMP_INPUT_ANALOG_BUTTON_COUNT ||
+        source->repeat_count >= RECOMP_INPUT_ANALOG_REPEAT_CAPACITY) {
+        return false;
+    }
+    source->repeat_firsts[source->repeat_count] = first;
+    source->repeat_periods[source->repeat_count] = period;
+    source->repeat_indices[source->repeat_count] = index;
+    ++source->repeat_count;
     return true;
 }
 
@@ -169,6 +188,12 @@ bool recomp_input_pulse_source_sample(
             gamepad->analog_buttons[source->analog_indices[i]] =
                 source->analog_values[i];
             break;
+        }
+    }
+    for (unsigned i = 0u; i < source->repeat_count; ++i) {
+        if (source->sample_count >= source->repeat_firsts[i] &&
+            (source->sample_count - source->repeat_firsts[i]) % source->repeat_periods[i] == 0u) {
+            gamepad->analog_buttons[source->repeat_indices[i]] = RECOMP_INPUT_ANALOG_PRESSED;
         }
     }
     sample_pending_press(source, gamepad);

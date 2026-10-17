@@ -36,6 +36,7 @@ enum {
     RECOMP_INPUT_ANALOG_LTRIG = 6u,
     RECOMP_INPUT_ANALOG_RTRIG = 7u,
     RECOMP_INPUT_ANALOG_PULSE_CAPACITY = 1024u,
+    RECOMP_INPUT_ANALOG_REPEAT_CAPACITY = 8u,
 };
 
 typedef struct RecompInputPulseSource {
@@ -51,6 +52,10 @@ typedef struct RecompInputPulseSource {
     uint8_t analog_indices[RECOMP_INPUT_ANALOG_PULSE_CAPACITY];
     uint8_t analog_values[RECOMP_INPUT_ANALOG_PULSE_CAPACITY];
     unsigned analog_poll_count;
+    uint64_t repeat_firsts[RECOMP_INPUT_ANALOG_REPEAT_CAPACITY];
+    uint64_t repeat_periods[RECOMP_INPUT_ANALOG_REPEAT_CAPACITY];
+    uint8_t repeat_indices[RECOMP_INPUT_ANALOG_REPEAT_CAPACITY];
+    unsigned repeat_count;
     uint64_t sample_count;
     bool paused;
     uint8_t pending_analog_index;
@@ -85,6 +90,13 @@ bool recomp_input_pulse_source_add_analog_poll(
     uint64_t pulse_poll,
     uint8_t index,
     uint8_t value);
+/* Presses one analog button at poll first and every period polls after it,
+   so a long run's attack cadence is one rule instead of thousands of edges. */
+bool recomp_input_pulse_source_add_analog_repeat(
+    RecompInputPulseSource *source,
+    uint64_t first,
+    uint64_t period,
+    uint8_t index);
 /* Six successful samples pressed, then one released, including while paused.
    Only the selected analog byte overrides base/script input. Rejects another
    press until the release sample is delivered. */
