@@ -8,8 +8,7 @@
 RecompRuntime recomp_runtime;
 uint8_t *recomp_fast_ram;
 static uint32_t tick, polls;
-static uint32_t guest_stack[32], movie_calls;
-static bool movie_open;
+static uint32_t guest_stack[32];
 uint32_t *recomp_memory_u32_checked(uint32_t address)
 {
     if (address == XBOX_KERNEL_DATA_BASE + 0x40u) return &tick;
@@ -22,22 +21,11 @@ uint64_t recomp_xapi_performance_counter(void) { return UINT64_C(123456789000); 
 
 void recomp_dispatch_indirect_site(uint32_t address, uint32_t saved_esp, const char *member, int line)
 {
-    const uint32_t esp = recomp_runtime.registers.esp;
-    if (saved_esp != 0x1000u || member == NULL || line <= 0 || *recomp_memory_u32(esp) != 0u)
-        abort();
-    if (movie_calls == 0u && address == 0x000f9e10u) {
-        if (esp != 0xff8u || *recomp_memory_u32(esp + 4u) != 0u || movie_open) abort();
-        movie_open = true;
-    } else if (movie_calls == 1u && address == 0x000f9a10u) {
-        if (esp != 0xffcu || !movie_open) abort();
-        movie_open = false;
-    } else abort();
-    ++movie_calls;
-    recomp_runtime.registers.eax = movie_calls;
-    recomp_runtime.registers.ecx = 0x1234u;
-    recomp_runtime.registers.edx = 0x5678u;
-    /* Movie setup is cdecl: the guest return leaves its argument on the stack. */
-    recomp_runtime.registers.esp += 4u;
+    (void)address;
+    (void)saved_esp;
+    (void)member;
+    (void)line;
+    abort();
 }
 
 RecompFunction recomp_d3d8_lookup_manual(uint32_t address)
@@ -118,36 +106,34 @@ static int test_fmod(void)
     return 1;
 }
 
-static int test_startup_first_clip_skip(void)
+static int test_startup_legal_skip(void)
 {
-    RecompFunction function = recomp_lookup_manual(0x000d9300u);
+    RecompFunction function = recomp_lookup_manual(0x000d92c0u);
     if (function == NULL) {
-        fprintf(stderr, "FAIL startup first-clip skip is not bound\n");
+        fprintf(stderr, "FAIL startup legal skip is not bound\n");
         return 0;
     }
     for (unsigned boot = 0u; boot < 2u; ++boot) {
+        uint32_t expected_stack[32];
         memset(guest_stack, 0xa5, sizeof guest_stack);
-        movie_calls = 0u;
-        movie_open = false;
+        memcpy(expected_stack, guest_stack, sizeof expected_stack);
         recomp_runtime.registers = (RecompRegisters){1u, 2u, 3u, 4u, 5u, 6u, 7u, 0x1000u};
         RecompRegisters expected = recomp_runtime.registers;
-        expected.eax = 2u;
-        expected.ecx = 0x1234u;
-        expected.edx = 0x5678u;
         expected.esp += 4u;
         function();
-        if (movie_calls != 2u || movie_open ||
-            memcmp(&expected, &recomp_runtime.registers, sizeof expected) != 0 ||
-            *recomp_memory_u32(0x1000u) != 0xa5a5a5a5u ||
-            *recomp_memory_u32(0x1004u) != 0xa5a5a5a5u) return 0;
+        if (memcmp(&expected, &recomp_runtime.registers, sizeof expected) != 0 ||
+            memcmp(expected_stack, guest_stack, sizeof guest_stack) != 0) return 0;
     }
-    return recomp_lookup_manual(0x000f9e10u) == NULL &&
+    return recomp_lookup_manual(0x000d9300u) == NULL &&
+        recomp_lookup_manual(0x000951b0u) == NULL &&
+        recomp_lookup_manual(0x00092e30u) == NULL &&
+        recomp_lookup_manual(0x000f9e10u) == NULL &&
         recomp_lookup_manual(0x000fa170u) == NULL && recomp_lookup_manual(0x000f9a10u) == NULL;
 }
 
 int main(void)
 {
-    if (!test_fmod() || !test_startup_first_clip_skip()) return 1;
+    if (!test_fmod() || !test_startup_legal_skip()) return 1;
     RecompFunction init_segment = recomp_lookup_manual(0x002bd531u);
     if (init_segment == NULL) return 1;
     recomp_runtime.registers.esp = 0x1000u;

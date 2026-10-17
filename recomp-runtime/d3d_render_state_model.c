@@ -1,5 +1,7 @@
 #include "d3d_render_state_model.h"
 #include <stddef.h>
+#include <math.h>
+#include <string.h>
 
 enum {
     D3D_SIMPLE_COMMAND_BASE = 0x00040000u,
@@ -13,6 +15,9 @@ enum {
     D3D_METHOD_BLEND_DST = D3D_SIMPLE_COMMAND_BASE | 0x0348u,
     D3D_METHOD_BLEND_COLOR = D3D_SIMPLE_COMMAND_BASE | 0x034cu,
     D3D_METHOD_BLEND_EQUATION = D3D_SIMPLE_COMMAND_BASE | 0x0350u,
+    D3D_METHOD_POLYGON_OFFSET_ENABLE = D3D_SIMPLE_COMMAND_BASE | 0x0338u,
+    D3D_METHOD_POLYGON_OFFSET_FACTOR = D3D_SIMPLE_COMMAND_BASE | 0x0384u,
+    D3D_METHOD_POLYGON_OFFSET_UNITS = D3D_SIMPLE_COMMAND_BASE | 0x0388u,
     D3D_METHOD_DEPTH_FUNC = D3D_SIMPLE_COMMAND_BASE | 0x0354u,
     D3D_METHOD_COLOR_MASK = D3D_SIMPLE_COMMAND_BASE | 0x0358u,
     D3D_METHOD_DEPTH_MASK = D3D_SIMPLE_COMMAND_BASE | 0x035cu,
@@ -193,6 +198,27 @@ bool recomp_d3d_get_simple_render_state(
         return false;
     }
     *value = model->simple_values[index];
+    return true;
+}
+
+bool recomp_d3d_polygon_offset(
+    const RecompD3dRenderStateModel *model, int32_t *units, float *slope)
+{
+    uint32_t enabled = 0u, factor_bits = 0u, units_bits = 0u;
+    float factor, bias;
+    if (units == NULL || slope == NULL) return false;
+    *units = 0;
+    *slope = 0.0f;
+    recomp_d3d_get_simple_render_state(model, D3D_METHOD_POLYGON_OFFSET_ENABLE, &enabled);
+    if (enabled == 0u) return true;
+    recomp_d3d_get_simple_render_state(model, D3D_METHOD_POLYGON_OFFSET_FACTOR, &factor_bits);
+    recomp_d3d_get_simple_render_state(model, D3D_METHOD_POLYGON_OFFSET_UNITS, &units_bits);
+    memcpy(&factor, &factor_bits, sizeof factor);
+    memcpy(&bias, &units_bits, sizeof bias);
+    if (!isfinite(factor) || !isfinite(bias) || bias < -2147483648.0f ||
+        bias >= 2147483648.0f || truncf(bias) != bias) return false;
+    *units = (int32_t)bias;
+    *slope = factor;
     return true;
 }
 

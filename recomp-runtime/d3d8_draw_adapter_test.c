@@ -1634,12 +1634,49 @@ static int frame_buffer_tests(void)
     return 0;
 }
 
+static int depth_bias_tests(void)
+{
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected depth bias stop: %s\n", stop_reason); return 1; }
+    initialize();
+    /* 5849 ZBias(1): receiver slope -1/4, units -1, offset fill enabled. */
+    CHECK(recomp_d3d8_state_set_simple(0x40384u, 0xbe800000u));
+    CHECK(recomp_d3d8_state_set_simple(0x40388u, 0xbf800000u));
+    CHECK(recomp_d3d8_state_set_simple(0x40338u, 1u));
+    invoke(0x348240u, 5u, 3u, VERTICES, 28u);
+    CHECK(submitted.data.draw.depth_bias == -1 && submitted.data.draw.slope_scaled_depth_bias == -0.25f);
+    CHECK(recomp_d3d8_state_set_simple(0x40338u, 0u));
+    invoke(0x348240u, 5u, 3u, VERTICES, 28u);
+    CHECK(submitted.data.draw.depth_bias == 0 && submitted.data.draw.slope_scaled_depth_bias == 0.0f);
+    /* Non-polygons do not inherit fill offset, even when expanded into quads. */
+    CHECK(recomp_d3d8_state_set_simple(0x40338u, 1u));
+    invoke(0x348240u, 2u, 2u, VERTICES, 28u);
+    CHECK(submitted.data.draw.depth_bias == 0 && submitted.data.draw.slope_scaled_depth_bias == 0.0f);
+    CHECK(recomp_d3d8_state_set_simple(0x40388u, 0u));
+    CHECK(recomp_d3d8_state_set_simple(0x40384u, 0x3f800000u));
+    invoke(0x348240u, 5u, 3u, VERTICES, 28u);
+    CHECK(submitted.data.draw.depth_bias == 0 && submitted.data.draw.slope_scaled_depth_bias == 1.0f);
+    CHECK(recomp_d3d8_state_set_simple(0x40384u, 0x7fc00000u));
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 28u); return 1; }
+    CHECK(strncmp(stop_reason, "d3d8:draw-depth-bias", 20u) == 0);
+    CHECK(recomp_d3d8_state_set_simple(0x40384u, 0u));
+    const uint32_t invalid_units[] = {0x3f000000u, 0x7f800000u, 0x4f000000u};
+    for (unsigned i = 0; i < sizeof invalid_units / sizeof invalid_units[0]; ++i) {
+        CHECK(recomp_d3d8_state_set_simple(0x40388u, invalid_units[i]));
+        if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 28u); return 1; }
+        CHECK(strncmp(stop_reason, "d3d8:draw-depth-bias", 19u) == 0);
+    }
+    CHECK(recomp_d3d8_state_set_simple(0x40338u, 0u));
+    invoke(0x348240u, 5u, 3u, VERTICES, 28u);
+    CHECK(submitted.data.draw.depth_bias == 0 && submitted.data.draw.slope_scaled_depth_bias == 0.0f);
+    return 0;
+}
+
 int main(void)
 {
     initialize();
     if (pixel_tests() || draw_tests() || line_tests() || quad_tests() || point_tests() || lighting_tests() || filter_tests() || bright_tests() ||
         distortion_tests() || factor_tests() || position_texgen_tests() || effect_tests() || program_tests() || bump_tests() ||
-        volume_tests() || reflection_inverse_tests() || frame_buffer_tests()) return 1;
+        volume_tests() || reflection_inverse_tests() || frame_buffer_tests() || depth_bias_tests()) return 1;
     puts("PASS D3D8 pixel lifecycle/constants and semantic draw ABI/snapshots");
     return 0;
 }

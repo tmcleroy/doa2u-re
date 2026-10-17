@@ -139,6 +139,11 @@ void recomp_d3d_depth_state(
     const RecompD3dRenderStateModel *model,
     RecompD3dDepthState *state);
 
+/* Polygon offset in D24 storage units. Disabled offset ignores its parameters.
+   Fractional/out-of-range units and nonfinite active values are unsupported. */
+bool recomp_d3d_polygon_offset(
+    const RecompD3dRenderStateModel *model, int32_t *units, float *slope);
+
 /* Blend factors, in the order the NV2A GL enums imply. */
 typedef enum RecompD3dBlendFactor {
     RECOMP_D3D_BLEND_ZERO,

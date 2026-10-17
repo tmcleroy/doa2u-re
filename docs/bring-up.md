@@ -64,9 +64,9 @@ For normal play, open `play.cmd` or run `python tools/run_game.py --play`.
 It uses the player's existing saves and physical controls with no time limit.
 Close the game window to exit. Session logs, including the runner identity and any
 runtime stop, are kept under `private/play-logs/`.
-The first startup clip is skipped automatically at its game-owned wrapper
-(`0xd9300`), preserving movie initialization and teardown. The separate
-opening movie and later story movies keep their normal controls.
+The startup legal presentation is skipped automatically at its game-owned
+wrapper (`0xd92c0`), before its menu and asset setup. The first startup movie
+(`0xd9300`), opening movie and later story movies keep their normal controls.
 
 The first boot copies about 700 MB of disc archives into the `Z:` cache
 partition, 32 KB per frame, while drawing only cleared frames. At the native
@@ -89,6 +89,21 @@ both selectors retain the presenter's shared frame-buffer flag. Constant-alpha
 blend factors (`0x8003`/`0x8004`) retain their native blend semantics. Adapter
 and GPU pixel regressions cover the final-stage style frame blend that would
 otherwise cover the scene with blank guest memory.
+
+Polygon offset now survives the simple-state model, captured draw and native
+rasterizer. The 5849 `ZBias(1)` receiver state is slope `-0.25`, D24 units
+`-1`, with fill offset enabled; resetting it restores zero bias. The reflection
+and projected-shadow receivers both use this state to separate their polygons
+from the floor. Active nonfinite parameters or fractional/out-of-range constant
+units stop explicitly. Disabled offset does not consume those parameters.
+The native rasterizer uses the [D3D11 depth-bias equation](https://learn.microsoft.com/en-us/windows/win32/direct3d11/d3d10-graphics-programming-guide-output-merger-stage-depth-bias)
+with the existing D24 depth surfaces. Scaled main targets reconstruct slope
+per guest pixel in the receiver pixel shader, independently for X and Y, after
+clipping; constant bias remains in the native rasterizer. With multisampling,
+sample positions restore each sample depth while color and alpha retain their
+pixel-center evaluation. This scaled MSAA path requires feature level 10.1.
+Adapter, queued-capture and native pixel tests cover parameter transfer, sign,
+slope, scaling, 4x sample visibility and restoration.
 
 `d3d8_adapter.c` owns the whole 5849 CreateDevice boundary and uses the
 committed sister-project D3D11 presenter. The plain device, frame and tile

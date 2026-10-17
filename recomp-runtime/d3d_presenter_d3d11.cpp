@@ -119,6 +119,7 @@ constexpr char kDrawShaderPrologue[] =
     "    row_major float4x4 reflection_blend_normal[3];\n"
     "    row_major float4x4 reflection_transform2;\n"
     "    float4 reflection_stage2_flags;\n"
+    "    float4 raster_bias;\n"
     "}\n"
     "Texture2D guest_texture : register(t0);\n"
     "Texture3D guest_volume : register(t3);\n"
@@ -410,6 +411,8 @@ struct DrawPipeline {
     uint32_t program[136][4];
     bool used;
     bool failed;
+    bool scaled_depth_bias;
+    bool sample_depth_bias;
     ID3D11VertexShader *vertex_shader;
     ID3D11GeometryShader *geometry_shader;
     ID3D11PixelShader *pixel_shader;
@@ -433,6 +436,14 @@ struct DepthStateEntry {
     RecompD3dStencilOp stencil_zfail;
     RecompD3dStencilOp stencil_pass;
     ID3D11DepthStencilState *state;
+};
+
+constexpr uint32_t kRasterStateSlots = 16u;
+struct RasterStateEntry {
+    RecompD3dCullMode cull;
+    int32_t bias;
+    float slope;
+    ID3D11RasterizerState *state;
 };
 
 constexpr uint32_t kBlendStateSlots = 16u;
@@ -569,7 +580,8 @@ struct RecompD3dPresenter {
     ID3D11Buffer *draw_vertex_buffer = nullptr;
     ID3D11Buffer *draw_index_buffer = nullptr;
     ID3D11Buffer *draw_constant_buffer = nullptr;
-    ID3D11RasterizerState *draw_rasterizer_states[3] = {};
+    RasterStateEntry raster_states[kRasterStateSlots]{};
+    uint32_t raster_state_count = 0u, next_raster_state_slot = 0u;
     UINT draw_vertex_capacity = 0u;
     UINT draw_index_capacity = 0u;
     UINT draw_vertex_used = 0u;
@@ -740,7 +752,8 @@ void releaseGraphics(RecompD3dPresenter *presenter)
     releaseCom(presenter->gamma_pixel_shader);
     releaseCom(presenter->gamma_buffer);
     releaseSmaa(presenter);
-    for (auto &state : presenter->draw_rasterizer_states) releaseCom(state);
+    for (auto &entry : presenter->raster_states) releaseCom(entry.state);
+    presenter->raster_state_count = presenter->next_raster_state_slot = 0u;
     releaseCom(presenter->draw_constant_buffer);
     releaseCom(presenter->draw_index_buffer);
     releaseCom(presenter->draw_vertex_buffer);
@@ -1404,7 +1417,7 @@ bool compileDrawShader(
     const char *target,
     ID3DBlob **blob)
 {
-    std::string key = std::string(entry_point) + '\n' + source;
+    std::string key = std::string(target) + '\n' + entry_point + '\n' + source;
     {
         std::lock_guard<std::mutex> lock(compiled_shaders_lock);
         const auto found = compiled_shaders.find(key);
@@ -1611,6 +1624,28 @@ bool drawShaderSource(
             "    }\n"
             "}\n";
     }
+    if (pipeline.scaled_depth_bias) {
+        const auto entry = compiled_source.find("float4 ps_main(");
+        if (entry == std::string::npos) return false;
+        compiled_source.replace(entry, 15, "float4 ps_color(");
+        compiled_source +=
+            "\nstruct DepthOutput { float4 color : SV_TARGET; float depth : SV_Depth; };\n"
+            "DepthOutput ps_main(VSOut input";
+        if (pipeline.sample_depth_bias) compiled_source += ", uint sample_index : SV_SampleIndex";
+        compiled_source +=
+            ") {\n"
+            "    DepthOutput output;\n"
+            "    float2 gradient = float2(ddx(input.position.z), ddy(input.position.z));\n"
+            "    float depth = input.position.z;\n";
+        // SV_Position already includes viewport mapping and native constant bias.
+        // Only depth moves to the sample; color/UV/discard retain pixel-center inputs.
+        if (pipeline.sample_depth_bias) compiled_source +=
+            "    depth += dot(gradient, GetRenderTargetSamplePosition(sample_index));\n";
+        compiled_source +=
+            "    float slope = max(abs(gradient.x) * raster_bias.x, abs(gradient.y) * raster_bias.y);\n"
+            "    output.depth = saturate(depth + raster_bias.z * slope);\n"
+            "    output.color = ps_color(input); return output;\n}\n";
+    }
     return true;
 }
 
@@ -1663,8 +1698,13 @@ bool createDrawPipeline(
 
     ID3DBlob *vertex_blob = nullptr;
     ID3DBlob *pixel_blob = nullptr;
+    if (pipeline.sample_depth_bias && presenter->device->GetFeatureLevel() < D3D_FEATURE_LEVEL_10_1) {
+        std::fprintf(stderr, "recomp d3d presenter: scaled MSAA depth bias requires feature level 10.1\n");
+        return false;
+    }
     if (!compileDrawShader(compiled_source.c_str(), "vs_main", "vs_4_0", &vertex_blob) ||
-        !compileDrawShader(compiled_source.c_str(), "ps_main", "ps_4_0", &pixel_blob)) {
+        !compileDrawShader(compiled_source.c_str(), "ps_main",
+            pipeline.sample_depth_bias ? "ps_4_1" : "ps_4_0", &pixel_blob)) {
         releaseCom(vertex_blob);
         releaseCom(pixel_blob);
         return false;
@@ -1782,8 +1822,8 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
        then post-filter flags, texel size and four constants (24 floats), the
        stage-1 texture matrix (16), bump matrices, bump fog and fog color (16),
        the extra reflection world-view/normal transforms (96), and the stage-2
-       texture matrix and flags (20). */
-    constant_desc.ByteWidth = (140u + 192u * 4u + 512u) * sizeof(float);
+       texture matrix and flags (20), then scaled receiver depth bias (4). */
+    constant_desc.ByteWidth = (140u + 192u * 4u + 512u + 4u) * sizeof(float);
     constant_desc.Usage = D3D11_USAGE_DYNAMIC;
     constant_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     constant_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -1791,19 +1831,6 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
         &constant_desc, nullptr, &presenter->draw_constant_buffer);
     if (FAILED(result)) {
         return false;
-    }
-
-    for (unsigned mode = 0; mode < 3; ++mode) {
-        D3D11_RASTERIZER_DESC rasterizer_desc{};
-        rasterizer_desc.FillMode = D3D11_FILL_SOLID;
-        rasterizer_desc.CullMode = mode == RECOMP_D3D_CULL_NONE
-            ? D3D11_CULL_NONE : D3D11_CULL_BACK;
-        rasterizer_desc.FrontCounterClockwise = mode == RECOMP_D3D_CULL_CLOCKWISE;
-        rasterizer_desc.DepthClipEnable = TRUE;
-        rasterizer_desc.ScissorEnable = TRUE;
-        result = presenter->device->CreateRasterizerState(
-            &rasterizer_desc, &presenter->draw_rasterizer_states[mode]);
-        if (FAILED(result)) return false;
     }
 
     /* Zero-initialized draw commands keep the original linear/wrap sampler. */
@@ -1845,11 +1872,14 @@ const DrawPipeline *lookupDrawPipeline(
     uint32_t fvf, const RecompD3dPresenterDrawCommand *draw = nullptr)
 {
     const uint32_t count = draw ? draw->program_count : 0u;
+    const bool scaled_bias = draw && presenter->scale != 1.0f && !draw->target.offscreen &&
+        draw->slope_scaled_depth_bias != 0.0f;
     if (count > 136u) return nullptr;
     for (uint32_t i = 0u; i < presenter->draw_pipeline_count; ++i) {
         DrawPipeline &pipeline = presenter->draw_pipelines[i];
 
         if (pipeline.used && pipeline.fvf == fvf && pipeline.program_count == count &&
+            pipeline.scaled_depth_bias == scaled_bias &&
             (!count || std::memcmp(pipeline.program, draw->program, count * 16u) == 0)) {
             return pipeline.failed ? nullptr : &pipeline;
         }
@@ -1869,6 +1899,8 @@ const DrawPipeline *lookupDrawPipeline(
         ++presenter->draw_pipeline_count;
     }
     pipeline.fvf = fvf;
+    pipeline.scaled_depth_bias = scaled_bias;
+    pipeline.sample_depth_bias = scaled_bias && presenter->msaa > 1u;
     pipeline.program_count = count;
     if (count) std::memcpy(pipeline.program, draw->program, count * 16u);
     pipeline.used = true;
@@ -2650,6 +2682,31 @@ ID3D11BlendState *lookupBlendState(
     return state;
 }
 
+ID3D11RasterizerState *lookupRasterState(
+    RecompD3dPresenter *presenter, RecompD3dCullMode cull, int32_t bias, float slope)
+{
+    for (uint32_t i = 0; i < presenter->raster_state_count; ++i) {
+        const auto &entry = presenter->raster_states[i];
+        if (entry.cull == cull && entry.bias == bias && entry.slope == slope) return entry.state;
+    }
+    D3D11_RASTERIZER_DESC desc{};
+    desc.FillMode = D3D11_FILL_SOLID;
+    desc.CullMode = cull == RECOMP_D3D_CULL_NONE ? D3D11_CULL_NONE : D3D11_CULL_BACK;
+    desc.FrontCounterClockwise = cull == RECOMP_D3D_CULL_CLOCKWISE;
+    desc.DepthClipEnable = TRUE;
+    desc.ScissorEnable = TRUE;
+    desc.DepthBias = bias;
+    desc.SlopeScaledDepthBias = slope;
+    ID3D11RasterizerState *state = nullptr;
+    if (FAILED(presenter->device->CreateRasterizerState(&desc, &state))) return nullptr;
+    auto &entry = presenter->raster_states[presenter->next_raster_state_slot];
+    releaseCom(entry.state);
+    entry = {cull, bias, slope, state};
+    presenter->next_raster_state_slot = (presenter->next_raster_state_slot + 1u) % kRasterStateSlots;
+    if (presenter->raster_state_count < kRasterStateSlots) ++presenter->raster_state_count;
+    return state;
+}
+
 RecompD3dPresenterError submitDraw(
     RecompD3dPresenter *presenter,
     const RecompD3dPresenterDrawCommand &draw)
@@ -2663,6 +2720,7 @@ RecompD3dPresenterError submitDraw(
         (geometry_line && (draw.fvf != 0x42u || draw.program_count || draw.primitive_type != 2u ||
             draw.has_texture || draw.directional.enabled)) ||
         static_cast<unsigned>(draw.cull_mode) > RECOMP_D3D_CULL_COUNTER_CLOCKWISE ||
+        !std::isfinite(draw.slope_scaled_depth_bias) ||
         !std::isfinite(draw.screen_space_offset[0]) || !std::isfinite(draw.screen_space_offset[1]) ||
         (screen_offset && draw.program_count) ||
         !std::isfinite(draw.mip_lod_bias) ||
@@ -2879,7 +2937,14 @@ RecompD3dPresenterError submitDraw(
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
     recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
-    float draw_constants[140 + 192 * 4 + 512]{};
+    float draw_constants[140 + 192 * 4 + 512 + 4]{};
+    /* Restore depth slope per guest pixel after anisotropic host scaling.
+       Constant bias stays in the native D24 rasterizer, after clipping. */
+    if (pipeline->scaled_depth_bias) {
+        draw_constants[1420] = presenter->target_scale_x;
+        draw_constants[1421] = presenter->target_scale_y;
+        draw_constants[1422] = draw.slope_scaled_depth_bias;
+    }
     if (draw.texture.volume_depth != 0u) {
         if (draw.fvf != 0x142u || draw.program_count || draw.has_reflection || draw.has_alpha_mask ||
             draw.stage1_alpha_mask || draw.bump_env || draw.distortion || draw.four_tap_filter ||
@@ -3130,8 +3195,10 @@ RecompD3dPresenterError submitDraw(
         if (sampler == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
         presenter->context->PSSetSamplers(2u, 1u, &sampler);
     }
-    presenter->context->RSSetState(presenter->draw_rasterizer_states[
-        geometry_line ? RECOMP_D3D_CULL_NONE : draw.cull_mode]);
+    ID3D11RasterizerState *raster = lookupRasterState(presenter,
+        geometry_line ? RECOMP_D3D_CULL_NONE : draw.cull_mode, draw.depth_bias, pipeline->scaled_depth_bias ? 0.0f : draw.slope_scaled_depth_bias);
+    if (raster == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+    presenter->context->RSSetState(raster);
     presenter->context->RSSetScissorRects(1u, &scissor);
     ID3D11DepthStencilState *depth_state = lookupDepthState(presenter, draw.depth);
     if (depth_state == nullptr) {

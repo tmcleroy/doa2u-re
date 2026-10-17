@@ -1984,6 +1984,211 @@ static bool testFrameBufferBlend()
     return passed;
 }
 
+static bool testDepthBias(bool scaled = false)
+{
+    char folder[MAX_PATH], path[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "bias", 0, path)) return false;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", path);
+    _putenv_s("RECOMP_D3D_SCALE", scaled ? "2" : "1");
+    RecompD3dPresenter *presenter = nullptr;
+    auto bias_config = config;
+    if (scaled) bias_config.width = 360; // Scaled 4:3 output has unequal X/Y ratios.
+    bool passed = expect("create depth bias", d3d11_backend_create(&bias_config, &presenter));
+    if (passed) {
+        auto clear = clearCommand();
+        clear.data.clear.color = 0xff808080u;
+        passed &= expect("bias clear", d3d11_backend_submit(presenter, &clear));
+        struct Vertex { float x, y, z, rhw; uint32_t color; };
+        const uint16_t indices[] = {0, 1, 2, 3};
+        RecompD3dPresenterCommand command{};
+        command.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
+        auto &draw = command.data.draw;
+        draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+        draw.index_count = draw.vertex_count = 4;
+        draw.triangle_count = 2;
+        draw.vertex_stride = sizeof(Vertex);
+        draw.fvf = 0x44u;
+        draw.index_bytes = indices;
+        draw.depth.depth_test_enable = draw.depth.depth_write_enable = true;
+        draw.depth.depth_func = RECOMP_D3D_COMPARE_LESS_EQUAL;
+        draw.blend.color_write_mask = 15;
+        const int bias[] = {0, -1, 0, 0, 0, 1, 0, 0};
+        const float slope[] = {0, 0, 0, -0.25f, 0.25f, 0, -0.25f, 0.25f};
+        for (unsigned i = 0; i < 8; ++i) {
+            const float x = 8.0f + i * 40.0f;
+            const bool tilted = i == 3 || i == 4, tilted_x = i == 6 || i == 7;
+            Vertex vertices[] = {
+                {x, 20, tilted || tilted_x ? 0.4f : 0.5f, 1, 0xffffffffu},
+                {x + 32, 20, tilted_x ? 0.6f : tilted ? 0.4f : 0.5f, 1, 0xffffffffu},
+                {x, 220, tilted_x ? 0.4f : tilted ? 0.6f : 0.5f, 1, 0xffffffffu},
+                {x + 32, 220, tilted || tilted_x ? 0.6f : 0.5f, 1, 0xffffffffu}};
+            draw.vertex_bytes = vertices;
+            draw.depth_bias = 0;
+            draw.slope_scaled_depth_bias = 0;
+            passed &= expect("unbiased floor", d3d11_backend_submit(presenter, &command));
+            for (auto &vertex : vertices) {
+                vertex.color = 0xff000000u;
+                if (tilted) vertex.z += 0.0002f;
+                if (tilted_x) vertex.z += 0.0013f;
+            }
+            draw.depth_bias = bias[i];
+            draw.slope_scaled_depth_bias = slope[i];
+            draw.depth.depth_write_enable = false;
+            draw.depth.depth_func = RECOMP_D3D_COMPARE_LESS;
+            passed &= expect("coplanar receiver", d3d11_backend_submit(presenter, &command));
+            draw.depth.depth_write_enable = true;
+            draw.depth.depth_func = RECOMP_D3D_COMPARE_LESS_EQUAL;
+        }
+        RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
+        present.data.present = {5, 1};
+        passed &= expect("bias present", d3d11_backend_submit(presenter, &present));
+    }
+    d3d11_backend_destroy(&presenter);
+    if (passed) {
+        FILE *file = std::fopen(path, "rb");
+        if (!file) passed = false;
+        else {
+            int32_t width = 0, height = 0;
+            std::fseek(file, 18, SEEK_SET);
+            passed &= std::fread(&width, sizeof width, 1, file) == 1;
+            passed &= std::fread(&height, sizeof height, 1, file) == 1;
+            if (width <= 0 || height <= 0) passed = false;
+            for (unsigned i = 0; i < 8 && width > 0 && height > 0; ++i) {
+                unsigned char bgr[3]{};
+                const int x = (24 + i * 40) * width / bias_config.width, y = height / 2;
+                std::fseek(file, 54 + (height - 1 - y) * ((width * 3 + 3) & ~3) + x * 3, SEEK_SET);
+                passed &= std::fread(bgr, 1, 3, file) == 3;
+                const unsigned want = i == 1 || i == 3 || i == 6 ? 0 : 255;
+                for (unsigned c = 0; c < 3; ++c) {
+                    if (bgr[c] != want) {
+                        std::fprintf(stderr, "FAIL depth bias pixel %u channel=%u actual=%u expected=%u\n", i, c, bgr[c], want);
+                        passed = false;
+                    }
+                }
+            }
+            std::fclose(file);
+        }
+    }
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
+    _putenv_s("RECOMP_D3D_SCALE", "");
+    DeleteFileA(path);
+    if (passed) std::puts("PASS D24 receiver unit/slope bias, sign and restoration");
+    return passed;
+}
+
+static bool testScaledMsaaDepthBias()
+{
+    char folder[MAX_PATH], path[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "msb", 0, path)) return false;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", path);
+    _putenv_s("RECOMP_D3D_SCALE", "2");
+    _putenv_s("RECOMP_D3D_MSAA", "4");
+    _putenv_s("RECOMP_D3D_WIDESCREEN", "0");
+    auto bias_config = config;
+    bias_config.width = 360; // Host 640x480: unequal X/Y scale, integer panel spacing.
+    RecompD3dPresenter *presenter = nullptr;
+    bool passed = expect("create scaled MSAA bias", d3d11_backend_create(&bias_config, &presenter));
+    if (passed) {
+        auto clear = clearCommand();
+        clear.data.clear.color = 0xffffffffu;
+        passed &= expect("MSAA bias clear", d3d11_backend_submit(presenter, &clear));
+        struct Vertex { float x, y, z, rhw; uint32_t color; };
+        const uint16_t indices[] = {0, 1, 2, 3};
+        RecompD3dPresenterCommand command{};
+        command.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
+        auto &draw = command.data.draw;
+        draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+        draw.index_count = draw.vertex_count = 4;
+        draw.triangle_count = 2;
+        draw.vertex_stride = sizeof(Vertex);
+        draw.fvf = 0x44u;
+        draw.index_bytes = indices;
+        draw.blend.color_write_mask = 15;
+        draw.depth.depth_test_enable = true;
+        // Each pair compares an unbiased plane with an equivalent biased plane.
+        // Native depth interpolation is the oracle, including partial sample visibility.
+        for (unsigned pair = 0; pair < 2; ++pair) {
+            const float slope = pair ? -1.0f / 256 : 1.0f / 256;
+            const float factor = pair ? 0.25f : -0.25f;
+            const float top = pair ? 130.0f : 20.0f, bottom = top + 80;
+            for (unsigned panel = 0; panel < 2; ++panel) {
+                const float left = 8.0f + panel * 90;
+                Vertex vertices[] = {{left, top, 0.5f, 1, 0xffffffffu},
+                    {left + 72, top, 0.5f, 1, 0xffffffffu},
+                    {left, bottom, 0.5f, 1, 0xffffffffu},
+                    {left + 72, bottom, 0.5f, 1, 0xffffffffu}};
+                draw.vertex_bytes = vertices;
+                draw.depth.depth_write_enable = true;
+                draw.depth.depth_func = RECOMP_D3D_COMPARE_LESS_EQUAL;
+                draw.depth.alpha_test_enable = false;
+                draw.depth_bias = 0;
+                draw.slope_scaled_depth_bias = 0;
+                passed &= expect("MSAA flat floor", d3d11_backend_submit(presenter, &command));
+                for (auto &vertex : vertices) {
+                    vertex.z += slope * (vertex.y - (top + 40.25f));
+                    if (panel) vertex.z -= factor * std::abs(slope);
+                    vertex.color = vertex.x == left ? 0x00000000u : 0xff000000u;
+                }
+                draw.depth_bias = pair ? 4096 : -4096;
+                draw.slope_scaled_depth_bias = panel ? factor : 0;
+                draw.depth.depth_write_enable = false;
+                draw.depth.depth_func = RECOMP_D3D_COMPARE_LESS;
+                draw.depth.alpha_test_enable = true;
+                draw.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER;
+                draw.depth.alpha_ref = 128;
+                draw.material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_SELECT_VERTEX_DIFFUSE;
+                passed &= expect("MSAA intersecting receiver", d3d11_backend_submit(presenter, &command));
+            }
+        }
+        RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
+        present.data.present = {5, 1};
+        passed &= expect("MSAA bias present", d3d11_backend_submit(presenter, &present));
+    }
+    d3d11_backend_destroy(&presenter);
+    if (passed) {
+        FILE *file = std::fopen(path, "rb");
+        if (!file) passed = false;
+        else {
+            int32_t width = 0, height = 0;
+            std::fseek(file, 18, SEEK_SET);
+            passed &= std::fread(&width, sizeof width, 1, file) == 1;
+            passed &= std::fread(&height, sizeof height, 1, file) == 1;
+            passed &= width == 640 && height == 480;
+            unsigned mismatches = 0, partial = 0, black = 0, white = 0;
+            if (passed) {
+                for (int y = 50; y < 410; ++y) {
+                    for (int x = 20; x < 136; ++x) {
+                        unsigned char reference[3]{}, biased[3]{};
+                        const long row = 54 + (height - 1 - y) * ((width * 3 + 3) & ~3);
+                        std::fseek(file, row + x * 3, SEEK_SET);
+                        passed &= std::fread(reference, 1, 3, file) == 3;
+                        std::fseek(file, row + (x + 160) * 3, SEEK_SET);
+                        passed &= std::fread(biased, 1, 3, file) == 3;
+                        for (unsigned c = 0; c < 3; ++c)
+                            mismatches += std::abs(int(reference[c]) - int(biased[c])) > 1;
+                        partial += reference[0] > 0 && reference[0] < 255;
+                        black += reference[0] == 0;
+                        white += reference[0] == 255;
+                    }
+                }
+            }
+            if (mismatches || !partial || !black || !white) {
+                std::fprintf(stderr, "FAIL scaled 4x MSAA bias mismatches=%u partial=%u black=%u white=%u\n",
+                    mismatches, partial, black, white);
+                passed = false;
+            }
+            std::fclose(file);
+        }
+    }
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
+    _putenv_s("RECOMP_D3D_SCALE", "");
+    _putenv_s("RECOMP_D3D_MSAA", "");
+    _putenv_s("RECOMP_D3D_WIDESCREEN", "");
+    DeleteFileA(path);
+    if (passed) std::puts("PASS scaled 4x MSAA receiver intersection, constant bias and pixel-center alpha discard");
+    return passed;
+}
+
 int main()
 {
     recomp_d3d_presenter_set_immediate_present(false);
@@ -1995,7 +2200,8 @@ int main()
         !testReflectionAddress(false, false, false, false, 0.5f) ||
         !testReflectionAddress(false, false, false, false, 1.0f) ||
         !testScreenSpaceOffsetAndScissor() || !testBrightPass() || !testDistortion() || !testStageEffect() ||
-        !testVolume() || !testFrameBufferBlend() || !testProgramMaxSlt() ||
+        !testVolume() || !testFrameBufferBlend() || !testDepthBias() || !testDepthBias(true) ||
+        !testScaledMsaaDepthBias() || !testProgramMaxSlt() ||
         !testProgramLitSge() ||
         !testStageBump() ||
         !testStageWater() ||

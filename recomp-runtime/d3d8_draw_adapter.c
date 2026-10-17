@@ -1424,6 +1424,9 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
         state->z_enable == 2u)
         recomp_stop(2, "d3d8:draw-raster-state:%x:%x:%x:ret=%08x", state->fill_mode,
             state->edge_antialias, state->z_enable, *recomp_memory_u32(recomp_runtime.registers.esp));
+    if (primitive >= 5u && !recomp_d3d_polygon_offset(state,
+            &draw->depth_bias, &draw->slope_scaled_depth_bias))
+        recomp_stop(2, "d3d8:draw-depth-bias:ret=%08x", *recomp_memory_u32(recomp_runtime.registers.esp));
     recomp_d3d_depth_state(state, &draw->depth);
     recomp_d3d_blend_state(state, &draw->blend);
     draw->cull_mode = state->cull_mode == 0x900u ? RECOMP_D3D_CULL_CLOCKWISE :

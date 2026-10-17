@@ -44,6 +44,8 @@ int main()
         draw.reflection_texture.format_byte = 0u;
     draw.alpha_mask.format_byte = 0x0bu;
     draw.reflection_texture.format_byte = 0x12u;
+    draw.depth_bias = -1;
+    draw.slope_scaled_depth_bias = -0.25f;
     draw.program_count = 1u;
     draw.target.color.data = 0x404000u;
     draw.target.depth.data = 0x505000u;
@@ -88,6 +90,7 @@ int main()
         CHECK(captured.program[135][3] == 0x12345678u);
         CHECK(captured.program_constants[191][3] == 1.25f);
         CHECK(captured.directional.colors[7][3] == 0.75f);
+        CHECK(captured.depth_bias == -1 && captured.slope_scaled_depth_bias == -0.25f);
     }
     const uint64_t sealed_bytes = packet.bytes();
     CHECK(packet.add(input) == RECOMP_D3D_PRESENTER_INVALID_ARGUMENT);
