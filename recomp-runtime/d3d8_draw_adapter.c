@@ -1123,6 +1123,19 @@ static uint8_t *point_sprites(uint32_t device, const RecompD3dVertexLayout *layo
         stage[11] != 0u || stage[20] != 0u || stage[21] != 0u)
         recomp_stop(2, "d3d8:point-sprite-stage:%u,%u,%u/%u,%u,%u", stage[12], stage[14],
             stage[15], stage[16], stage[18], stage[19]);
+    const bool lighting = *recomp_memory_u32(0x3553f8u) != 0u;
+    if (lighting && (!color_texture || *recomp_memory_u32(0x355494u) != 0u))
+        recomp_stop(2, "d3d8:point-sprite-lighting");
+    if (lighting && !alpha_texture) {
+        /* 0x34fc80 supplies material diffuse alpha even with vertex-color sources;
+           texture-only RGB does not consume the lighting RGB calculation. */
+        float alpha;
+        recomp_guest_load(&alpha, device + 0xf0cu, sizeof alpha);
+        if (isnan(alpha)) alpha = signbit(alpha) ? 0.0f : 1.0f;
+        if (!isfinite(alpha)) recomp_stop(2, "d3d8:point-sprite-material-alpha");
+        draw->material_alpha = alpha;
+        draw->material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_MODULATE_TEXTURE;
+    }
     draw->has_texture = false;
     draw->palette_bytes = NULL;
     draw->texture_is_backbuffer = draw->texture_is_front_buffer = false;
@@ -1168,7 +1181,7 @@ static uint8_t *point_sprites(uint32_t device, const RecompD3dVertexLayout *layo
         if (layout->diffuse_offset != RECOMP_D3D_FVF_ABSENT)
             memcpy(&diffuse, vertex + layout->diffuse_offset, sizeof diffuse);
         if (color_texture) diffuse |= 0x00ffffffu;
-        if (alpha_texture) diffuse |= 0xff000000u;
+        if (alpha_texture || lighting) diffuse |= 0xff000000u;
         for (uint32_t k = 0u; k < 4u; ++k) {
             const float u = (float)(k & 1u), v = (float)(k >> 1u);
             corners[i * 4u + k] = (Corner){eye[0] + (2.0f * u - 1.0f) * dx,
@@ -1347,7 +1360,7 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
         state->cull_mode == 0x901u ? RECOMP_D3D_CULL_COUNTER_CLOCKWISE : RECOMP_D3D_CULL_NONE;
     draw->texture_factor = state->texture_factor;
     attach_texture(device, 0u, draw);
-    if (!program) attach_lighting(device, &layout, draw);
+    if (!program && !points) attach_lighting(device, &layout, draw);
     uint8_t *expanded = NULL;
     if (points && (program || *recomp_memory_u32(device + PIXEL_HANDLE) != 0u)) {
         recomp_stop(2, "d3d8:draw-points-unbound");

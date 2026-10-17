@@ -200,6 +200,28 @@ static bool testMipSampler()
         draw.depth.alpha_func = RECOMP_D3D_COMPARE_GREATER_EQUAL;
         draw.mip_lod_bias = 0.0f;
         passed &= expect("vertex alpha discard", d3d11_backend_submit(presenter, &command));
+        // Lit sprites use material alpha once, with white expanded vertex alpha.
+        for (auto &vertex : vertices) {
+            vertex.x += 64.0f;
+            vertex.u = vertex.v = 0.5f;
+            vertex.diffuse = 0xffffffffu;
+        }
+        const uint32_t sprite_texel = 0x80ff0000u;
+        draw.texture.format_byte = 0x12u;
+        draw.texture.linear = true;
+        draw.texture.bits_per_pixel = 32;
+        draw.texture.width = draw.texture.height = draw.texture.mip_levels = 1;
+        draw.texture.pitch = 4;
+        draw.texture.data = 0x2000u;
+        draw.texture_bytes = &sprite_texel;
+        draw.texture_byte_count = sizeof sprite_texel;
+        draw.material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_MODULATE_TEXTURE;
+        draw.material_alpha = 0.25f;
+        draw.depth.alpha_test_enable = false;
+        draw.blend.blend_enable = true;
+        draw.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
+        draw.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+        passed &= expect("lit sprite alpha", d3d11_backend_submit(presenter, &command));
         for (float bias : {-16.01f, 16.0f, INFINITY, NAN}) {
             draw.mip_lod_bias = bias;
             passed &= expect("invalid mip bias", d3d11_backend_submit(presenter, &command),
@@ -211,10 +233,10 @@ static bool testMipSampler()
         passed &= expect("mip present", d3d11_backend_submit(presenter, &command));
         passed &= expect("destroy mip sampler", d3d11_backend_destroy(&presenter));
         if (FILE *file = std::fopen(path, "rb")) {
-            for (unsigned i = 0; i < 5; ++i) {
+            for (unsigned i = 0; i < 6; ++i) {
                 unsigned char bgr[3]{};
-                const unsigned x = i == 4 ? 52 : 52 + 64 * i;
-                const unsigned y = i == 4 ? 116 : 52;
+                const unsigned x = i >= 4 ? 52 + 64 * (i - 4) : 52 + 64 * i;
+                const unsigned y = i >= 4 ? 116 : 52;
                 std::fseek(file, 54 + (240 - 1 - y) * 320 * 3 + x * 3, SEEK_SET);
                 passed &= std::fread(bgr, 1, 3, file) == 3;
                 const bool red = bgr[2] > 245 && bgr[1] < 10 && bgr[0] < 10;
@@ -222,7 +244,8 @@ static bool testMipSampler()
                 const bool blended = bgr[1] > 170 && bgr[1] < 210 &&
                     bgr[0] > 45 && bgr[0] < 85 && bgr[2] < 10;
                 const bool black = bgr[0] == 0 && bgr[1] == 0 && bgr[2] == 0;
-                const bool pixel_ok = i == 4 ? black : i == 1 ? green : i == 2 ? blended : red;
+                const bool sprite = std::abs(static_cast<int>(bgr[2]) - 32) <= 1 && bgr[0] == 0 && bgr[1] == 0;
+                const bool pixel_ok = i == 5 ? sprite : i == 4 ? black : i == 1 ? green : i == 2 ? blended : red;
                 if (!pixel_ok) std::fprintf(stderr, "FAIL mip pixel %u BGR=%u,%u,%u\n",
                     i, bgr[0], bgr[1], bgr[2]);
                 passed &= pixel_ok;

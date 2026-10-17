@@ -451,6 +451,45 @@ static int point_tests(void)
     CHECK(fabsf(captured_vertices[18] - 2.0f / 9.0f) < 1e-6f && fabsf(captured_vertices[19] + 1.0f / 3.0f) < 1e-6f &&
         captured_vertices[22] == 1.0f && captured_vertices[23] == 1.0f);
     CHECK(diffuse == 0x80ffffffu);
+    /* 0x1f5030 leaves LIGHTING on for texture-RGB/material-alpha point sprites. */
+    *recomp_memory_u32(0x3553f8u) = *recomp_memory_u32(0x355404u) = 1u;
+    *recomp_memory_u32(0x355408u) = *recomp_memory_u32(0x355418u) = 2u;
+    *recomp_memory_u32(0x35540cu) = *recomp_memory_u32(0x35541cu) = 1u;
+    const float material_alpha = 0.25f;
+    recomp_guest_store(DEVICE + 0xf0cu, &material_alpha, sizeof material_alpha);
+    /* Unused lighting RGB data must not affect this material or trigger guards. */
+    *recomp_memory_u32(DEVICE + 0xf00u) = 0x7fc00000u;
+    invoke(0x348240u, 1u, 1u, VERTICES, 16u);
+    memcpy(&diffuse, &captured_vertices[3], sizeof diffuse);
+    CHECK(!draw->directional.enabled && diffuse == 0xffffffffu &&
+        draw->material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_MODULATE_TEXTURE &&
+        draw->material_alpha == 0.25f);
+    const uint32_t nan_alpha[2] = {0x7fc00000u, 0xffc00000u};
+    for (uint32_t i = 0u; i < 2u; ++i) {
+        *recomp_memory_u32(DEVICE + 0xf0cu) = nan_alpha[i];
+        invoke(0x348240u, 1u, 1u, VERTICES, 16u);
+        CHECK(draw->material_alpha == (i == 0u ? 1.0f : 0.0f));
+    }
+    *recomp_memory_u32(STAGES + 3u * 128u + 64u) = 2u;
+    *recomp_memory_u32(DEVICE + 0xf0cu) = 0x7f800000u;
+    invoke(0x348240u, 1u, 1u, VERTICES, 16u);
+    CHECK(draw->material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_NONE);
+    *recomp_memory_u32(STAGES + 3u * 128u + 64u) = 4u;
+    recomp_guest_store(DEVICE + 0xf0cu, &material_alpha, sizeof material_alpha);
+    *recomp_memory_u32(0x355494u) = 1u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 1u, 1u, VERTICES, 16u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:point-sprite-lighting") == 0);
+    *recomp_memory_u32(0x355494u) = 0u;
+    *recomp_memory_u32(DEVICE + 0xf0cu) = 0x7f800000u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 1u, 1u, VERTICES, 16u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:point-sprite-material-alpha") == 0);
+    *recomp_memory_u32(STAGES + 3u * 128u + 56u) = 0u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 1u, 1u, VERTICES, 16u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:point-sprite-lighting") == 0);
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected unlit point stop: %s\n", stop_reason); return 1; }
+    *recomp_memory_u32(0x3553f8u) = 0u;
+    *recomp_memory_u32(STAGES + 3u * 128u + 64u) = 4u;
+    *recomp_memory_u32(STAGES + 3u * 128u + 72u) = 2u;
     *recomp_memory_u32(STAGES + 3u * 128u + 56u) = 0u;
     invoke(0x348240u, 1u, 1u, VERTICES, 16u);
     memcpy(&diffuse, &captured_vertices[3], sizeof diffuse);
