@@ -1,5 +1,6 @@
 #include "input_host_win32.h"
 #include "input_pulse_source.h"
+#include "input_keyboard_win32.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -23,10 +24,11 @@ enum {
 };
 
 static SDL_Gamepad *pads[RECOMP_INPUT_PORT_COUNT];
+static uint8_t keyboard[RECOMP_INPUT_KEY_COUNT];
 
 static bool pressed(int key)
 {
-    return (GetAsyncKeyState(key) & 0x8000) != 0;
+    return keyboard[key] || (GetAsyncKeyState(key) & 0x8000) != 0;
 }
 
 static bool trace_enabled(void)
@@ -208,10 +210,12 @@ bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad)
     DWORD foreground_process = 0;
     GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process);
     if (foreground_process != GetCurrentProcessId()) {
+        recomp_input_keyboard_reset();
         trace_sample(gamepad, host, foreground_process);
         return true;
     }
 
+    recomp_input_keyboard_sample(keyboard);
     if (pressed(VK_UP)) gamepad->buttons |= XBOX_DPAD_UP;
     if (pressed(VK_DOWN)) gamepad->buttons |= XBOX_DPAD_DOWN;
     if (pressed(VK_LEFT)) gamepad->buttons |= XBOX_DPAD_LEFT;

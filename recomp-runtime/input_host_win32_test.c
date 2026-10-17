@@ -1,5 +1,6 @@
 #include "input_host_win32.h"
 #include "input_pulse_source.h"
+#include "input_keyboard_win32.h"
 
 #include <SDL3/SDL.h>
 
@@ -31,6 +32,31 @@ static SDL_Joystick *attach(uintptr_t index, SDL_JoystickID *id)
 
 int main(void)
 {
+    uint8_t keys[RECOMP_INPUT_KEY_COUNT];
+    recomp_input_keyboard_reset();
+    recomp_input_keyboard_event('Z', true);
+    recomp_input_keyboard_event('Z', false);
+    recomp_input_keyboard_sample(keys);
+    CHECK(keys['Z'] == 1u); /* A tap completed between guest polls. */
+    recomp_input_keyboard_sample(keys);
+    CHECK(keys['Z'] == 0u);
+    recomp_input_keyboard_event('A', true);
+    recomp_input_keyboard_event('S', true);
+    recomp_input_keyboard_sample(keys);
+    CHECK(keys['A'] && keys['S']);
+    recomp_input_keyboard_sample(keys);
+    CHECK(keys['A'] && keys['S']);
+    recomp_input_keyboard_event('A', true); /* Typematic is not another press. */
+    recomp_input_keyboard_event('A', false);
+    recomp_input_keyboard_sample(keys);
+    CHECK(!keys['A'] && keys['S']);
+    recomp_input_keyboard_event('Z', true);
+    recomp_input_keyboard_event('Z', false);
+    recomp_input_keyboard_reset(); /* Focus loss cancels held and pending keys. */
+    recomp_input_keyboard_event(RECOMP_INPUT_KEY_COUNT, true);
+    recomp_input_keyboard_sample(keys);
+    for (uint32_t i = 0; i < RECOMP_INPUT_KEY_COUNT; ++i) CHECK(!keys[i]);
+
     /* Only the virtual gamepads below may be visible. */
     const char *drivers[] = {SDL_HINT_JOYSTICK_HIDAPI, SDL_HINT_JOYSTICK_RAWINPUT,
         SDL_HINT_XINPUT_ENABLED, SDL_HINT_JOYSTICK_WGI, SDL_HINT_JOYSTICK_DIRECTINPUT,

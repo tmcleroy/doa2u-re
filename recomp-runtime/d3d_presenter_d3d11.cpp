@@ -2,6 +2,7 @@
 #include "d3d_draw_model.h"
 #include "d3d_vblank.h"
 #include "d3d_vertex_program.h"
+#include "input_keyboard_win32.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -696,6 +697,10 @@ LRESULT CALLBACK presenterWindowProc(
     WPARAM wparam,
     LPARAM lparam)
 {
+    if (message == WM_KEYDOWN || message == WM_KEYUP)
+        recomp_input_keyboard_event(static_cast<uint32_t>(wparam), message == WM_KEYDOWN);
+    if (message == WM_KILLFOCUS || message == WM_DESTROY)
+        recomp_input_keyboard_reset();
     if (message == WM_NCCREATE) {
         const auto *creation = reinterpret_cast<const CREATESTRUCTW *>(lparam);
         SetWindowLongPtrW(window, GWLP_USERDATA,
