@@ -36,6 +36,7 @@ struct PresenterThread {
     RecompD3dPresenterError status = RECOMP_D3D_PRESENTER_OK;
     RecompD3dPresenterError destroyed = RECOMP_D3D_PRESENTER_OK;
     unsigned draw_declines = 0;
+    bool covered = true;
     // Guest visibility indices: ENDs submitted but unresolved, and the latest count.
     struct Visibility { unsigned pending = 0; uint32_t pixels = 0; };
     std::unordered_map<uint32_t, Visibility> visibility;
@@ -107,7 +108,12 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
             case D3dCapturePacket::COMMAND: {
                 const auto &command = packet.command(i);
                 draw = command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW;
-                error = d3d11_backend_submit(backend, &command);
+                if (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW_COVERAGE) {
+                    bool covered = true;
+                    error = d3d11_backend_draw_coverage(backend, &command.data.draw, &covered);
+                    std::lock_guard<std::mutex> lock(thread.mutex);
+                    thread.covered = covered;
+                } else error = d3d11_backend_submit(backend, &command);
                 break;
             }
             case D3dCapturePacket::RELEASE:
@@ -365,6 +371,24 @@ RecompD3dPresenterError recomp_d3d_presenter_flush(RecompD3dPresenter *presenter
     thread.changed.wait(lock, [&] { return thread.pending == 0u ||
         thread.status != RECOMP_D3D_PRESENTER_OK; });
     return thread.status;
+}
+
+RecompD3dPresenterError recomp_d3d_presenter_draw_coverage(
+    RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand *draw, bool *covered)
+{
+    auto error = validate(presenter);
+    if (error != RECOMP_D3D_PRESENTER_OK) return error;
+    if (draw == nullptr || covered == nullptr) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
+    RecompD3dPresenterCommand command{};
+    command.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW_COVERAGE;
+    command.data.draw = *draw;
+    error = recomp_d3d_presenter_submit(presenter, &command);
+    if (error != RECOMP_D3D_PRESENTER_OK) return error;
+    error = recomp_d3d_presenter_flush(presenter, true);
+    if (error != RECOMP_D3D_PRESENTER_OK) return error;
+    std::lock_guard<std::mutex> lock(active_thread->mutex);
+    *covered = active_thread->covered;
+    return RECOMP_D3D_PRESENTER_OK;
 }
 
 RecompD3dPresenterError recomp_d3d_presenter_visibility_result(

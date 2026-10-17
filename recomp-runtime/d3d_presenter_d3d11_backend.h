@@ -7,6 +7,10 @@ RecompD3dPresenterError d3d11_backend_create(
     const RecompD3dPresenterConfig *config, RecompD3dPresenter **presenter);
 RecompD3dPresenterError d3d11_backend_submit(
     RecompD3dPresenter *presenter, const RecompD3dPresenterCommand *command);
+/* Counts native raster coverage without shading or target writes. Errors leave
+   covered true; an open guest visibility query cannot include this probe. */
+RecompD3dPresenterError d3d11_backend_draw_coverage(
+    RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand *draw, bool *covered);
 RecompD3dPresenterError d3d11_backend_release_memory(
     RecompD3dPresenter *presenter, uint32_t base, uint32_t size);
 RecompD3dPresenterError d3d11_backend_destroy(RecompD3dPresenter **presenter);

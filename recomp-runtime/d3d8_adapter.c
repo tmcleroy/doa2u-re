@@ -89,6 +89,15 @@ void recomp_d3d8_submit(const RecompD3dPresenterCommand *command)
     }
 }
 
+bool recomp_d3d8_draw_has_coverage(const RecompD3dPresenterDrawCommand *draw)
+{
+    bool covered = true;
+    const RecompD3dPresenterError error = recomp_d3d_presenter_draw_coverage(presenter, draw, &covered);
+    if (error == RECOMP_D3D_PRESENTER_CLOSED) recomp_stop(0, "host-window-closed");
+    if (error != RECOMP_D3D_PRESENTER_OK) recomp_stop(2, "d3d8:coverage:%u", (unsigned)error);
+    return covered;
+}
+
 void recomp_d3d8_release_memory(uint32_t base, uint32_t size)
 {
     if (presenter == NULL) return;

@@ -136,7 +136,7 @@ constexpr char kDrawShaderPrologue[] =
 void buildDrawShaderSource(
     const RecompD3dVertexLayout &layout,
     char *out,
-    size_t out_size)
+    size_t out_size, bool coverage_only)
 {
     const bool has_normal =
         layout.normal_offset != RECOMP_D3D_FVF_ABSENT;
@@ -170,6 +170,16 @@ void buildDrawShaderSource(
     } else {
         std::snprintf(position, sizeof position,
             "    output.position = mul(float4(input.position, 1.0f), wvp[0]);\n");
+    }
+    if (coverage_only) {
+        std::snprintf(out, out_size,
+            "%sstruct VSIn { float3 position : POSITION; %s };\n"
+            "struct VSOut { float4 position : SV_POSITION; };\n"
+            "VSOut vs_main(VSIn input) { VSOut output;\n%s return output; }\n"
+            "float4 ps_main(VSOut input) : SV_TARGET { return 0; }\n",
+            kDrawShaderPrologue,
+            layout.blend_weight_count ? "float3 weights : BLENDWEIGHT;" : "", position);
+        return;
     }
     std::snprintf(
         out,
@@ -414,6 +424,7 @@ struct DrawPipeline {
     bool failed;
     bool scaled_depth_bias;
     bool sample_depth_bias;
+    bool coverage_only;
     ID3D11VertexShader *vertex_shader;
     ID3D11GeometryShader *geometry_shader;
     ID3D11PixelShader *pixel_shader;
@@ -1479,8 +1490,9 @@ bool drawShaderSource(
     }
 
     char source[8192];
-    buildDrawShaderSource(layout, source, sizeof source);
+    buildDrawShaderSource(layout, source, sizeof source, pipeline.coverage_only);
     compiled_source = source;
+    if (pipeline.coverage_only) return true;
     if (layout.blend_weight_count != 0u && !layout.pretransformed &&
         layout.texcoord_offset != RECOMP_D3D_FVF_ABSENT) {
         std::string reflection = "        if (blend_flags.x > 0.5f) {\n"
@@ -1727,7 +1739,7 @@ bool createDrawPipeline(
             nullptr,
             &pipeline.pixel_shader);
     }
-    if (SUCCEEDED(result) && fvf == 0x42u && pipeline.program_count == 0u) {
+    if (SUCCEEDED(result) && fvf == 0x42u && pipeline.program_count == 0u && !pipeline.coverage_only) {
         ID3DBlob *geometry_blob = nullptr;
         if (!compileDrawShader(compiled_source.c_str(), "gs_main", "gs_4_0", &geometry_blob)) result = E_FAIL;
         else result = presenter->device->CreateGeometryShader(geometry_blob->GetBufferPointer(),
@@ -1750,12 +1762,12 @@ bool createDrawPipeline(
                 "BLENDWEIGHT", 0u, formats[layout.blend_weight_count - 1u], 0u,
                 12u, D3D11_INPUT_PER_VERTEX_DATA, 0u};
         }
-        if (layout.normal_offset != RECOMP_D3D_FVF_ABSENT) {
+        if (!pipeline.coverage_only && layout.normal_offset != RECOMP_D3D_FVF_ABSENT) {
             elements[count++] = {
                 "NORMAL", 0u, DXGI_FORMAT_R32G32B32_FLOAT, 0u,
                 layout.normal_offset, D3D11_INPUT_PER_VERTEX_DATA, 0u};
         }
-        if (layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT) {
+        if (!pipeline.coverage_only && layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT) {
             /* Xbox diffuse is packed A8R8G8B8, so the BGRA host format
                delivers the channels in the order the shader expects. */
             elements[count++] = {
@@ -1765,7 +1777,7 @@ bool createDrawPipeline(
         const uint32_t texture_coords = layout.texcoord_count == 4u ? 4u
             : layout.texcoord_count == 2u ? 2u
             : (layout.texcoord_count != 0u ? 1u : 0u);
-        for (uint32_t i = 0u; i < texture_coords; ++i) {
+        for (uint32_t i = 0u; !pipeline.coverage_only && i < texture_coords; ++i) {
             elements[count++] = {
                 "TEXCOORD", i, DXGI_FORMAT_R32G32_FLOAT, 0u,
                 layout.texcoord_offset + i * 8u, D3D11_INPUT_PER_VERTEX_DATA, 0u};
@@ -1874,7 +1886,7 @@ bool ensureSharedDrawState(RecompD3dPresenter *presenter)
    draw and does not affect any other FVF. */
 const DrawPipeline *lookupDrawPipeline(
     RecompD3dPresenter *presenter,
-    uint32_t fvf, const RecompD3dPresenterDrawCommand *draw = nullptr)
+    uint32_t fvf, const RecompD3dPresenterDrawCommand *draw = nullptr, bool coverage_only = false)
 {
     const uint32_t count = draw ? draw->program_count : 0u;
     const bool scaled_bias = draw && presenter->scale != 1.0f && !draw->target.offscreen &&
@@ -1884,6 +1896,7 @@ const DrawPipeline *lookupDrawPipeline(
         DrawPipeline &pipeline = presenter->draw_pipelines[i];
 
         if (pipeline.used && pipeline.fvf == fvf && pipeline.program_count == count &&
+            pipeline.coverage_only == coverage_only &&
             pipeline.scaled_depth_bias == scaled_bias &&
             (!count || std::memcmp(pipeline.program, draw->program, count * 16u) == 0)) {
             return pipeline.failed ? nullptr : &pipeline;
@@ -1904,6 +1917,7 @@ const DrawPipeline *lookupDrawPipeline(
         ++presenter->draw_pipeline_count;
     }
     pipeline.fvf = fvf;
+    pipeline.coverage_only = coverage_only;
     pipeline.scaled_depth_bias = scaled_bias;
     pipeline.sample_depth_bias = scaled_bias && presenter->msaa > 1u;
     pipeline.program_count = count;
@@ -2714,7 +2728,7 @@ ID3D11RasterizerState *lookupRasterState(
 
 RecompD3dPresenterError submitDraw(
     RecompD3dPresenter *presenter,
-    const RecompD3dPresenterDrawCommand &draw)
+    const RecompD3dPresenterDrawCommand &draw, bool coverage_only = false)
 {
     const bool screen_offset = draw.screen_space_offset[0] != 0.0f || draw.screen_space_offset[1] != 0.0f;
     const bool geometry_line = draw.line_antialias || draw.line_width > 1.0f;
@@ -2771,7 +2785,7 @@ RecompD3dPresenterError submitDraw(
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
 
-    const DrawPipeline *pipeline = lookupDrawPipeline(presenter, draw.fvf, &draw);
+    const DrawPipeline *pipeline = lookupDrawPipeline(presenter, draw.fvf, &draw, coverage_only);
     if (pipeline == nullptr) {
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
@@ -2941,7 +2955,7 @@ RecompD3dPresenterError submitDraw(
     if (draw.program_count) dumpProgramTexture(presenter, texture_view, draw.program_alpha_mask);
     /* Observation only: bind counts say what the guest selected, not what a
        draw actually consumed, and only the latter can explain the frame. */
-    recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
+    if (!coverage_only) recompD3dPresenterCountDrawTexture(draw, texture_view != nullptr);
     float draw_constants[140 + 192 * 4 + 512 + 4]{};
     /* Restore depth slope per guest pixel after anisotropic host scaling.
        Constant bias stays in the native D24 rasterizer, after clipping. */
@@ -3247,6 +3261,13 @@ RecompD3dPresenterError submitDraw(
             draw.viewport[0] * presenter->target_scale_x, draw.viewport[1] * presenter->target_scale_y,
             draw.viewport[2] * presenter->target_scale_x, draw.viewport[3] * presenter->target_scale_y,
             draw.viewport[4], draw.viewport[5]};
+        if (coverage_only && (guest.TopLeftX < D3D11_VIEWPORT_BOUNDS_MIN ||
+            guest.TopLeftY < D3D11_VIEWPORT_BOUNDS_MIN ||
+            guest.TopLeftX + guest.Width > D3D11_VIEWPORT_BOUNDS_MAX ||
+            guest.TopLeftY + guest.Height > D3D11_VIEWPORT_BOUNDS_MAX ||
+            !std::isfinite(guest.TopLeftX + guest.Width) ||
+            !std::isfinite(guest.TopLeftY + guest.Height)))
+            return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
         /* 3925 SetViewport clamps to the bound target, and SetRenderTarget
            resets it to the full target, so the guest rect always fits. */
         presenter->context->RSSetViewports(1u, &guest);
@@ -3254,6 +3275,7 @@ RecompD3dPresenterError submitDraw(
     presenter->context->DrawIndexed(draw_index_count, 0u, 0);
     presenter->context->GSSetShader(nullptr, nullptr, 0u);
     if (sub_viewport) presenter->context->RSSetViewports(1u, &whole);
+    if (coverage_only) return RECOMP_D3D_PRESENTER_OK;
     static const char *program_dump = std::getenv("RECOMP_D3D_PROGRAM_TEXTURE_DUMP");
     static unsigned program_dump_count = 0;
     if (draw.program_count && program_dump && program_dump_count < 2 &&
@@ -4163,6 +4185,117 @@ RecompD3dPresenterError d3d11_backend_submit(
     default:
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
+}
+
+RecompD3dPresenterError d3d11_backend_draw_coverage(
+    RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand *draw, bool *covered)
+{
+    if (covered) *covered = true;
+    if (presenter == nullptr || presenter != active_presenter)
+        return RECOMP_D3D_PRESENTER_NOT_INITIALIZED;
+    if (GetCurrentThreadId() != presenter->owner_thread)
+        return RECOMP_D3D_PRESENTER_WRONG_THREAD;
+    if (draw == nullptr || covered == nullptr)
+        return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
+    RecompD3dVertexLayout layout;
+    if (draw->program_count != 0u || !recomp_d3d_fvf_layout(draw->fvf, &layout) ||
+        layout.pretransformed || draw->primitive_type < 5u || draw->primitive_type > 7u ||
+        !draw->has_transform || draw->blend_weight_count > 3u ||
+        (draw->blend_weight_count != 0u && draw->blend_weight_count != layout.blend_weight_count))
+        return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    if (draw->vertex_bytes == nullptr || draw->index_bytes == nullptr ||
+        draw->vertex_count == 0u || draw->vertex_count > 65536u ||
+        draw->index_count < 3u ||
+        // Match capture span limits and keep the upload ring's fourfold growth safe.
+        static_cast<uint64_t>(draw->index_count) * sizeof(uint16_t) > 64u * 1024u * 1024u ||
+        draw->vertex_stride < layout.stride ||
+        static_cast<uint64_t>(draw->vertex_stride) * draw->vertex_count > 64u * 1024u * 1024u ||
+        draw->triangle_count != recomp_d3d_draw_triangle_count(draw->primitive_type, draw->index_count))
+        return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
+    for (uint32_t i = 0u; i < draw->index_count; ++i) {
+        const uint16_t index = static_cast<const uint16_t *>(draw->index_bytes)[i];
+        if (index >= draw->vertex_count)
+            return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
+        const auto *vertex = static_cast<const uint8_t *>(draw->vertex_bytes) +
+            static_cast<size_t>(index) * draw->vertex_stride;
+        for (uint32_t j = 0u; j < 3u + draw->blend_weight_count; ++j) {
+            float value;
+            std::memcpy(&value, vertex + j * sizeof value, sizeof value);
+            if (!std::isfinite(value)) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
+        }
+    }
+    for (uint32_t i = 0u; i <= draw->blend_weight_count; ++i) {
+        const float *matrix = i == 0u ? draw->transform : draw->blend_transforms[i - 1u];
+        for (uint32_t j = 0u; j < 16u; ++j)
+            if (!std::isfinite(matrix[j])) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
+    }
+    for (float value : draw->viewport)
+        if (!std::isfinite(value)) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
+    if (draw->viewport[2] < 0.0f || (draw->viewport[2] > 0.0f &&
+        (draw->viewport[3] <= 0.0f || draw->viewport[4] < 0.0f || draw->viewport[5] > 1.0f ||
+         draw->viewport[4] > draw->viewport[5])))
+        return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
+    /* A nested probe would add its samples to the guest's open query. */
+    if (presenter->visibility_active != nullptr)
+        return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+
+    RecompD3dPresenterDrawCommand geometry{};
+    geometry.fvf = draw->fvf;
+    geometry.primitive_type = draw->primitive_type;
+    geometry.vertex_bytes = draw->vertex_bytes;
+    geometry.index_bytes = draw->index_bytes;
+    geometry.vertex_count = draw->vertex_count;
+    geometry.vertex_stride = draw->vertex_stride;
+    geometry.index_count = draw->index_count;
+    geometry.triangle_count = draw->triangle_count;
+    geometry.has_transform = draw->has_transform;
+    geometry.blend_weight_count = draw->blend_weight_count;
+    std::memcpy(geometry.transform, draw->transform, sizeof geometry.transform);
+    std::memcpy(geometry.blend_transforms, draw->blend_transforms, sizeof geometry.blend_transforms);
+    std::memcpy(geometry.viewport, draw->viewport, sizeof geometry.viewport);
+    std::memcpy(geometry.screen_space_offset, draw->screen_space_offset, sizeof geometry.screen_space_offset);
+    geometry.has_scissor = draw->has_scissor;
+    std::memcpy(geometry.scissor, draw->scissor, sizeof geometry.scissor);
+    geometry.cull_mode = draw->cull_mode;
+    geometry.target = draw->target;
+
+    ID3D11Query *query = nullptr;
+    const D3D11_QUERY_DESC desc = {D3D11_QUERY_OCCLUSION, 0u};
+    if (FAILED(presenter->device->CreateQuery(&desc, &query))) {
+        releaseCom(query);
+        return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+    }
+    presenter->context->Begin(query);
+    RecompD3dPresenterError error;
+    try {
+        error = submitDraw(presenter, geometry, true);
+    } catch (const std::bad_alloc &) {
+        error = RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
+    } catch (const std::exception &) {
+        error = RECOMP_D3D_PRESENTER_HOST_FAILURE;
+    }
+    presenter->context->End(query);
+    if (error == RECOMP_D3D_PRESENTER_OK) {
+        presenter->context->Flush();
+        const ULONGLONG start = GetTickCount64();
+        UINT64 samples = 0u;
+        for (;;) {
+            const HRESULT result = presenter->context->GetData(
+                query, &samples, sizeof samples, D3D11_ASYNC_GETDATA_DONOTFLUSH);
+            if (result == S_OK && SUCCEEDED(presenter->device->GetDeviceRemovedReason())) {
+                *covered = samples != 0u;
+                break;
+            }
+            if (result != S_FALSE || FAILED(presenter->device->GetDeviceRemovedReason()) ||
+                GetTickCount64() - start >= 2000u) {
+                error = RECOMP_D3D_PRESENTER_HOST_FAILURE;
+                break;
+            }
+            Sleep(1u);
+        }
+    }
+    releaseCom(query);
+    return error;
 }
 
 RecompD3dPresenterError d3d11_backend_release_memory(

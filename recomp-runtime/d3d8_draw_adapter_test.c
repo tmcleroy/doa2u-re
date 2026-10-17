@@ -28,6 +28,8 @@ static uint16_t captured_indices[131070];
 static float captured_vertices[64];
 static uint32_t allocated = 0x360000u, freed, submits;
 static bool fail_allocation;
+static bool covered = true;
+static uint32_t coverage_queries;
 static jmp_buf stopped;
 static char stop_reason[128];
 static RecompD3dTextureDesc texture;
@@ -86,6 +88,13 @@ bool recomp_d3d8_resource_inline_texture(uint32_t stage, RecompD3dTextureDesc *o
     if (stage != 3u || !inline_texture_active || *recomp_memory_u32(DEVICE + 0xf94u) == 0u) return false;
     *out = texture;
     return true;
+}
+bool recomp_d3d8_draw_has_coverage(const RecompD3dPresenterDrawCommand *draw)
+{
+    ++coverage_queries;
+    if (draw->vertex_bytes == NULL || !draw->has_transform || draw->index_count != 3u)
+        recomp_stop(2, "test:coverage-geometry");
+    return covered;
 }
 void recomp_d3d8_submit(const RecompD3dPresenterCommand *command)
 {
@@ -149,6 +158,8 @@ static void initialize(void)
     texture.width = texture.height = 4u;
     texture.data = 0x8000u;
     texture.mip_levels = 1u;
+    covered = true;
+    coverage_queries = 0u;
 }
 
 static int pixel_tests(void)
@@ -1612,6 +1623,35 @@ static int reflection_inverse_tests(void)
     return 0;
 }
 
+static int reflection_coverage_tests(void)
+{
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected coverage stop: %s\n", stop_reason); return 1; }
+    for (uint32_t stage = 0u; stage < 2u; ++stage) {
+        initialize();
+        *recomp_memory_u32(DEVICE + 0x798u) = 0x112u;
+        *recomp_memory_u32(DEVICE + 0xf88u) = *recomp_memory_u32(DEVICE + 0xf8cu) = 0x7000u;
+        const float collapsed[16] = {0,0,0,0, 0,1,0,0, 0,0,0,0, 5,6,7,1};
+        recomp_guest_store(DEVICE + 0xde0u, collapsed, sizeof collapsed);
+        const uint32_t reflection[3][6] = {{2,2,1,4,2,0}, {14,2,1,14,2,1}, {4,0,1,4,0,1}};
+        const uint32_t fields[] = {12,14,15,16,18,19};
+        for (uint32_t st = 0u; st < 3u; ++st)
+            for (uint32_t f = 0u; f < 6u; ++f) set_stage(st, fields[f], reflection[st][f]);
+        set_stage(stage, 21u, 2u); set_stage(stage, 28u, 0x30000u);
+        covered = false;
+        invoke(0x348240u, 6u, 3u, VERTICES, 32u);
+        CHECK(submits == 0u && coverage_queries == 1u && recomp_runtime.registers.esp == STACK + 20u);
+        /* Matrix rank alone cannot prove no coverage after raster snapping. */
+        covered = true;
+        if (setjmp(stopped) == 0) { invoke(0x348240u, 6u, 3u, VERTICES, 32u); return 1; }
+        CHECK(strncmp(stop_reason, "d3d8:reflection-normal:", 22u) == 0 && submits == 0u && coverage_queries == 2u);
+        /* An expanding mesh renders normally, without a synchronous query. */
+        *recomp_memory_u32(DEVICE + 0xde0u) = *recomp_memory_u32(DEVICE + 0xde0u + 40u) = 0x3d4ccccdu;
+        invoke(0x348240u, 6u, 3u, VERTICES, 32u);
+        CHECK(submits == 1u && coverage_queries == 2u);
+    }
+    return 0;
+}
+
 static int frame_buffer_tests(void)
 {
     if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected frame-buffer stop: %s\n", stop_reason); return 1; }
@@ -1679,7 +1719,7 @@ int main(void)
     initialize();
     if (pixel_tests() || draw_tests() || line_tests() || quad_tests() || point_tests() || lighting_tests() || filter_tests() || bright_tests() ||
         distortion_tests() || factor_tests() || position_texgen_tests() || effect_tests() || program_tests() || bump_tests() ||
-        volume_tests() || reflection_inverse_tests() || frame_buffer_tests() || depth_bias_tests()) return 1;
+        volume_tests() || reflection_inverse_tests() || reflection_coverage_tests() || frame_buffer_tests() || depth_bias_tests()) return 1;
     puts("PASS D3D8 pixel lifecycle/constants and semantic draw ABI/snapshots");
     return 0;
 }

@@ -207,6 +207,22 @@ int main()
     CHECK(packet.command(5).data.draw.directional.ambient[7][0] == 0.25f);
     CHECK(packet.command(6).data.draw.texture_bytes != sources[2].data());
     CHECK(packet.command(6).data.draw.vertex_bytes != sources[0].data());
+    packet.clear();
+    input.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW_COVERAGE;
+    input.data.draw.program_count = 0u;
+    for (size_t i = 2u; i < sources.size(); ++i)
+        input.data.draw.*fields[i] = reinterpret_cast<const void *>(1u);
+    for (auto field : counts) input.data.draw.*field = UINT32_MAX;
+    input.data.draw.reflection_stage2_byte_count = UINT32_MAX;
+    CHECK(packet.add(input) == RECOMP_D3D_PRESENTER_OK);
+    packet.seal();
+    CHECK(packet.command(0).type == RECOMP_D3D_PRESENTER_COMMAND_DRAW_COVERAGE);
+    const auto &geometry = packet.command(0).data.draw;
+    for (size_t i = 0u; i < 2u; ++i) {
+        CHECK(geometry.*fields[i] != sources[i].data());
+        CHECK(std::memcmp(geometry.*fields[i], sources[i].data(), sizes[i]) == 0);
+    }
+    for (size_t i = 2u; i < sources.size(); ++i) CHECK(geometry.*fields[i] == nullptr);
     std::puts("PASS capture ownership, order, deduplication, overflow, alignment, move and reuse");
     return 0;
 }

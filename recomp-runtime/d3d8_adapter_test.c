@@ -86,6 +86,15 @@ void recomp_d3d8_resource_set_render_targets(uint32_t color, uint32_t depth)
 void recomp_d3d_presenter_report_draw_textures(void) {}
 static unsigned flush_count;
 static bool flush_wait;
+static bool coverage = true;
+static RecompD3dPresenterError coverage_error = RECOMP_D3D_PRESENTER_OK;
+RecompD3dPresenterError recomp_d3d_presenter_draw_coverage(
+    RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand *draw, bool *covered)
+{
+    (void)presenter; (void)draw;
+    *covered = coverage;
+    return coverage_error;
+}
 RecompD3dPresenterError recomp_d3d_presenter_flush(RecompD3dPresenter *presenter, bool wait)
 {
     (void)presenter;
@@ -297,6 +306,30 @@ static int create(void)
 {
     const uint32_t arguments[] = {0u, 1u, 0u, 0x40u, PARAMETERS, OUTPUT};
     return call(0x34a470u, arguments, 6u, NULL);
+}
+
+static int coverage_tests(void)
+{
+    RecompD3dPresenterDrawCommand draw = {0};
+    int passed = 1;
+    coverage = false;
+    passed &= expect("empty GPU coverage is returned", !recomp_d3d8_draw_has_coverage(&draw));
+    coverage = true;
+    passed &= expect("visible GPU coverage is returned", recomp_d3d8_draw_has_coverage(&draw));
+    coverage = false;
+    coverage_error = RECOMP_D3D_PRESENTER_HOST_FAILURE;
+    stop_armed = true;
+    if (setjmp(stop_environment) == 0) {
+        recomp_d3d8_draw_has_coverage(&draw);
+        passed &= expect("failed query must not discard the draw", false);
+    } else {
+        passed &= expect("failed query stops with its error", stop_code == 2 &&
+            strncmp(stop_reason, "d3d8:coverage:", strlen("d3d8:coverage:")) == 0);
+    }
+    stop_armed = false;
+    coverage = true;
+    coverage_error = RECOMP_D3D_PRESENTER_OK;
+    return passed;
 }
 
 int main(void)
@@ -810,6 +843,7 @@ int main(void)
     arguments[0] = 0u; arguments[1] = 0u; arguments[2] = 0xf3u;
     passed &= call(0x347920u, arguments, 6u, NULL);
     passed &= call(0x344aa0u, copy, 5u, "d3d8:copy-rects-unbound");
+    passed &= coverage_tests();
     recomp_d3d8_shutdown();
     passed &= expect("shutdown destroys presenter once", destroy_count == 1u);
     recomp_d3d8_shutdown();

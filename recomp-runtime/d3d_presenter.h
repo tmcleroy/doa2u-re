@@ -37,6 +37,7 @@ typedef enum RecompD3dPresenterCommandType {
     /* Occlusion counting brackets later draws; END assigns the count to an index. */
     RECOMP_D3D_PRESENTER_COMMAND_VISIBILITY_BEGIN,
     RECOMP_D3D_PRESENTER_COMMAND_VISIBILITY_END,
+    RECOMP_D3D_PRESENTER_COMMAND_DRAW_COVERAGE,
 } RecompD3dPresenterCommandType;
 
 /* Resolved by the adapter. Surface wrappers sharing pixel storage have the
@@ -318,6 +319,11 @@ RecompD3dPresenterError recomp_d3d_presenter_destroy(
 /* Publish queued work without swapping; optionally wait for its completion. */
 RecompD3dPresenterError recomp_d3d_presenter_flush(
     RecompD3dPresenter *presenter, bool wait);
+
+/* Synchronous, write-free raster coverage of fixed-function triangles. Ignores
+   shading and depth/stencil rejection; zero means no fragment can consume them. */
+RecompD3dPresenterError recomp_d3d_presenter_draw_coverage(
+    RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand *draw, bool *covered);
 
 /* Result of the latest VISIBILITY_END submitted for index: samples that passed
    depth/stencil, in pixels of the bound target's guest size. complete stays

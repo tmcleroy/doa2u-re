@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <thread>
+#include <vector>
 
 // d3d_vblank.cpp's guest pacing reaches the kernel; these tests use only its host sleep.
 extern "C" void recomp_kernel_wait_for_vblank(uint64_t) {}
@@ -2189,10 +2190,318 @@ static bool testScaledMsaaDepthBias()
     return passed;
 }
 
+static bool testDrawCoverage(bool scaled_msaa = false)
+{
+    char folder[MAX_PATH], path[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "cov", 0, path)) return false;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", path);
+    _putenv_s("RECOMP_D3D_SCALE", scaled_msaa ? "2" : "1");
+    _putenv_s("RECOMP_D3D_MSAA", scaled_msaa ? "4" : "1");
+    RecompD3dPresenter *presenter = nullptr;
+    if (!expect("create coverage", d3d11_backend_create(&config, &presenter))) return false;
+    struct Vertex { float x, y, z, nx, ny, nz, u, v; };
+    Vertex vertices[] = {{-1,-1,0.5f}, {1,-1,0.5f}, {0,1,0.5f}};
+    for (auto &vertex : vertices) vertex.nx = vertex.u = NAN;
+    const uint16_t indices[] = {0,1,2};
+    RecompD3dPresenterDrawCommand draw{};
+    draw.fvf = 0x112u;
+    draw.primitive_type = RECOMP_D3D_PT_TRIANGLELIST;
+    draw.vertex_bytes = vertices;
+    draw.vertex_stride = sizeof(Vertex);
+    draw.vertex_count = draw.index_count = 3u;
+    draw.triangle_count = 1u;
+    draw.index_bytes = indices;
+    draw.has_transform = true;
+    draw.transform[0] = draw.transform[5] = draw.transform[10] = draw.transform[15] = 1;
+    // Neither obstructing tests nor incomplete/invalid shading inputs belong to coverage.
+    draw.has_reflection = draw.has_texture = draw.texgen_reflection = true;
+    draw.depth.depth_test_enable = draw.depth.depth_write_enable = true;
+    draw.depth.depth_func = draw.depth.alpha_func = draw.depth.stencil_func = RECOMP_D3D_COMPARE_NEVER;
+    draw.depth.alpha_test_enable = draw.depth.stencil_enable = true;
+    draw.depth.stencil_write_mask = 255u;
+    draw.depth.stencil_ref = 99u;
+    draw.depth.stencil_fail = draw.depth.stencil_zfail = draw.depth.stencil_pass = RECOMP_D3D_STENCIL_REPLACE;
+    draw.blend.color_write_mask = 15u;
+    draw.blend.blend_enable = true;
+    auto clear = clearCommand();
+    clear.data.clear.z = 0.25f;
+    clear.data.clear.clear_stencil = true;
+    clear.data.clear.stencil = 7u;
+    bool passed = expect("coverage clear", d3d11_backend_submit(presenter, &clear));
+    const auto coverage = [&](const char *label, bool expected) {
+        bool covered = !expected;
+        const auto error = d3d11_backend_draw_coverage(presenter, &draw, &covered);
+        const bool ok = expect(label, error) && covered == expected;
+        if (!ok) std::fprintf(stderr, "FAIL %s covered=%d expected=%d\n", label, covered, expected);
+        passed &= ok;
+    };
+    coverage("visible coverage", true);
+    draw.transform[0] = draw.transform[10] = 0;
+    coverage("collapsed coverage", false);
+    draw.transform[0] = draw.transform[10] = 1;
+    {
+        // A full converted quad batch has 98,304 indices; only the tail has area.
+        std::vector<uint16_t> many_indices(98304u, 0u);
+        many_indices[many_indices.size() - 2u] = 1u;
+        many_indices.back() = 2u;
+        draw.index_bytes = many_indices.data();
+        draw.index_count = static_cast<uint32_t>(many_indices.size());
+        draw.triangle_count = draw.index_count / 3u;
+        coverage("large index batch tail coverage", true);
+        draw.transform[0] = draw.transform[10] = 0;
+        coverage("large collapsed index batch coverage", false);
+        draw.transform[0] = draw.transform[10] = 1;
+        draw.index_bytes = indices;
+        draw.index_count = 3u;
+        draw.triangle_count = 1u;
+    }
+    for (uint32_t primitive : {5u,6u,7u}) {
+        draw.primitive_type = primitive;
+        coverage("polygon topology coverage", true);
+    }
+    draw.primitive_type = 5u;
+    draw.has_scissor = true;
+    std::memset(draw.scissor, 0, sizeof draw.scissor);
+    coverage("empty scissor coverage", false);
+    draw.scissor[0] = 80;
+    draw.scissor[1] = 180;
+    draw.scissor[2] = 81;
+    draw.scissor[3] = 181;
+    coverage("one pixel scissor coverage", true);
+    draw.viewport[0] = draw.viewport[1] = 20;
+    draw.viewport[2] = draw.viewport[3] = 100;
+    draw.viewport[5] = 1;
+    coverage("viewport outside scissor", false);
+    std::memset(draw.viewport, 0, sizeof draw.viewport);
+    draw.has_scissor = false;
+    draw.transform[14] = -2;
+    coverage("near clipped coverage", false);
+    draw.transform[14] = 0;
+    draw.screen_space_offset[0] = 400;
+    coverage("screen offset outside target", false);
+    draw.screen_space_offset[0] = 0;
+    draw.cull_mode = RECOMP_D3D_CULL_CLOCKWISE;
+    bool clockwise = false, counterclockwise = false;
+    passed &= expect("clockwise coverage", d3d11_backend_draw_coverage(presenter, &draw, &clockwise));
+    draw.cull_mode = RECOMP_D3D_CULL_COUNTER_CLOCKWISE;
+    passed &= expect("counterclockwise coverage", d3d11_backend_draw_coverage(presenter, &draw, &counterclockwise));
+    if (clockwise == counterclockwise) { std::fprintf(stderr, "FAIL coverage ignored culling\n"); passed = false; }
+    draw.cull_mode = RECOMP_D3D_CULL_NONE;
+    {
+        // The first standard 4x sample is (3/8,1/8); the pixel center misses this triangle.
+        const float width = scaled_msaa ? 640.0f : 320.0f, height = scaled_msaa ? 480.0f : 240.0f;
+        const Vertex sample[] = {
+            {2 * 20.25f / width - 1, 1 - 2 * 20.0f / height, 0.5f},
+            {2 * 20.5f / width - 1, 1 - 2 * 20.0f / height, 0.5f},
+            {2 * 20.375f / width - 1, 1 - 2 * 20.25f / height, 0.5f}};
+        draw.vertex_bytes = sample;
+        coverage("sample coverage without pixel-center coverage", scaled_msaa);
+        draw.vertex_bytes = vertices;
+    }
+    if (!scaled_msaa) {
+        // A rank-one affine map can gain area when screen coordinates snap to 1/256 pixels.
+        // (125,127.1), (130,128.6), (135,130.1) snap around the sample (128,128).
+        const Vertex line[] = {{0,0,0}, {0,1,0}, {0,2,0}};
+        draw.vertex_bytes = line;
+        std::memset(draw.transform, 0, sizeof draw.transform);
+        draw.transform[4] = 1.0f / 8192.0f;
+        draw.transform[5] = -1.0f / 20480.0f;
+        draw.transform[12] = -0.9969482421875f;
+        draw.transform[13] = 1.0f - 2.0f * (127.1f / 256.0f) / 240.0f;
+        draw.transform[14] = 0.5f;
+        draw.transform[15] = 1;
+        coverage("rank-one snapped sample coverage", true);
+        draw.vertex_bytes = vertices;
+        std::memset(draw.transform, 0, sizeof draw.transform);
+        draw.transform[0] = draw.transform[5] = draw.transform[10] = draw.transform[15] = 1;
+    }
+    struct Blended { float x, y, z, weight, nx, ny, nz, u, v; };
+    Blended blended[] = {{-1,-1,0.5f,0,NAN}, {1,-1,0.5f,0,NAN}, {0,1,0.5f,0,NAN}};
+    draw.fvf = 0x116u;
+    draw.vertex_stride = sizeof(Blended);
+    draw.vertex_bytes = blended;
+    draw.blend_weight_count = 1u;
+    std::memcpy(draw.blend_transforms[0], draw.transform, sizeof draw.transform);
+    draw.transform[0] = draw.transform[10] = 0;
+    coverage("remaining blend influence coverage", true);
+    for (auto &vertex : blended) vertex.weight = 1;
+    coverage("collapsed weighted influence coverage", false);
+    draw.fvf = 0x112u;
+    draw.vertex_stride = sizeof(Vertex);
+    draw.vertex_bytes = vertices;
+    draw.blend_weight_count = 0u;
+    draw.transform[0] = draw.transform[10] = 1;
+    draw.target.offscreen = true;
+    draw.target.no_depth = true;
+    draw.target.color.data = 0x10000u;
+    draw.target.color.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
+    draw.target.color.width = draw.target.color.height = 64u;
+    coverage("offscreen coverage", true);
+    draw.transform[0] = draw.transform[10] = 0;
+    coverage("offscreen collapsed coverage", false);
+    draw.transform[0] = draw.transform[10] = 1;
+    draw.target = {};
+    bool covered = false;
+    passed &= expect("uninitialized coverage", d3d11_backend_draw_coverage(nullptr, &draw, &covered),
+        RECOMP_D3D_PRESENTER_NOT_INITIALIZED);
+    passed &= covered;
+    passed &= expect("null coverage draw", d3d11_backend_draw_coverage(presenter, nullptr, &covered),
+        RECOMP_D3D_PRESENTER_INVALID_ARGUMENT);
+    passed &= covered;
+    passed &= expect("null coverage result", d3d11_backend_draw_coverage(presenter, &draw, nullptr),
+        RECOMP_D3D_PRESENTER_INVALID_ARGUMENT);
+    draw.index_bytes = reinterpret_cast<const void *>(1u);
+    draw.index_count = 64u * 1024u * 1024u / sizeof(uint16_t) + 1u;
+    draw.triangle_count = draw.index_count / 3u;
+    covered = false;
+    passed &= expect("oversized coverage indices rejected before read",
+        d3d11_backend_draw_coverage(presenter, &draw, &covered), RECOMP_D3D_PRESENTER_INVALID_ARGUMENT);
+    passed &= covered;
+    draw.index_bytes = indices;
+    draw.index_count = 3u;
+    draw.triangle_count = 1u;
+    draw.vertex_bytes = reinterpret_cast<const void *>(1u);
+    draw.vertex_stride = UINT32_MAX / draw.vertex_count;
+    covered = false;
+    passed &= expect("oversized coverage vertices rejected before read",
+        d3d11_backend_draw_coverage(presenter, &draw, &covered), RECOMP_D3D_PRESENTER_INVALID_ARGUMENT);
+    passed &= covered;
+    draw.vertex_bytes = vertices;
+    draw.vertex_stride = sizeof(Vertex);
+    draw.program_count = 1u;
+    passed &= expect("program coverage rejected", d3d11_backend_draw_coverage(presenter, &draw, &covered),
+        RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
+    draw.program_count = 0u;
+    draw.fvf = 0x144u;
+    passed &= expect("pretransformed coverage rejected", d3d11_backend_draw_coverage(presenter, &draw, &covered),
+        RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
+    draw.fvf = 0x112u;
+    draw.primitive_type = 2u;
+    passed &= expect("line coverage rejected", d3d11_backend_draw_coverage(presenter, &draw, &covered),
+        RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
+    draw.primitive_type = 5u;
+    std::thread other([&] {
+        passed &= expect("coverage owner thread", d3d11_backend_draw_coverage(presenter, &draw, &covered),
+            RECOMP_D3D_PRESENTER_WRONG_THREAD);
+    });
+    other.join();
+    vertices[0].x = NAN;
+    passed &= expect("nonfinite coverage position", d3d11_backend_draw_coverage(presenter, &draw, &covered),
+        RECOMP_D3D_PRESENTER_INVALID_ARGUMENT);
+    passed &= covered;
+    vertices[0].x = -1;
+    // This fails after Begin(query); a following probe must still succeed.
+    draw.has_scissor = true;
+    draw.scissor[0] = 2;
+    draw.scissor[2] = 1;
+    passed &= expect("invalid coverage scissor", d3d11_backend_draw_coverage(presenter, &draw, &covered),
+        RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
+    passed &= covered;
+    draw.has_scissor = false;
+    RecompD3dPresenterCommand begin{RECOMP_D3D_PRESENTER_COMMAND_VISIBILITY_BEGIN};
+    RecompD3dPresenterCommand end{RECOMP_D3D_PRESENTER_COMMAND_VISIBILITY_END};
+    end.data.visibility_index = 17u;
+    passed &= expect("guest visibility begin", d3d11_backend_submit(presenter, &begin));
+    passed &= expect("open guest visibility rejects probe", d3d11_backend_draw_coverage(presenter, &draw, &covered),
+        RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND);
+    passed &= covered;
+    passed &= expect("guest visibility end", d3d11_backend_submit(presenter, &end));
+    coverage("coverage after query error", true);
+    uint32_t query_index = 0u, pixels = ~0u;
+    const auto poll = d3d11_backend_poll_visibility(presenter, &query_index, &pixels);
+    if (poll != D3D11_VISIBILITY_READY || query_index != 17u || pixels != 0u) {
+        std::fprintf(stderr, "FAIL coverage changed guest visibility poll=%u pixels=%u\n", poll, pixels);
+        passed = false;
+    }
+    // Paint only the right half, conditioned on the original depth AND stencil.
+    struct Witness { float x, y, z; uint32_t color; };
+    const Witness witness[] = {{0,1,0.25f,0xff00ff00u}, {1,1,0.25f,0xff00ff00u},
+        {0,-1,0.25f,0xff00ff00u}, {1,-1,0.25f,0xff00ff00u}};
+    const uint16_t quad[] = {0,1,2,3};
+    RecompD3dPresenterCommand paint{RECOMP_D3D_PRESENTER_COMMAND_DRAW};
+    auto &check = paint.data.draw;
+    check.fvf = 0x42u;
+    check.vertex_bytes = witness;
+    check.vertex_stride = sizeof(Witness);
+    check.vertex_count = check.index_count = 4u;
+    check.index_bytes = quad;
+    check.triangle_count = 2u;
+    check.primitive_type = 6u;
+    check.has_transform = true;
+    check.transform[0] = check.transform[5] = check.transform[10] = check.transform[15] = 1;
+    check.blend.color_write_mask = 15u;
+    check.depth.depth_test_enable = check.depth.stencil_enable = true;
+    check.depth.depth_func = check.depth.stencil_func = RECOMP_D3D_COMPARE_EQUAL;
+    check.depth.stencil_ref = 7u;
+    check.depth.stencil_read_mask = 255u;
+    passed &= expect("depth stencil preservation witness", d3d11_backend_submit(presenter, &paint));
+    RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
+    present.data.present = {5,1};
+    passed &= expect("coverage present", d3d11_backend_submit(presenter, &present));
+    passed &= expect("destroy coverage", d3d11_backend_destroy(&presenter));
+    if (FILE *file = std::fopen(path, "rb")) {
+        uint32_t width = 0u, height = 0u;
+        std::fseek(file, 18, SEEK_SET);
+        passed &= std::fread(&width, sizeof width, 1, file) == 1 &&
+            std::fread(&height, sizeof height, 1, file) == 1;
+        passed &= width == (scaled_msaa ? 640u : 320u) && height == (scaled_msaa ? 480u : 240u);
+        std::fseek(file, 54, SEEK_SET);
+        unsigned mismatches = 0;
+        for (unsigned pixel = 0; pixel < width * height; ++pixel) {
+            unsigned char bgr[3]{};
+            const bool right = pixel % width >= width / 2u;
+            if (std::fread(bgr, 1, 3, file) != 3 || bgr[0] != (right ? 0 : 96) ||
+                bgr[1] != (right ? 255 : 64) || bgr[2] != (right ? 0 : 32)) ++mismatches;
+        }
+        if (mismatches) { std::fprintf(stderr, "FAIL coverage target writes pixels=%u\n", mismatches); passed = false; }
+        std::fclose(file);
+    } else passed = false;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
+    _putenv_s("RECOMP_D3D_SCALE", "");
+    _putenv_s("RECOMP_D3D_MSAA", "");
+    DeleteFileA(path);
+    if (passed) std::puts("PASS native geometry coverage, target preservation and guest query isolation");
+    return passed;
+}
+
+static bool testQueuedDrawCoverage()
+{
+    RecompD3dPresenter *presenter = nullptr;
+    if (!expect("create queued coverage", recomp_d3d_presenter_create(&config, &presenter))) return false;
+    const float vertices[][8] = {{-1,-1,0.5f}, {1,-1,0.5f}, {0,1,0.5f}};
+    const uint16_t indices[] = {0,1,2};
+    RecompD3dPresenterDrawCommand draw{};
+    draw.fvf = 0x112u;
+    draw.primitive_type = 5u;
+    draw.vertex_bytes = vertices;
+    draw.vertex_stride = sizeof vertices[0];
+    draw.index_bytes = indices;
+    draw.index_count = draw.vertex_count = 3u;
+    draw.triangle_count = 1u;
+    draw.has_transform = true;
+    draw.transform[0] = draw.transform[5] = draw.transform[10] = draw.transform[15] = 1;
+    auto clear = clearCommand();
+    bool passed = expect("queued coverage clear", recomp_d3d_presenter_submit(presenter, &clear));
+    bool covered = false;
+    passed &= expect("queued visible coverage", recomp_d3d_presenter_draw_coverage(presenter, &draw, &covered));
+    passed &= covered;
+    draw.transform[0] = draw.transform[10] = 0;
+    passed &= expect("queued collapsed coverage", recomp_d3d_presenter_draw_coverage(presenter, &draw, &covered));
+    passed &= !covered;
+    draw.transform[0] = draw.transform[10] = 1;
+    passed &= expect("queued visible after collapsed", recomp_d3d_presenter_draw_coverage(presenter, &draw, &covered));
+    passed &= covered;
+    passed &= destroy(presenter);
+    if (passed) std::puts("PASS queued coverage returns each native result after earlier work");
+    else std::fprintf(stderr, "FAIL queued coverage result\n");
+    return passed;
+}
+
 int main()
 {
     recomp_d3d_presenter_set_immediate_present(false);
-    if (!testTicks() || !testCapturedDraw() || !testMipSampler() || !testLines() || !testLighting() ||
+    if (!testDrawCoverage() || !testDrawCoverage(true) || !testQueuedDrawCoverage() ||
+        !testTicks() || !testCapturedDraw() || !testMipSampler() || !testLines() || !testLighting() ||
         !testReflectionStage2() || !testReflectionStage2(true) ||
         !testReflectionAddress(false) || !testReflectionAddress(true) || !testReflectionAddress(true, true) ||
         !testReflectionAddress(false, false, true) || !testReflectionAddress(true, false, false, true) ||

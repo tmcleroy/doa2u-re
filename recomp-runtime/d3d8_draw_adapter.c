@@ -674,7 +674,7 @@ static void attach_lighting(uint32_t device, const RecompD3dVertexLayout *layout
 
 /* Camera-space reflection inputs: world-view, its normal matrix and the
    texture matrix of the generating stage (TEXTURE0 0xce0, TEXTURE1 0xd20). */
-static void reflection_inputs(uint32_t device, uint32_t texture_matrix, bool needs_normal,
+static bool reflection_inputs(uint32_t device, uint32_t texture_matrix, bool needs_normal,
     RecompD3dPresenterDrawCommand *draw)
 {
     float world[16], view[16];
@@ -688,10 +688,14 @@ static void reflection_inputs(uint32_t device, uint32_t texture_matrix, bool nee
         multiply(world, view, wv);
         /* Position texgen and the no-normal reflection shader never read an inverse. */
         if (!needs_normal) continue;
-        if (!recomp_d3d_normal_transform(wv, normal))
+        if (!recomp_d3d_normal_transform(wv, normal)) {
+            /* Only exact raster coverage can prove the undefined normal is unused. */
+            if (draw->primitive_type >= 5u && draw->primitive_type <= 7u &&
+                !recomp_d3d8_draw_has_coverage(draw)) return false;
             recomp_stop(2, "d3d8:reflection-normal:fvf=%x:matrix=%x:influence=%u/%u:normalize=%u:ret=%08x",
                 draw->fvf, texture_matrix, i, draw->blend_weight_count, draw->reflection_normalize,
                 *recomp_memory_u32(recomp_runtime.registers.esp));
+        }
         /* With normalization, 0x34b530 omits |det| division. Its per-matrix
            scale matters when normals from different influences are blended. */
         if (draw->reflection_normalize && draw->blend_weight_count != 0u) {
@@ -713,14 +717,15 @@ static void reflection_inputs(uint32_t device, uint32_t texture_matrix, bool nee
                 draw->fvf, texture_matrix, i, *recomp_memory_u32(device + texture_matrix + i * 4u),
                 *recomp_memory_u32(STAGES + 28u * 4u), *recomp_memory_u32(STAGES + 128u + 28u * 4u),
                 *recomp_memory_u32(recomp_runtime.registers.esp));
+    return true;
 }
 
-static void attach_reflection(uint32_t device, const RecompD3dVertexLayout *layout,
+static bool attach_reflection(uint32_t device, const RecompD3dVertexLayout *layout,
     RecompD3dPresenterDrawCommand *draw)
 {
     uint32_t stages[4][32];
     recomp_guest_load(stages, STAGES, sizeof stages);
-    if (!recomp_d3d_reflection_material(stages)) return;
+    if (!recomp_d3d_reflection_material(stages)) return true;
     /* Without a normal stream the presenter's zero inline normal applies: no SDK
        path writes v2 inline data (only 0x34aac0's v0/v9 via SetVertexData2f). */
     if (layout->pretransformed || layout->texcoord_count == 0u ||
@@ -748,8 +753,8 @@ static void attach_reflection(uint32_t device, const RecompD3dVertexLayout *layo
     draw->reflection_address_v = texture.address_v;
     draw->reflection_bytes = texture.texture_bytes;
     draw->reflection_byte_count = texture.texture_byte_count;
-    reflection_inputs(device, 0xd20u,
-        layout->normal_offset != RECOMP_D3D_FVF_ABSENT && stages[1][28] == 0x30000u, draw);
+    if (!reflection_inputs(device, 0xd20u,
+        layout->normal_offset != RECOMP_D3D_FVF_ABSENT && stages[1][28] == 0x30000u, draw)) return false;
     recomp_guest_load(draw->reflection_diffuse, device + 0xf00u, sizeof draw->reflection_diffuse);
     for (uint32_t i = 0u; i < 4u; ++i)
         if (!isfinite(draw->reflection_diffuse[i])) recomp_stop(2, "d3d8:reflection-material");
@@ -783,6 +788,7 @@ static void attach_reflection(uint32_t device, const RecompD3dVertexLayout *layo
     if (draw->reflection_skip_diffuse && *recomp_memory_u32(device + 0xf90u) != 0u)
         recomp_stop(2, "d3d8:reflection-stage2-texture");
     draw->has_reflection = true;
+    return true;
 }
 
 /* Stage-1 alpha mask over UV1. An op that reads an empty texture slot
@@ -817,7 +823,7 @@ static void stage1_mask(uint32_t device, const RecompD3dVertexLayout *layout, ui
     draw->stage1_kill_only = kill_only;
 }
 
-static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
+static bool fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
     RecompD3dPresenterDrawCommand *draw)
 {
     uint32_t stage[4][32];
@@ -917,8 +923,8 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
             if (draw->has_reflection && !draw->reflection_mesh_uv)
                 memcpy(draw->reflection_stage1_transform, draw->reflection_transform,
                     sizeof draw->reflection_stage1_transform);
-            reflection_inputs(device, 0xce0u,
-                texgen && layout->normal_offset != RECOMP_D3D_FVF_ABSENT, draw);
+            if (!reflection_inputs(device, 0xce0u,
+                texgen && layout->normal_offset != RECOMP_D3D_FVF_ABSENT, draw)) return false;
             draw->texgen_reflection = texgen;
             draw->texgen_projected = camera_position;
             if (camera_position && stage[0][21] == 2u) {
@@ -939,7 +945,7 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
         }
         if (stage[0][12] == 1u) {
             draw->material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_NONE;
-            return;
+            return true;
         }
         const uint32_t final[6] = {stage[1][12], stage[1][14], stage[1][15],
             stage[1][16], stage[1][18], stage[1][19]};
@@ -969,6 +975,7 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
                 stage[1][0], stage[1][1], stage[0][11], stage[1][11], stage[0][21], stage[0][28],
                 stage[1][21], stage[1][28]);
     }
+    return true;
 }
 
 /* A bound 5849 vertex program (see set_vertex_program). Code comes from the
@@ -1456,8 +1463,11 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
         else if (!four_tap(device, draw) && !bright_pass(device, draw))
             recomp_stop(2, "d3d8:draw-pixel-shader-unsupported");
     } else {
-        attach_reflection(device, &layout, draw);
-        fixed_stages(device, &layout, draw);
+        if (!attach_reflection(device, &layout, draw) || !fixed_stages(device, &layout, draw)) {
+            free(sequential);
+            free(packed);
+            return;
+        }
     }
     command.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW;
     if (native_line) {

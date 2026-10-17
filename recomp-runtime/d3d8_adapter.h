@@ -17,6 +17,7 @@ RecompFunction recomp_d3d8_lookup_manual(uint32_t address);
 uint32_t recomp_d3d8_require_device(void);
 void recomp_d3d8_target(RecompD3dPresenterTarget *target);
 void recomp_d3d8_submit(const RecompD3dPresenterCommand *command);
+bool recomp_d3d8_draw_has_coverage(const RecompD3dPresenterDrawCommand *draw);
 void recomp_d3d8_release_memory(uint32_t base, uint32_t size);
 void recomp_d3d8_shutdown(void);
 
