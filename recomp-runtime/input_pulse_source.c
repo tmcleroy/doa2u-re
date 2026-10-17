@@ -85,15 +85,17 @@ bool recomp_input_pulse_source_add_analog_repeat(
     RecompInputPulseSource *source,
     uint64_t first,
     uint64_t period,
+    uint64_t last,
     uint8_t index)
 {
-    if (source == NULL || first == 0u || period == 0u ||
+    if (source == NULL || first == 0u || period == 0u || last < first ||
         index >= RECOMP_INPUT_ANALOG_BUTTON_COUNT ||
         source->repeat_count >= RECOMP_INPUT_ANALOG_REPEAT_CAPACITY) {
         return false;
     }
     source->repeat_firsts[source->repeat_count] = first;
     source->repeat_periods[source->repeat_count] = period;
+    source->repeat_lasts[source->repeat_count] = last;
     source->repeat_indices[source->repeat_count] = index;
     ++source->repeat_count;
     return true;
@@ -192,6 +194,7 @@ bool recomp_input_pulse_source_sample(
     }
     for (unsigned i = 0u; i < source->repeat_count; ++i) {
         if (source->sample_count >= source->repeat_firsts[i] &&
+            source->sample_count <= source->repeat_lasts[i] &&
             (source->sample_count - source->repeat_firsts[i]) % source->repeat_periods[i] == 0u) {
             gamepad->analog_buttons[source->repeat_indices[i]] = RECOMP_INPUT_ANALOG_PRESSED;
         }

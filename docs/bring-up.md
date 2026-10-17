@@ -595,8 +595,9 @@ The runner and bounded probe also accept `--input-analog-pulse-at <poll>
 or right trigger (indices 0 through 7). Polls must be positive uint64 values;
 up to 1024 analog edges may be scheduled, with one analog button per poll.
 The runner also accepts up to eight `--input-analog-pulse-every <first>
-<period> <index>` rules, each pressing one button at poll first and every
-period polls after it, so long automated fights fit on the command line.
+<period> <last> <index>` rules, each pressing one button at poll first and
+every period polls after it through poll last, so long automated fights fit on
+the command line and can stop before an ending scene.
 `--isolated` keeps probe storage separate and disables physical input and rumble.
 
 ## Audio API contract
