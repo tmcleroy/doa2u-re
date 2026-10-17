@@ -694,6 +694,55 @@ static bool world_collapses_to_line(const float world[16])
     return true;
 }
 
+/* Every edge texel of a single-level DXT5 texture holds one value. Only
+   endpoint indices count, whose decoded value no decoder rounding can change. */
+static bool dxt5_uniform_edge(const uint8_t *bytes, uint32_t width, uint32_t height)
+{
+    int64_t first = -1;
+    for (uint32_t y = 0u; y < height; ++y)
+        for (uint32_t x = 0u; x < width; x += (y == 0u || y == height - 1u || x == width - 1u) ? 1u : width - 1u) {
+            const uint8_t *block = bytes + ((y / 4u) * (width / 4u) + x / 4u) * 16u;
+            const uint32_t texel = (y % 4u) * 4u + x % 4u;
+            uint64_t alpha_bits = 0u;
+            memcpy(&alpha_bits, block + 2u, 6u);
+            const uint32_t a = (uint32_t)(alpha_bits >> (3u * texel)) & 7u;
+            const uint32_t c = (block[12u + y % 4u] >> (2u * (x % 4u))) & 3u;
+            int64_t alpha;
+            if (a < 2u) alpha = block[a];
+            else if (block[0] <= block[1] && a >= 6u) alpha = a == 6u ? 0 : 255;
+            else return false;
+            if (c > 1u) return false;
+            const int64_t value = alpha << 16 | block[8u + 2u * c] | block[9u + 2u * c] << 8;
+            if (first >= 0 && value != first) return false;
+            first = value;
+        }
+    return first >= 0;
+}
+
+/* 0x1df200's projector divides by (size - 50)^2, so TEXTURE0 holds infinities
+   and NaNs for one frame. Camera-space position has w = 1, so a non-finite
+   translation makes S and T non-finite at every vertex under any NaN or
+   zero-times-infinity rule. CLAMP sends such a coordinate to an edge, whether
+   the texture unit reads NaN as zero or a saturated end, so a uniform edge
+   makes the sample exact: the corner at (-1, -1). */
+static bool clamped_edge_transform(RecompD3dPresenterDrawCommand *draw)
+{
+    const uint32_t *stage = recomp_memory_u32(STAGES);
+    const float *m = draw->reflection_transform;
+    if (stage[28] != 0x20000u || (stage[21] != 2u && stage[21] != 3u) ||
+        isfinite(m[12]) || isfinite(m[13]) ||
+        stage[0] != 3u || stage[1] != 3u ||
+        !draw->has_texture || draw->texture.volume_depth != 0u || draw->texture.mip_levels != 1u ||
+        draw->texture.format_byte != RECOMP_D3D_TEXTURE_FORMAT_DXT5 ||
+        draw->texture.width % 4u != 0u || draw->texture.height % 4u != 0u ||
+        !dxt5_uniform_edge(draw->texture_bytes, draw->texture.width, draw->texture.height))
+        return false;
+    memset(draw->reflection_transform, 0, sizeof draw->reflection_transform);
+    draw->reflection_transform[12] = draw->reflection_transform[13] = -1.0f;
+    draw->reflection_transform[15] = 1.0f;
+    return true;
+}
+
 static bool reflection_inputs(uint32_t device, uint32_t texture_matrix, bool needs_normal,
     RecompD3dPresenterDrawCommand *draw)
 {
@@ -735,6 +784,7 @@ static bool reflection_inputs(uint32_t device, uint32_t texture_matrix, bool nee
         }
     }
     recomp_guest_load(draw->reflection_transform, device + texture_matrix, sizeof draw->reflection_transform);
+    if (texture_matrix == 0xce0u && clamped_edge_transform(draw)) return true;
     for (uint32_t i = 0u; i < 16u; ++i)
         if (!isfinite(draw->reflection_transform[i]))
             recomp_stop(2, "d3d8:reflection-transform:fvf=%x:matrix=%x:field=%u:bits=%08x:tci=%x,%x:ret=%08x",

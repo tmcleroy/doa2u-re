@@ -507,6 +507,12 @@ adapter then uses zero normals, so only ambient and emissive light remain.
 A reflection draw cannot use such a matrix. It is skipped only when its single
 world has 3x3 rank at most one, so every triangle has zero area, or when
 native raster coverage is empty; otherwise it stops.
+A stage projector (0x1df200) divides by the square of its size minus 50, so
+for one frame TEXTURE0 holds infinities and NaNs. With camera-space position
+(w = 1) a non-finite translation makes every S and T non-finite, and CLAMP
+sends them to the texture edge. When every edge texel of a single-level DXT5
+texture has one exact value, the adapter samples that corner; other
+non-finite texture matrices stop.
 MultiSampleMode and MultiSampleRenderTargetMode (0x3477a0/0x3477d0) store
 their guest shadow only. The game's 4X stencil pass on a one-sample back
 buffer shades fewer pixels, but it covers every sample, as the host's

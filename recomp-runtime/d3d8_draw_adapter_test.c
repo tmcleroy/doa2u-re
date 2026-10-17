@@ -1400,6 +1400,35 @@ static int position_texgen_tests(void)
     invoke(0x348240u, 5u, 3u, VERTICES, 32u);
     CHECK(submitted.data.draw.texgen_projected &&
         memcmp(submitted.data.draw.reflection_transform, matrix, sizeof matrix) == 0);
+    /* 0x1df200's 1/0 projector: a non-finite translation sends every clamped
+       sample to the edge, here one transparent white texel. */
+    texture.format_byte = 0x0fu;
+    texture.bits_per_pixel = 8u;
+    texture.width = texture.height = 8u;
+    /* Synthetic blocks: alpha endpoint 0 everywhere, color endpoint 1 white. */
+    memset(ram + 0x8000u, 0, 64u);
+    for (uint32_t block = 0u; block < 4u; ++block) {
+        uint8_t *bytes = ram + 0x8000u + block * 16u;
+        bytes[1] = 1u;
+        bytes[10] = bytes[11] = 0xffu;
+        memset(bytes + 12u, 0x55, 4u);
+    }
+    float infinite[16];
+    for (uint32_t i = 0u; i < 16u; ++i) infinite[i] = NAN;
+    infinite[12] = -INFINITY; infinite[13] = INFINITY; infinite[15] = 1.0f;
+    recomp_guest_store(DEVICE + 0xce0u, infinite, sizeof infinite);
+    set_stage(0u, 0u, 3u); set_stage(0u, 1u, 3u); set_stage(0u, 21u, 2u);
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    const float *edge = submitted.data.draw.reflection_transform;
+    CHECK(submits == 6u && edge[0] == 0.0f && edge[5] == 0.0f &&
+        edge[12] == -1.0f && edge[13] == -1.0f && edge[14] == 1.0f);
+    /* A wrapped axis, or an edge texel that differs, leaves the sample unknown. */
+    for (uint32_t variant = 0u; variant < 2u; ++variant) {
+        if (variant == 0u) set_stage(0u, 1u, 1u);
+        else { set_stage(0u, 1u, 3u); ram[0x8000u + 3u * 16u + 15u] = 0x15u; }
+        if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
+        CHECK(strncmp(stop_reason, "d3d8:reflection-transform:", 26u) == 0 && submits == 6u);
+    }
     return 0;
 }
 
