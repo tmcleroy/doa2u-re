@@ -1684,10 +1684,15 @@ static int reflection_coverage_tests(void)
         for (uint32_t st = 0u; st < 3u; ++st)
             for (uint32_t f = 0u; f < 6u; ++f) set_stage(st, fields[f], reflection[st][f]);
         set_stage(stage, 21u, 2u); set_stage(stage, 28u, 0x30000u);
+        /* Every vertex on one line: no triangle has area, so no query runs. */
+        covered = true;
+        invoke(0x348240u, 6u, 3u, VERTICES, 32u);
+        CHECK(submits == 0u && coverage_queries == 0u && recomp_runtime.registers.esp == STACK + 20u);
+        /* A flattened plane keeps area; only raster coverage proves it unused. */
+        *recomp_memory_u32(DEVICE + 0xde0u + 40u) = 0x3f800000u;
         covered = false;
         invoke(0x348240u, 6u, 3u, VERTICES, 32u);
         CHECK(submits == 0u && coverage_queries == 1u && recomp_runtime.registers.esp == STACK + 20u);
-        /* Matrix rank alone cannot prove no coverage after raster snapping. */
         covered = true;
         if (setjmp(stopped) == 0) { invoke(0x348240u, 6u, 3u, VERTICES, 32u); return 1; }
         CHECK(strncmp(stop_reason, "d3d8:reflection-normal:", 22u) == 0 && submits == 0u && coverage_queries == 2u);

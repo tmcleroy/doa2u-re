@@ -680,6 +680,20 @@ static void attach_lighting(uint32_t device, const RecompD3dVertexLayout *layout
 
 /* Camera-space reflection inputs: world-view, its normal matrix and the
    texture matrix of the generating stage (TEXTURE0 0xce0, TEXTURE1 0xd20). */
+/* World 3x3 rank of at most one: every row pair has a zero cross product.
+   Float products are exact in double, so the test is exact. */
+static bool world_collapses_to_line(const float world[16])
+{
+    for (uint32_t a = 0u; a < 2u; ++a)
+        for (uint32_t b = a + 1u; b < 3u; ++b)
+            for (uint32_t c = 0u; c < 3u; ++c) {
+                const uint32_t x = (c + 1u) % 3u, y = (c + 2u) % 3u;
+                if ((double)world[a * 4u + x] * world[b * 4u + y] !=
+                    (double)world[a * 4u + y] * world[b * 4u + x]) return false;
+            }
+    return true;
+}
+
 static bool reflection_inputs(uint32_t device, uint32_t texture_matrix, bool needs_normal,
     RecompD3dPresenterDrawCommand *draw)
 {
@@ -695,9 +709,13 @@ static bool reflection_inputs(uint32_t device, uint32_t texture_matrix, bool nee
         /* Position texgen and the no-normal reflection shader never read an inverse. */
         if (!needs_normal) continue;
         if (!recomp_d3d_normal_transform(wv, normal)) {
-            /* Only exact raster coverage can prove the undefined normal is unused. */
+            /* A lone world of rank one or less (0xea6e0's squash with a zero
+               animation scale) puts every vertex on one eye-space line, so no
+               triangle has area; host snapping slivers are rounding. Otherwise
+               only exact raster coverage can prove the undefined normal unused. */
             if (draw->primitive_type >= 5u && draw->primitive_type <= 7u &&
-                !recomp_d3d8_draw_has_coverage(draw)) return false;
+                ((draw->blend_weight_count == 0u && world_collapses_to_line(world)) ||
+                 !recomp_d3d8_draw_has_coverage(draw))) return false;
             recomp_stop(2, "d3d8:reflection-normal:fvf=%x:matrix=%x:influence=%u/%u:normalize=%u:ret=%08x",
                 draw->fvf, texture_matrix, i, draw->blend_weight_count, draw->reflection_normalize,
                 *recomp_memory_u32(recomp_runtime.registers.esp));

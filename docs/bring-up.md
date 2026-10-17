@@ -504,6 +504,9 @@ as translation and q is 1, so UV0 becomes (u, v, 1, 0) times TEXTURE0.
 Projected and other counts stop. When a lit world matrix is
 singular, the SDK inverse (0x34b530) fails and uploads an unset matrix. The
 adapter then uses zero normals, so only ambient and emissive light remain.
+A reflection draw cannot use such a matrix. It is skipped only when its single
+world has 3x3 rank at most one, so every triangle has zero area, or when
+native raster coverage is empty; otherwise it stops.
 MultiSampleMode and MultiSampleRenderTargetMode (0x3477a0/0x3477d0) store
 their guest shadow only. The game's 4X stencil pass on a one-sample back
 buffer shades fewer pixels, but it covers every sample, as the host's
