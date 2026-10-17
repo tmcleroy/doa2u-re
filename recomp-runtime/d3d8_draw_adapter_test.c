@@ -464,6 +464,36 @@ static int point_tests(void)
     CHECK(!draw->directional.enabled && diffuse == 0xffffffffu &&
         draw->material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_MODULATE_TEXTURE &&
         draw->material_alpha == 0.25f);
+    CHECK(recomp_d3d_set_texture_factor(&state, 0x80402010u));
+    for (uint32_t channels = 3u; channels != 0u; --channels) {
+        const uint32_t sprite = STAGES + 3u * 128u;
+        *recomp_memory_u32(sprite + 48u) = (channels & 1u) ? 4u : 2u;
+        *recomp_memory_u32(sprite + 60u) = (channels & 1u) ? 3u : 0u;
+        *recomp_memory_u32(sprite + 76u) = (channels & 2u) ? 3u : 0u;
+        invoke(0x348240u, 1u, 1u, VERTICES, 16u);
+        CHECK(draw->directional.stage_mode && !draw->directional.enabled &&
+            draw->texture_factor == 0x80402010u && draw->directional.stage[0] == 1.0f &&
+            draw->directional.stage[1] == ((channels & 1u) ? 2.0f : 0.0f) &&
+            draw->directional.stage[3] == ((channels & 2u) ? 2.0f : 1.0f));
+        CHECK(draw->material_alpha_mode == ((channels & 2u) ? RECOMP_D3D_MATERIAL_ALPHA_NONE
+            : RECOMP_D3D_MATERIAL_ALPHA_MODULATE_TEXTURE));
+    }
+    *recomp_memory_u32(STAGES + 3u * 128u + 56u) =
+        *recomp_memory_u32(STAGES + 3u * 128u + 72u) = 3u;
+    *recomp_memory_u32(STAGES + 3u * 128u + 60u) =
+        *recomp_memory_u32(STAGES + 3u * 128u + 76u) = 2u;
+    *recomp_memory_u32(DEVICE + 0xf0cu) = 0x7f800000u;
+    invoke(0x348240u, 1u, 1u, VERTICES, 16u);
+    CHECK(draw->directional.stage[1] == 2.0f && draw->directional.stage[3] == 2.0f);
+    *recomp_memory_u32(0x3553f8u) = 0u;
+    invoke(0x348240u, 1u, 1u, VERTICES, 16u);
+    CHECK(draw->directional.stage_mode && draw->material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_NONE);
+    *recomp_memory_u32(0x3553f8u) = 1u;
+    *recomp_memory_u32(STAGES + 3u * 128u + 48u) = 2u;
+    *recomp_memory_u32(STAGES + 3u * 128u + 56u) =
+        *recomp_memory_u32(STAGES + 3u * 128u + 72u) = 2u;
+    *recomp_memory_u32(STAGES + 3u * 128u + 60u) =
+        *recomp_memory_u32(STAGES + 3u * 128u + 76u) = 0u;
     const uint32_t nan_alpha[2] = {0x7fc00000u, 0xffc00000u};
     for (uint32_t i = 0u; i < 2u; ++i) {
         *recomp_memory_u32(DEVICE + 0xf0cu) = nan_alpha[i];

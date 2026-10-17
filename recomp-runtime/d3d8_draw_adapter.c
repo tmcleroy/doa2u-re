@@ -1133,15 +1133,24 @@ static uint8_t *point_sprites(uint32_t device, const RecompD3dVertexLayout *layo
     const bool alpha_texture = stage[16] == 2u && stage[18] == 2u;
     const bool alpha_modulate = stage[16] == 4u && ((stage[18] == 2u && stage[19] == 0u) ||
         (stage[18] == 0u && stage[19] == 2u));
-    if (!(color_texture || color_diffuse || color_modulate) || !(alpha_texture || alpha_modulate) ||
+    const bool color_factor = stage[12] == 4u && ((stage[14] == 2u && stage[15] == 3u) ||
+        (stage[14] == 3u && stage[15] == 2u));
+    const bool alpha_factor = stage[16] == 4u && ((stage[18] == 2u && stage[19] == 3u) ||
+        (stage[18] == 3u && stage[19] == 2u));
+    if (!(color_texture || color_diffuse || color_modulate || color_factor) ||
+        !(alpha_texture || alpha_modulate || alpha_factor) ||
         stage[3] != 2u || stage[4] != 2u || stage[9] != 0u || stage[10] != 0u ||
         stage[11] != 0u || stage[20] != 0u || stage[21] != 0u)
-        recomp_stop(2, "d3d8:point-sprite-stage:%u,%u,%u/%u,%u,%u", stage[12], stage[14],
-            stage[15], stage[16], stage[18], stage[19]);
+        recomp_stop(2, "d3d8:point-sprite-stage:%u,%u,%u/%u,%u,%u:filter=%u,%u:key=%x:sign=%x:"
+            "kill=%u:tc=%u,%x:ret=%08x", stage[12], stage[14], stage[15], stage[16], stage[18],
+            stage[19], stage[3], stage[4], stage[9], stage[10], stage[11], stage[20], stage[21],
+            *recomp_memory_u32(recomp_runtime.registers.esp));
     const bool lighting = *recomp_memory_u32(0x3553f8u) != 0u;
-    if (lighting && (!color_texture || *recomp_memory_u32(0x355494u) != 0u))
+    if (lighting && (!(color_texture || color_factor) || *recomp_memory_u32(0x355494u) != 0u))
         recomp_stop(2, "d3d8:point-sprite-lighting");
-    if (lighting && !alpha_texture) {
+    if (color_factor || alpha_factor)
+        draw->directional.stage_mode = stage0_select(stage, draw->directional.stage, NULL);
+    if (lighting && alpha_modulate) {
         /* 0x34fc80 supplies material diffuse alpha even with vertex-color sources;
            texture-only RGB does not consume the lighting RGB calculation. */
         float alpha;

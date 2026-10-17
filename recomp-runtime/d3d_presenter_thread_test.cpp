@@ -222,6 +222,13 @@ static bool testMipSampler()
         draw.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
         draw.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
         passed &= expect("lit sprite alpha", d3d11_backend_submit(presenter, &command));
+        for (auto &vertex : vertices) { vertex.x += 64.0f; vertex.diffuse = 0x00123456u; }
+        draw.material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_NONE;
+        draw.texture_factor = 0x40804020u;
+        draw.directional.stage_mode = true;
+        draw.directional.stage[0] = draw.directional.stage[2] = 1;
+        draw.directional.stage[1] = draw.directional.stage[3] = 2;
+        passed &= expect("sprite texture factor", d3d11_backend_submit(presenter, &command));
         for (float bias : {-16.01f, 16.0f, INFINITY, NAN}) {
             draw.mip_lod_bias = bias;
             passed &= expect("invalid mip bias", d3d11_backend_submit(presenter, &command),
@@ -233,7 +240,7 @@ static bool testMipSampler()
         passed &= expect("mip present", d3d11_backend_submit(presenter, &command));
         passed &= expect("destroy mip sampler", d3d11_backend_destroy(&presenter));
         if (FILE *file = std::fopen(path, "rb")) {
-            for (unsigned i = 0; i < 6; ++i) {
+            for (unsigned i = 0; i < 7; ++i) {
                 unsigned char bgr[3]{};
                 const unsigned x = i >= 4 ? 52 + 64 * (i - 4) : 52 + 64 * i;
                 const unsigned y = i >= 4 ? 116 : 52;
@@ -245,7 +252,8 @@ static bool testMipSampler()
                     bgr[0] > 45 && bgr[0] < 85 && bgr[2] < 10;
                 const bool black = bgr[0] == 0 && bgr[1] == 0 && bgr[2] == 0;
                 const bool sprite = std::abs(static_cast<int>(bgr[2]) - 32) <= 1 && bgr[0] == 0 && bgr[1] == 0;
-                const bool pixel_ok = i == 5 ? sprite : i == 4 ? black : i == 1 ? green : i == 2 ? blended : red;
+                const bool factor_sprite = std::abs(static_cast<int>(bgr[2]) - 16) <= 1 && bgr[0] == 0 && bgr[1] == 0;
+                const bool pixel_ok = i == 6 ? factor_sprite : i == 5 ? sprite : i == 4 ? black : i == 1 ? green : i == 2 ? blended : red;
                 if (!pixel_ok) std::fprintf(stderr, "FAIL mip pixel %u BGR=%u,%u,%u\n",
                     i, bgr[0], bgr[1], bgr[2]);
                 passed &= pixel_ok;

@@ -394,7 +394,11 @@ POINTSCALEENABLE. The adapter expands each point to an eye-space quad that is
 square in pixels and draws it with the projection alone. Its size is
 Vh * Si / sqrt(A + B*De + C*De^2), clamped to [MIN, MAX], which is the D3D8
 formula the SDK's point parameters (0x34ef10) encode. Stage 3 admits SELECTARG1
-of texture or diffuse, or their MODULATE. Lit points admit texture-only RGB:
+of texture or diffuse, or MODULATE of texture with diffuse or TFACTOR per
+channel. The factor uses the existing per-channel selection and does not read
+material alpha when it replaces diffuse alpha. Native pixels check sampled
+alpha times factor alpha without vertex or material alpha. Lit points admit
+texture-only RGB, optionally scaled by TFACTOR:
 the effect at `0x1f5030` keeps LIGHTING enabled, but consumes only lit alpha.
 The SDK (`0x34fc80`) takes that alpha from material diffuse alpha even with
 vertex-color sources. The adapter supplies it once through the existing
