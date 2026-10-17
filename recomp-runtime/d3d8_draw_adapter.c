@@ -534,6 +534,11 @@ static bool stage0_select(const uint32_t *stage, float select[4], bool *alpha_tf
         uint32_t arg1 = stage[14u + channel * 4u], arg2 = stage[15u + channel * 4u];
         if (arg1 == 1u) arg1 = 0u;
         if (arg2 == 1u) arg2 = 0u;
+        if ((op == 2u && arg1 == 3u) || (op == 3u && arg2 == 3u)) {
+            select[channel * 2u] = 0.0f;
+            select[channel * 2u + 1u] = 2.0f;
+            continue;
+        }
         /* Without a separate alpha factor, select TFACTOR per channel. */
         if (alpha_tfactor == NULL && op == 4u &&
             ((arg1 == 2u && arg2 == 3u) || (arg1 == 3u && arg2 == 2u))) {

@@ -724,6 +724,26 @@ static int lighting_tests(void)
         CHECK(submitted.data.draw.texture_factor == 0x804080c0u &&
             !submitted.data.draw.texture_factor_modulate && !submitted.data.draw.modulate_texture_factor_alpha);
     }
+    /* 4,2,3/3,2,3 selects TFACTOR alpha without texture or lit alpha. */
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected factor select stop: %s\n", stop_reason); return 1; }
+    for (uint32_t reverse = 0u; reverse < 2u; ++reverse) {
+        *recomp_memory_u32(STAGES + 14u * 4u) = reverse ? 3u : 2u;
+        *recomp_memory_u32(STAGES + 15u * 4u) = reverse ? 2u : 3u;
+        *recomp_memory_u32(STAGES + 16u * 4u) = reverse ? 2u : 3u;
+        *recomp_memory_u32(STAGES + 18u * 4u) = reverse ? 3u : 2u;
+        *recomp_memory_u32(STAGES + 19u * 4u) = reverse ? 2u : 3u;
+        invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+        CHECK(lit->enabled && lit->stage_mode && lit->stage[0] == 1.0f && lit->stage[1] == 2.0f &&
+            lit->stage[2] == 0.0f && lit->stage[3] == 2.0f);
+        CHECK(submitted.data.draw.texture_factor == 0x804080c0u &&
+            submitted.data.draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_NONE &&
+            !submitted.data.draw.texture_factor_modulate && !submitted.data.draw.modulate_texture_factor_alpha);
+    }
+    /* TFACTOR times diffuse needs another product input and remains unsupported. */
+    *recomp_memory_u32(STAGES + 16u * 4u) = 4u;
+    *recomp_memory_u32(STAGES + 19u * 4u) = 0u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
+    CHECK(strncmp(stop_reason, "d3d8:lighting-stage:", 19u) == 0);
     /* Multiplication accepts either argument order. */
     *recomp_memory_u32(STAGES + 14u * 4u) = *recomp_memory_u32(STAGES + 18u * 4u) = 3u;
     *recomp_memory_u32(STAGES + 15u * 4u) = *recomp_memory_u32(STAGES + 19u * 4u) = 2u;

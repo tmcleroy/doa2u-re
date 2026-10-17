@@ -358,7 +358,7 @@ static bool testLighting()
         auto clear = clearCommand();
         clear.data.clear.color = 0xff000000u;
         passed &= expect("lighting clear", d3d11_backend_submit(presenter, &clear));
-        for (unsigned i = 0; i < 20 && passed; ++i) {
+        for (unsigned i = 0; i < 24 && passed; ++i) {
             struct Vertex { float x, y, z, nx, ny, nz, u, v; };
             Vertex vertices[] = {
                 {-0.1f, 0.1f, 0.5f, 0, 0, 1, 0, 0}, {0.1f, 0.1f, 0.5f, 0, 0, 1, 1, 0},
@@ -423,7 +423,8 @@ static bool testLighting()
                 light.normal_transforms[0][2] = 1;
             }
             const bool vertex_diffuse = (i >= 9 && i < 14 && i != 11) || (i >= 16 && i < 18);
-            const uint32_t base_pixel = i >= 18 ? 0x000000ffu : i >= 14 ? 0x80c08040u : vertex_diffuse ? 0xc080e0ffu : 0x800000ffu;
+            const uint32_t base_pixel = i >= 20 ? ((i & 1u) ? 0xffc08040u : 0x00c08040u)
+                : i >= 18 ? 0x000000ffu : i >= 14 ? 0x80c08040u : vertex_diffuse ? 0xc080e0ffu : 0x800000ffu;
             const uint32_t environment_pixel = i == 12 ? 0u : i == 13 ? 0xff804020u
                 : vertex_diffuse ? 0x80ff8000u : 0x40ff0000u;
             if (i >= 8 && i < 14) {
@@ -488,6 +489,22 @@ static bool testLighting()
                 draw.alpha_kill = i == 19;
                 light.stage[1] = light.stage[3] = 1;
             }
+            if (i >= 20) {
+                // SELECTARG1/2(TFACTOR) alpha ignores both texture and lit alpha.
+                draw.transform[12] = -0.75f + 0.5f * (i - 20u);
+                draw.transform[13] = 1.0f - 2.0f * 148.0f / 240.0f;
+                draw.texture.data = 0x5000u + i * 4u;
+                draw.texture_factor = i < 22 ? 0x804080c0u : 0x404080c0u;
+                light.material_diffuse[3] = (i == 20 || i == 23) ? 0.125f : 0.875f;
+                light.stage[0] = 1;
+                light.stage[1] = light.stage[3] = 2;
+                light.stage[2] = 0;
+                draw.depth.alpha_func = RECOMP_D3D_COMPARE_EQUAL;
+                draw.depth.alpha_ref = i < 22 ? 128 : 64;
+                draw.blend.blend_enable = true;
+                draw.blend.src_factor = RECOMP_D3D_BLEND_SRC_ALPHA;
+                draw.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
+            }
             struct DiffuseVertex { float x, y, z; uint32_t diffuse; float u, v; };
             DiffuseVertex diffuse_vertices[4]{};
             if (vertex_diffuse) {
@@ -514,13 +531,14 @@ static bool testLighting()
         if (FILE *file = std::fopen(path, "rb")) {
             const int expected[][3] = {{102, 77, 108}, {26, 26, 32}, {54, 45, 67}, {6, 13, 26},
                 {108, 89, 77}, {255, 0, 0}, {0, 0, 0}, {102, 77, 108}, {30, 7, 10}, {21, 39, 21},
-                {33, 83, 44}, {46, 10, 48}, {36, 42, 12}, {12, 32, 32}, {12, 16, 12}, {15, 23, 25}, {12, 16, 12}, {6, 8, 6}, {102, 77, 108}, {0, 0, 0}};
+                {33, 83, 44}, {46, 10, 48}, {36, 42, 12}, {12, 32, 32}, {12, 16, 12}, {15, 23, 25}, {12, 16, 12}, {6, 8, 6}, {102, 77, 108}, {0, 0, 0},
+                {24, 32, 24}, {24, 32, 24}, {12, 16, 12}, {12, 16, 12}};
             // SRC_ALPHA over black checks reflection alpha as well as RGB. PM clamps before diffuse.
-            for (unsigned i = 0; i < 20; ++i) {
+            for (unsigned i = 0; i < 24; ++i) {
                 unsigned char bgr[3]{};
-                const unsigned x = i >= 14 ? 80 + 160 * (i & 1)
+                const unsigned x = i >= 20 ? 40 + 80 * (i - 20) : i >= 14 ? 80 + 160 * (i & 1)
                     : i >= 8 ? (160 * (i - 8) + 80) / 3 : 40 + 80 * (i % 4);
-                const unsigned y = i >= 18 ? 90 : i >= 16 ? 222 : i >= 14 ? 18 : i >= 8 ? 120 : 60 + 120 * (i / 4);
+                const unsigned y = i >= 20 ? 148 : i >= 18 ? 90 : i >= 16 ? 222 : i >= 14 ? 18 : i >= 8 ? 120 : 60 + 120 * (i / 4);
                 std::fseek(file, 54 + (239 - y) * 960 + x * 3, SEEK_SET);
                 passed &= std::fread(bgr, 1, 3, file) == 3;
                 for (unsigned c = 0; c < 3; ++c) {
