@@ -908,7 +908,10 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
             !draw->has_reflection && !layout->pretransformed && layout->blend_weight_count == 0u;
         if (stage[0][20] != 0u ||
             (!texgen && !uv_transform && !camera_position && (stage[0][21] != 0u || stage[0][28] != 0u)))
-            recomp_stop(2, "d3d8:draw-texture-coordinates");
+            recomp_stop(2, "d3d8:draw-texture-coordinates:fvf=%x:flags=%x,%x:tci=%x:reflection=%u:pre=%u:blend=%u:ret=%08x",
+                draw->fvf, stage[0][20], stage[0][21], stage[0][28], draw->has_reflection,
+                layout->pretransformed, layout->blend_weight_count,
+                *recomp_memory_u32(recomp_runtime.registers.esp));
         if (texgen || camera_position) {
             /* Both stages generating: stage 1 keeps TEXTURE1 (FUN_00289680 sets only TEXTURE0). */
             if (draw->has_reflection && !draw->reflection_mesh_uv)

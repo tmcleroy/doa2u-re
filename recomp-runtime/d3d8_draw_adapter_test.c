@@ -910,7 +910,8 @@ static int lighting_tests(void)
         submitted.data.draw.reflection_world_view[12] == 5.0f);
     *recomp_memory_u32(STAGES + 21u * 4u) = 3u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 24u); return 1; }
-    CHECK(strcmp(stop_reason, "d3d8:draw-texture-coordinates") == 0);
+    CHECK(strncmp(stop_reason, "d3d8:draw-texture-coordinates:", 29u) == 0 &&
+        strstr(stop_reason, ":fvf=142:flags=0,3:tci=30000:") != NULL);
     *recomp_memory_u32(STAGES + 21u * 4u) = 0u;
     *recomp_memory_u32(STAGES + 28u * 4u) = 0u;
     /* COUNT2 over mesh UV0 animates coordinates through TEXTURE0 (0x34f7d0). */
@@ -920,7 +921,8 @@ static int lighting_tests(void)
         submitted.data.draw.reflection_transform[12] == 9.0f);
     *recomp_memory_u32(STAGES + 21u * 4u) = 0x102u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 24u); return 1; }
-    CHECK(strcmp(stop_reason, "d3d8:draw-texture-coordinates") == 0);
+    CHECK(strncmp(stop_reason, "d3d8:draw-texture-coordinates:", 29u) == 0 &&
+        strstr(stop_reason, ":fvf=142:flags=0,102:tci=0:") != NULL);
     *recomp_memory_u32(STAGES + 21u * 4u) = 0u;
     *recomp_memory_u32(DEVICE + 0x798u) = 0x112u;
     *recomp_memory_u32(0x3553f8u) = 1u;
@@ -1555,7 +1557,8 @@ static int volume_tests(void)
     *recomp_memory_u32(STAGES + 8u) = 1u;
     *recomp_memory_u32(STAGES + 28u * 4u) = 1u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 24u); return 1; }
-    CHECK(strcmp(stop_reason, "d3d8:draw-texture-coordinates") == 0);
+    CHECK(strncmp(stop_reason, "d3d8:draw-texture-coordinates:", 29u) == 0 &&
+        strstr(stop_reason, ":fvf=142:flags=0,3:tci=1:") != NULL);
     return 0;
 }
 
