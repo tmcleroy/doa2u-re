@@ -137,6 +137,10 @@ dirty bits. Program handles load their CreateVertexShader upload blocks into
 the device program shadow and select the object as LoadVertexShader and
 SelectVertexShader do; SetVertexShaderConstant1/4 keep the 192-entry constant
 shadow. Declaration-only handles and declaration constants stop explicitly.
+VertexBlend preserves the Xbox mode encoding: 0 disables blending; 1, 3 and
+5 select one, two and three explicit weights plus the remaining weight.
+Draw submission checks that encoded mode against the FVF and passes a weight
+count to the presenter. Other mode encodings remain guarded.
 SetMaterial retains its 17-word device shadow. Spot lights, nondefault raster
 modes and runtime multisampling remain explicit limits.
 

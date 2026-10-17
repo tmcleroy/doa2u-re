@@ -837,7 +837,7 @@ static int lighting_tests(void)
     for (uint32_t weights = 2u; weights <= 3u; ++weights) {
         recomp_guest_store(DEVICE + 0xde0u + weights * 64u, reflection_world1, sizeof reflection_world1);
         *recomp_memory_u32(DEVICE + 0x798u) = 0x114u + weights * 2u;
-        *recomp_memory_u32(0x355484u) = weights;
+        *recomp_memory_u32(0x355484u) = weights * 2u - 1u;
         invoke(0x348240u, 5u, 3u, VERTICES, 32u + weights * 4u);
         CHECK(submitted.data.draw.blend_weight_count == weights &&
             submitted.data.draw.reflection_blend_world_view[weights - 1u][12] == 9.0f);

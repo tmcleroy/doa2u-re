@@ -333,8 +333,16 @@ static int check_frame_state(void)
     RecompD3dDepthState depth;
     recomp_d3d_depth_state(recomp_d3d8_state_model(), &depth);
     CHECK(depth.depth_write_enable && depth.depth_test_enable && depth.stencil_enable);
-    CHECK(invoke(0x346a60u, 2u, 0u) == 0u);
-    CHECK(*recomp_memory_u32(0x355484u) == 2u);
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected blend stop: %s\n", stop_reason); return 1; }
+    const uint32_t blend_modes[] = {0u, 1u, 3u, 5u};
+    for (uint32_t i = 0u; i < 4u; ++i) {
+        CHECK(invoke(0x346a60u, blend_modes[i], 0u) == 0u);
+        CHECK(*recomp_memory_u32(0x355484u) == blend_modes[i]);
+    }
+    for (uint32_t mode = 2u; mode <= 6u; mode += 2u) {
+        if (setjmp(stopped) == 0) { invoke(0x346a60u, mode, 0u); return 1; }
+        CHECK(*recomp_memory_u32(0x355484u) == 5u);
+    }
     /* SetVertexShader binds the FVF declaration and latches device shadows. */
     *recomp_memory_u32(DEVICE + 0x794u) = 0x357b80u;
     *recomp_memory_u32(0x357b80u + 4u) = 0x402u;

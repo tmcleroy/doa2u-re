@@ -1404,7 +1404,8 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
         multiply(world, vp, draw->transform);
         draw->has_transform = true;
         draw->blend_weight_count = layout.blend_weight_count;
-        if (layout.blend_weight_count != 0u && *recomp_memory_u32(0x355484u) != layout.blend_weight_count)
+        if (layout.blend_weight_count != 0u &&
+            *recomp_memory_u32(0x355484u) != layout.blend_weight_count * 2u - 1u)
             recomp_stop(2, "d3d8:draw-vertex-blend");
         for (uint32_t i = 0u; i < layout.blend_weight_count; ++i) {
             recomp_guest_load(world, device + 0xe20u + i * 64u, sizeof world);
