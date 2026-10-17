@@ -64,6 +64,9 @@ For normal play, open `play.cmd` or run `python tools/run_game.py --play`.
 It uses the player's existing saves and physical controls with no time limit.
 Close the game window to exit. Session logs, including the runner identity and any
 runtime stop, are kept under `private/play-logs/`.
+The first startup clip is skipped automatically at its game-owned wrapper
+(`0xd9300`), preserving movie initialization and teardown. The separate
+opening movie and later story movies keep their normal controls.
 
 The first boot copies about 700 MB of disc archives into the `Z:` cache
 partition, 32 KB per frame, while drawing only cleared frames. At the native
@@ -79,6 +82,13 @@ include NaN for domain errors; guest CRT errno, math-error callbacks and
 unmasked floating-point exceptions are not implemented by this seam.
 
 ## Graphics API contract
+
+Textures aliasing either embedded frame-buffer surface use host-rendered
+storage. The front-buffer selector chooses the previous presented frame;
+both selectors retain the presenter's shared frame-buffer flag. Constant-alpha
+blend factors (`0x8003`/`0x8004`) retain their native blend semantics. Adapter
+and GPU pixel regressions cover the final-stage style frame blend that would
+otherwise cover the scene with blank guest memory.
 
 `d3d8_adapter.c` owns the whole 5849 CreateDevice boundary and uses the
 committed sister-project D3D11 presenter. The plain device, frame and tile

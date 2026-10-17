@@ -1918,6 +1918,72 @@ static bool testVolume()
     return passed;
 }
 
+static bool testFrameBufferBlend()
+{
+    char folder[MAX_PATH], path[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "frm", 0, path)) return false;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", path);
+    _putenv_s("RECOMP_D3D_FRAME_DUMP_AT", "2");
+    RecompD3dPresenter *presenter = nullptr;
+    bool passed = expect("create frame blend", d3d11_backend_create(&config, &presenter));
+    if (passed) {
+        auto clear = clearCommand();
+        clear.data.clear.color = 0xffff0000u;
+        passed &= expect("red first frame", d3d11_backend_submit(presenter, &clear));
+        const uint16_t indices[] = {0,1,2,3};
+        const float quad[4][7] = {{0,0,0,1,0,0,0}, {320,0,0,1,0,320,0},
+            {0,240,0,1,0,0,240}, {320,240,0,1,0,320,240}};
+        RecompD3dPresenterCommand command{RECOMP_D3D_PRESENTER_COMMAND_DRAW};
+        auto &draw = command.data.draw;
+        draw.fvf = 0x144u;
+        draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+        draw.index_count = draw.vertex_count = 4;
+        draw.triangle_count = 2;
+        draw.vertex_stride = sizeof quad[0];
+        draw.vertex_bytes = quad;
+        draw.index_bytes = indices;
+        draw.blend.color_write_mask = 15;
+        draw.has_texture = draw.texture_is_backbuffer = draw.texture_is_front_buffer = true;
+        draw.texture.format_byte = 0x12u;
+        draw.texture.bits_per_pixel = 32;
+        draw.texture.width = 320; draw.texture.height = 240; draw.texture.pitch = 1280;
+        draw.texture.linear = true;
+        draw.address_u = draw.address_v = 3;
+        draw.directional.stage_mode = true;
+        draw.directional.stage[0] = draw.directional.stage[3] = 1;
+        passed &= expect("prime previous copy", d3d11_backend_submit(presenter, &command));
+        RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
+        present.data.present = {5,1};
+        passed &= expect("first frame present", d3d11_backend_submit(presenter, &present));
+        clear.data.clear.color = 0xff0000ffu;
+        passed &= expect("blue current frame", d3d11_backend_submit(presenter, &clear));
+        draw.blend.blend_enable = true;
+        draw.blend.src_factor = RECOMP_D3D_BLEND_CONSTANT_ALPHA;
+        draw.blend.dst_factor = RECOMP_D3D_BLEND_INV_CONSTANT_ALPHA;
+        draw.blend.op = RECOMP_D3D_BLEND_OP_ADD;
+        draw.blend.constant_color = 0x80ff0000u;
+        passed &= expect("previous frame constant alpha", d3d11_backend_submit(presenter, &command));
+        passed &= expect("blended frame present", d3d11_backend_submit(presenter, &present));
+    }
+    d3d11_backend_destroy(&presenter);
+    if (passed) {
+        FILE *file = std::fopen(path, "rb");
+        unsigned char bgr[3]{};
+        if (file) {
+            std::fseek(file, 54 + 119 * 960 + 160 * 3, SEEK_SET);
+            passed &= std::fread(bgr, 1, 3, file) == 3;
+            std::fclose(file);
+        } else passed = false;
+        passed &= std::abs(bgr[2] - 128) <= 3 && bgr[1] < 4 && std::abs(bgr[0] - 127) <= 3;
+        if (!passed) std::fprintf(stderr, "FAIL frame blend BGR=%u,%u,%u\n", bgr[0], bgr[1], bgr[2]);
+    }
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
+    _putenv_s("RECOMP_D3D_FRAME_DUMP_AT", "");
+    DeleteFileA(path);
+    if (passed) std::puts("PASS previous host frame blends over the scene with constant alpha");
+    return passed;
+}
+
 int main()
 {
     recomp_d3d_presenter_set_immediate_present(false);
@@ -1929,7 +1995,7 @@ int main()
         !testReflectionAddress(false, false, false, false, 0.5f) ||
         !testReflectionAddress(false, false, false, false, 1.0f) ||
         !testScreenSpaceOffsetAndScissor() || !testBrightPass() || !testDistortion() || !testStageEffect() ||
-        !testVolume() || !testProgramMaxSlt() ||
+        !testVolume() || !testFrameBufferBlend() || !testProgramMaxSlt() ||
         !testProgramLitSge() ||
         !testStageBump() ||
         !testStageWater() ||

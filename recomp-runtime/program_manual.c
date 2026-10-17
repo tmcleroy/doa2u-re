@@ -52,8 +52,20 @@ static void crt_fmod_intrinsic(void)
     recomp_runtime.registers.esp += 4u;
 }
 
+static void skip_startup_first_clip(void)
+{
+    /* 0xd9300 owns only the first startup clip. Keep its movie setup and
+       teardown, including the guest's display-variant selection, but omit
+       the playback/input wait. The separate opening movie stays callable. */
+    const uint32_t movie = 0u;
+    kernel_call_guest(0x000f9e10u, &movie, 1u);
+    kernel_call_guest(0x000f9a10u, NULL, 0u);
+    recomp_runtime.registers.esp += 4u;
+}
+
 RecompFunction recomp_lookup_manual(uint32_t guest_address)
 {
+    if (guest_address == 0x000d9300u) return skip_startup_first_clip;
     if (guest_address == 0x00336dfeu) return crt_fmod_intrinsic;
     if (guest_address == 0x002bd531u) return host_kernel_init_segment;
     if (guest_address == 0x002b8a24u) return get_tick_count;

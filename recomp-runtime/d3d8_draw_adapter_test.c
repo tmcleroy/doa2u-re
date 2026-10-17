@@ -1609,12 +1609,37 @@ static int reflection_inverse_tests(void)
     return 0;
 }
 
+static int frame_buffer_tests(void)
+{
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected frame-buffer stop: %s\n", stop_reason); return 1; }
+    initialize();
+    *recomp_memory_u32(DEVICE + 0xf88u) = 0x7000u;
+    *recomp_memory_u32(DEVICE + 0x1a24u + 4u) = 0x10000u;
+    *recomp_memory_u32(DEVICE + 0x1a24u + 24u + 4u) = texture.data;
+    CHECK(recomp_d3d8_state_set_simple(0x40304u, 1u));
+    CHECK(recomp_d3d8_state_set_simple(0x40344u, 0x8003u));
+    CHECK(recomp_d3d8_state_set_simple(0x40348u, 0x8004u));
+    CHECK(recomp_d3d8_state_set_simple(0x4034cu, 0x80ff0000u));
+    invoke(0x348240u, 5u, 3u, VERTICES, 28u);
+    CHECK(submitted.data.draw.texture_is_backbuffer && submitted.data.draw.texture_is_front_buffer);
+    CHECK(submitted.data.draw.blend.src_factor == RECOMP_D3D_BLEND_CONSTANT_ALPHA &&
+        submitted.data.draw.blend.dst_factor == RECOMP_D3D_BLEND_INV_CONSTANT_ALPHA &&
+        submitted.data.draw.blend.constant_color == 0x80ff0000u);
+    texture.data = 0x10000u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 28u);
+    CHECK(submitted.data.draw.texture_is_backbuffer && !submitted.data.draw.texture_is_front_buffer);
+    texture.data = 0x12000u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 28u);
+    CHECK(!submitted.data.draw.texture_is_backbuffer && !submitted.data.draw.texture_is_front_buffer);
+    return 0;
+}
+
 int main(void)
 {
     initialize();
     if (pixel_tests() || draw_tests() || line_tests() || quad_tests() || point_tests() || lighting_tests() || filter_tests() || bright_tests() ||
         distortion_tests() || factor_tests() || position_texgen_tests() || effect_tests() || program_tests() || bump_tests() ||
-        volume_tests() || reflection_inverse_tests()) return 1;
+        volume_tests() || reflection_inverse_tests() || frame_buffer_tests()) return 1;
     puts("PASS D3D8 pixel lifecycle/constants and semantic draw ABI/snapshots");
     return 0;
 }

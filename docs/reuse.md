@@ -1,5 +1,10 @@
 # Sister-project reuse
 
+The frame-buffer correction follows committed DOA3 fixes `bb479cf` and
+`c10423f`: constant-alpha blend decoding and the shared host-frame flag with
+a separate previous-frame selector. DOA2U keeps its verified 5849 surface
+layout; no sister-game addresses or uncommitted source are copied.
+
 The starter takes committed public source from DOA3 at
 `69cb910a13a737534fe2272cffd6211b1edf8d8e`. DOAXBV was inspected at
 `1cdbd62167d4a0825f73895604311a2c761164b2`. Local uncommitted changes,

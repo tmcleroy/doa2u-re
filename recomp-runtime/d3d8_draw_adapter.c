@@ -215,7 +215,7 @@ static void attach_texture(uint32_t device, uint32_t stage, RecompD3dPresenterDr
     for (uint32_t slot = 0u; slot < 2u; ++slot) {
         const uint32_t header = device + 0x1a24u + slot * 24u;
         if ((*recomp_memory_u32(header + 4u) & 0x7fffffffu) == (desc->data & 0x7fffffffu)) {
-            draw->texture_is_backbuffer = slot == 0u;
+            draw->texture_is_backbuffer = true;
             draw->texture_is_front_buffer = slot == 1u;
         }
     }
@@ -708,7 +708,11 @@ static void reflection_inputs(uint32_t device, uint32_t texture_matrix, bool nee
     }
     recomp_guest_load(draw->reflection_transform, device + texture_matrix, sizeof draw->reflection_transform);
     for (uint32_t i = 0u; i < 16u; ++i)
-        if (!isfinite(draw->reflection_transform[i])) recomp_stop(2, "d3d8:reflection-transform");
+        if (!isfinite(draw->reflection_transform[i]))
+            recomp_stop(2, "d3d8:reflection-transform:fvf=%x:matrix=%x:field=%u:bits=%08x:tci=%x,%x:ret=%08x",
+                draw->fvf, texture_matrix, i, *recomp_memory_u32(device + texture_matrix + i * 4u),
+                *recomp_memory_u32(STAGES + 28u * 4u), *recomp_memory_u32(STAGES + 128u + 28u * 4u),
+                *recomp_memory_u32(recomp_runtime.registers.esp));
 }
 
 static void attach_reflection(uint32_t device, const RecompD3dVertexLayout *layout,
