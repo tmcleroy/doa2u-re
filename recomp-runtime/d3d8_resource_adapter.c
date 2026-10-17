@@ -373,6 +373,8 @@ static void set_texture(void)
 bool recomp_d3d8_resource_inline_texture(uint32_t stage, RecompD3dTextureDesc *out)
 {
     if (stage != 3u || !inline_texture_active || out == NULL) return false;
+    /* The pair changes offset/format, not the sampler enable written by SetTexture. */
+    if (word(recomp_d3d8_require_device() + 0xf94u) == 0u) return false;
     *out = inline_texture;
     return true;
 }

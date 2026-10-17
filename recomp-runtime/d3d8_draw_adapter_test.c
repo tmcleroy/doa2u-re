@@ -83,7 +83,7 @@ bool recomp_d3d8_resource_describe(uint32_t resource, RecompD3dTextureDesc *out)
 }
 bool recomp_d3d8_resource_inline_texture(uint32_t stage, RecompD3dTextureDesc *out)
 {
-    if (stage != 3u || !inline_texture_active) return false;
+    if (stage != 3u || !inline_texture_active || *recomp_memory_u32(DEVICE + 0xf94u) == 0u) return false;
     *out = texture;
     return true;
 }
@@ -459,16 +459,15 @@ static int point_tests(void)
     CHECK(fabsf(captured_vertices[18] - 2.0f / 9.0f) < 1e-6f && fabsf(captured_vertices[19] + 1.0f / 3.0f) < 1e-6f &&
         captured_vertices[22] == 1.0f && captured_vertices[23] == 1.0f);
     CHECK(diffuse == 0x80ffffffu);
-    /* Direct stage-3 writes can bind a texture without an API resource shadow. */
+    /* Direct stage-3 writes replace sampling data without mutating the API resource. */
     const uint32_t saved_data = texture.data;
-    *recomp_memory_u32(DEVICE + 0xf94u) = 0u;
     texture.data = 0x11000u;
     inline_texture_active = true;
     invoke(0x348240u, 1u, 1u, VERTICES, 16u);
     CHECK(draw->has_texture && draw->texture.data == 0x11000u && draw->texture_bytes == ram + 0x11000u);
+    CHECK(*recomp_memory_u32(DEVICE + 0xf94u) == 0x7000u);
     inline_texture_active = false;
     texture.data = saved_data;
-    *recomp_memory_u32(DEVICE + 0xf94u) = 0x7000u;
     /* 0x1f5030 leaves LIGHTING on for texture-RGB/material-alpha point sprites. */
     *recomp_memory_u32(0x3553f8u) = *recomp_memory_u32(0x355404u) = 1u;
     *recomp_memory_u32(0x355408u) = *recomp_memory_u32(0x355418u) = 2u;

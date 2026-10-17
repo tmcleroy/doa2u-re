@@ -395,7 +395,8 @@ both line directions and pipeline restoration.
 The reached SDK pair writer (0x3443f0, fastcall method/data/format) binds a
 stage-3 texture directly for method 0x81bc0. The adapter snapshots that binding
 without changing the API resource shadow or its references. SetTexture on
-stage 3 restores the API binding. Swizzled A8R8G8B8, P8, A8 and DXT1/3/5 are
+stage 3 restores the API binding; the pair cannot enable a disabled sampler.
+Swizzled A8R8G8B8, P8, A8 and DXT1/3/5 are
 bound; other methods and formats, including linear textures without a size,
 remain guarded. Point and multi-source draws consume the same snapshot.
 

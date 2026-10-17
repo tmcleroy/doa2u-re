@@ -218,7 +218,11 @@ int main(void)
     recomp_runtime.registers.ecx = 0x81bc0u;
     recomp_runtime.registers.edx = DATA;
     invoke(0x3443f0u, 0x02210620u, 0u, 0u, 0u, 0u);
-    CHECK(word(DEVICE + 0xf94u) == 0u && recomp_d3d8_resource_inline_texture(3u, &desc));
+    CHECK(word(DEVICE + 0xf94u) == 0u && !recomp_d3d8_resource_inline_texture(3u, &desc));
+    invoke(0x345490u, 3u, TEXTURE, 0u, 0u, 0u);
+    recomp_runtime.registers.ecx = 0x81bc0u;
+    invoke(0x3443f0u, 0x02210620u, 0u, 0u, 0u, 0u);
+    CHECK(recomp_d3d8_resource_inline_texture(3u, &desc));
     recomp_d3d8_resource_reset();
     CHECK(!recomp_d3d8_resource_inline_texture(3u, &desc));
     puts("PASS D3D8 resource ABI, mip views, bindings, retention and owned destruction");
