@@ -280,7 +280,9 @@ the viewport scale/offset constants c58/c59 that GetViewportOffsetAndScale
 computes. They admit the position/normal/UV declaration and the sister
 presenter's stage-0 texture select with an optional stage-1 alpha mask. As the
 5849 combiner compiler does, an op that reads an unbound texture passes CURRENT
-through. Other declarations, combiners and pixel shaders stop explicitly.
+through. Stage-0 ALPHAKILL uses the same sampled-zero-alpha rejection as fixed
+draws, before vertex or texture-factor alpha multiplication. Stage-1 ALPHAKILL
+remains guarded. Other declarations, combiners and pixel shaders stop explicitly.
 The projected character shadow uses program 0x7af4d0 (created by FUN_00279b30)
 with a position/normal declaration and no texcoord stream, drawn as FVF 0x012.
 FUN_0027a430 renders the shadow into a linear 512x256 A8R8G8B8 target.

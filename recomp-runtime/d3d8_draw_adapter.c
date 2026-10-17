@@ -1021,12 +1021,13 @@ static void program_stages(uint32_t device, RecompD3dPresenterDrawCommand *draw)
         draw->reflection_byte_count = mask.texture_byte_count;
     }
     /* Admitted: linear min/mag, point mip on the mask, point or linear mip on
-       stage 0, no color key, sign, kill or transform. */
+       stage 0, optional stage-0 zero-alpha kill, no color key, sign or transform. */
     for (uint32_t i = 0u; i < (draw->program_alpha_mask ? 2u : 1u); ++i) {
         const uint32_t *t = stage[i];
         if ((i == 1u && t[0] != t[1]) || t[0] < 1u || t[0] > 3u || t[1] < 1u || t[1] > 3u ||
             t[3] != 2u || t[4] != 2u ||
-            (i == 1u && t[5] != 1u) || t[7] != 0u || t[9] != 0u || t[10] != 0u || t[11] != 0u ||
+            (i == 1u && t[5] != 1u) || t[7] != 0u || t[9] != 0u || t[10] != 0u ||
+            (t[11] != 0u && (i != 0u || t[11] != 4u)) ||
             t[21] != 0u || (i == 0u && draw->texture.mip_levels != 1u && t[5] != 1u && t[5] != 2u)) {
             recomp_stop(2, "d3d8:vertex-program-sampler:%u:uv=%u,%u:filter=%u,%u,%u:ttf=%x:"
                 "maxmip=%u:key=%x:sign=%x:kill=%u", i, t[0], t[1], t[3], t[4], t[5], t[21],
@@ -1034,6 +1035,7 @@ static void program_stages(uint32_t device, RecompD3dPresenterDrawCommand *draw)
         }
         if (i == 1u) memcpy(&draw->program_mask_lod_bias, &t[6], sizeof draw->program_mask_lod_bias);
     }
+    draw->alpha_kill = stage[0][11] == 4u;
     draw->point_mip_filter = stage[0][5] == 1u;
     draw->mip_lod_bias = lod_bias(stage[0][6]);
     if (!isfinite(draw->program_mask_lod_bias) || draw->program_mask_lod_bias < -16.0f ||

@@ -1073,6 +1073,22 @@ static int program_tests(void)
         }
     }
     CHECK(submits == before + 10u);
+    *recomp_memory_u32(STAGES) = *recomp_memory_u32(STAGES + 4u) = 3u;
+    *recomp_memory_u32(STAGES + 44u) = 4u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 48u);
+    CHECK(draw->alpha_kill && draw->address_u == 3u && draw->address_v == 3u);
+    *recomp_memory_u32(STAGES + 44u) = 0u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 48u);
+    CHECK(!draw->alpha_kill);
+    *recomp_memory_u32(STAGES + 44u) = 1u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 48u); return 1; }
+    CHECK(strncmp(stop_reason, "d3d8:vertex-program-sampler:0:", 28u) == 0);
+    *recomp_memory_u32(STAGES + 44u) = 0u;
+    *recomp_memory_u32(STAGES + 128u + 44u) = 4u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 48u); return 1; }
+    CHECK(strncmp(stop_reason, "d3d8:vertex-program-sampler:1:", 28u) == 0);
+    *recomp_memory_u32(STAGES + 128u + 44u) = 0u;
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected restored program stop: %s\n", stop_reason); return 1; }
     /* SetStateUP copies each declaration-sized record, then advances by stride;
        a smaller stride makes records overlap, including the final record tail. */
     const uint32_t overlap = (uint32_t)sizeof ram - 96u;

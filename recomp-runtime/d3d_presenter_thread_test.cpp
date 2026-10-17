@@ -1384,6 +1384,22 @@ static bool testProgramMaxSlt()
         color.directional.stage_mode = false;
         color.modulate_texture_factor_alpha = false;
         passed &= expect("independent program addressing", d3d11_backend_submit(presenter, &second));
+        // Kill tests sampled alpha, before a zero TFACTOR makes output alpha zero.
+        for (unsigned q = 0; q < 2; ++q) {
+            Colored quad[4];
+            for (unsigned i = 0; i < 4; ++i)
+                quad[i] = {q * 0.5f + (i & 1) * 0.5f, -1.0f / 3 - (i >> 1) * (2.0f / 3),
+                    0.5f, white, 0.5f, 0.5f};
+            const uint32_t texel = q == 0 ? 0x00ff0000u : 0xffff0000u;
+            color.vertex_bytes = quad;
+            color.texture.width = color.texture.height = 1;
+            color.texture.data = 0x4000u + q * 0x100u;
+            color.texture_bytes = &texel;
+            color.texture_byte_count = sizeof texel;
+            color.alpha_kill = color.modulate_texture_factor_alpha = true;
+            color.texture_factor = 0x00ffffffu;
+            passed &= expect("program alpha kill", d3d11_backend_submit(presenter, &second));
+        }
         RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
         present.data.present = {5, 1};
         passed &= expect("program present", d3d11_backend_submit(presenter, &present));
@@ -1409,6 +1425,15 @@ static bool testProgramMaxSlt()
             if (!addressed_ok) std::fprintf(stderr, "FAIL program U clamp V wrap BGR=%u,%u,%u\n",
                 bgr[0], bgr[1], bgr[2]);
             passed &= addressed_ok;
+            for (unsigned q = 0; q < 2; ++q) {
+                std::fseek(file, 54 + (239 - 200) * 960 + (200 + q * 80) * 3, SEEK_SET);
+                passed &= std::fread(bgr, 1, 3, file) == 3;
+                const bool killed_ok = bgr[0] < 4 && (q == 0 ? bgr[1] > 250 && bgr[2] < 4
+                    : bgr[2] > 250 && bgr[1] < 4);
+                if (!killed_ok) std::fprintf(stderr, "FAIL program alpha kill %u BGR=%u,%u,%u\n",
+                    q, bgr[0], bgr[1], bgr[2]);
+                passed &= killed_ok;
+            }
             std::fclose(file);
         } else passed = false;
     }
