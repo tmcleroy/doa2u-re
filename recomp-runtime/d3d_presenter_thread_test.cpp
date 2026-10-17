@@ -1844,6 +1844,80 @@ static bool testVisibility()
     return passed;
 }
 
+static bool testVolume()
+{
+    char folder[MAX_PATH], path[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "vol", 0, path)) return false;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", path);
+    RecompD3dPresenter *presenter = nullptr;
+    bool passed = expect("create volume", d3d11_backend_create(&config, &presenter));
+    if (passed) {
+        auto clear = clearCommand();
+        passed &= expect("volume clear", d3d11_backend_submit(presenter, &clear));
+        // Independent 2x1x2 Morton fixture: red/blue, then green/yellow.
+        const uint32_t texels[] = {0xffff0000u, 0xff0000ffu, 0xff00ff00u, 0xffffff00u};
+        const uint16_t indices[] = {0, 1, 2, 3};
+        const float r[] = {0.25f, 0.75f, 0.5f, 1.25f, 1.25f, 0.25f};
+        struct Vertex { float x, y, z; uint32_t color; float u, v; };
+        for (unsigned pass = 0; pass < 6 && passed; ++pass) {
+            Vertex quad[4];
+            for (unsigned i = 0; i < 4; ++i)
+                quad[i] = {-1.0f + (pass * 50.0f + (i & 1) * 50.0f) / 160.0f,
+                    i < 2 ? 1.0f : -1.0f, 0.5f, 0xffffffffu, pass == 5 ? 0.75f : 0.25f, 0.5f};
+            RecompD3dPresenterCommand command{RECOMP_D3D_PRESENTER_COMMAND_DRAW};
+            auto &draw = command.data.draw;
+            draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+            draw.index_count = draw.vertex_count = 4;
+            draw.triangle_count = 2;
+            draw.vertex_stride = sizeof(Vertex);
+            draw.fvf = 0x142u;
+            draw.vertex_bytes = quad;
+            draw.index_bytes = indices;
+            draw.blend.color_write_mask = 15;
+            draw.has_transform = true;
+            draw.transform[0] = draw.transform[5] = draw.transform[10] = draw.transform[15] = 1;
+            draw.address_u = draw.address_v = 3;
+            draw.address_w = pass == 4 ? 3 : 1;
+            draw.has_texture = true;
+            draw.texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
+            draw.texture.bits_per_pixel = 32;
+            draw.texture.width = draw.texture.volume_depth = 2;
+            draw.texture.height = draw.texture.mip_levels = 1;
+            draw.texture.data = 0x1000u;
+            draw.texture_bytes = texels;
+            draw.texture_byte_count = sizeof texels;
+            draw.texture_transform_uv = true;
+            draw.reflection_transform[0] = draw.reflection_transform[5] = 1;
+            draw.reflection_transform[10] = r[pass];
+            passed &= expect("volume sample", d3d11_backend_submit(presenter, &command));
+        }
+        RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
+        present.data.present = {5, 1};
+        passed &= expect("volume present", d3d11_backend_submit(presenter, &present));
+    }
+    d3d11_backend_destroy(&presenter);
+    if (passed) {
+        FILE *file = std::fopen(path, "rb");
+        if (file) {
+            const int rgb[][3] = {{255,0,0}, {0,255,0}, {128,128,0}, {255,0,0}, {0,255,0}, {0,0,255}};
+            for (unsigned pass = 0; pass < 6; ++pass) {
+                unsigned char bgr[3]{};
+                std::fseek(file, 54 + 119 * 960 + (25 + pass * 50) * 3, SEEK_SET);
+                passed &= std::fread(bgr, 1, 3, file) == 3;
+                const bool pixel_ok = std::abs(bgr[2] - rgb[pass][0]) <= 3 &&
+                    std::abs(bgr[1] - rgb[pass][1]) <= 3 && std::abs(bgr[0] - rgb[pass][2]) <= 3;
+                if (!pixel_ok) std::fprintf(stderr, "FAIL volume pixel %u BGR=%u,%u,%u\n", pass, bgr[0], bgr[1], bgr[2]);
+                passed &= pixel_ok;
+            }
+            std::fclose(file);
+        } else passed = false;
+    }
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
+    DeleteFileA(path);
+    if (passed) std::puts("PASS volume slices, trilinear blend, W wrap/clamp, and BGRA channels");
+    return passed;
+}
+
 int main()
 {
     recomp_d3d_presenter_set_immediate_present(false);
@@ -1855,7 +1929,7 @@ int main()
         !testReflectionAddress(false, false, false, false, 0.5f) ||
         !testReflectionAddress(false, false, false, false, 1.0f) ||
         !testScreenSpaceOffsetAndScissor() || !testBrightPass() || !testDistortion() || !testStageEffect() ||
-        !testProgramMaxSlt() ||
+        !testVolume() || !testProgramMaxSlt() ||
         !testProgramLitSge() ||
         !testStageBump() ||
         !testStageWater() ||

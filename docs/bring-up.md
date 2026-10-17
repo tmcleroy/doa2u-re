@@ -126,7 +126,12 @@ formats. Cube/volume views and displaced swizzled locks remain unsupported.
 The XPR loader (FUN_00289f80) registers volume textures (a 64x64x8 A8R8G8B8
 map appears after a Story fight), so Register releases a swizzled,
 uncompressed volume's full span: width x height x depth per level, each
-axis halving to 1. Sampling, locking or viewing a volume still stops.
+axis halving to 1. Stage-0 fixed-function FVF 0x142 draws can sample a
+single-level A8R8G8B8 volume through a native D3D11 Texture3D. The upload
+unswizzles all three axes; UV0 supplies S/T, with R zero unless COUNT3's
+texture matrix supplies it. U/V/W addressing and linear filtering apply.
+Other volume formats, mip chains, coordinate generators, locks and views
+remain guarded.
 
 `d3d8_draw_adapter.c` binds DrawVertices, DrawVerticesUP and
 DrawIndexedVertices to the existing D3D11 presenter. It snapshots fixed-function

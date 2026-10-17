@@ -212,7 +212,22 @@ int main(void)
     CHECK(invoke(0x347f10u, TEXTURE + 96u, 0u, 0u, 0u, 0u) == 4u);
     invoke(0x347fa0u, TEXTURE + 96u, 0x80000000u, 0u, 0u, 0u);
     CHECK(invalidated_base == DATA && invalidated_size == 144u);
+    CHECK(!recomp_d3d8_resource_describe(TEXTURE + 96u, &desc));
+    texture(TEXTURE + 96u, 0xc0001u, 0x3661063au, 0u);
+    CHECK(recomp_d3d8_resource_describe(TEXTURE + 96u, &desc));
+    CHECK(desc.width == 64u && desc.height == 64u && desc.format_byte == 6u && desc.volume_depth == 8u);
+    if (setjmp(stopped) == 0) { invoke(0x3480b0u, TEXTURE + 96u, 0u, OUTPUT, 0u, 0u); return 1; }
+    CHECK(strncmp(reason, "d3d8:resource-level", 18u) == 0);
+    const uint8_t swizzled[16] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15};
+    const uint8_t expected[16] = {0,1,8,9,2,3,10,11,4,5,12,13,6,7,14,15};
+    uint8_t rows[16];
+    CHECK(recomp_d3d_texture_unswizzle_volume(swizzled, rows, 4u, 2u, 2u, 1u));
+    CHECK(memcmp(rows, expected, sizeof rows) == 0);
+    CHECK(!recomp_d3d_texture_unswizzle_volume(swizzled, rows, 4u, 2u, 3u, 1u));
+    CHECK(!recomp_d3d_texture_unswizzle_volume(swizzled, rows, 32768u, 32768u, 8u, 4u));
+    CHECK(!recomp_d3d_texture_unswizzle_volume(swizzled, rows, 0x80000000u, 0x80000000u, 0x80000000u, 4u));
     texture(TEXTURE + 96u, 0x40001u, 0x12220c3au, 0u);
+    CHECK(!recomp_d3d8_resource_describe(TEXTURE + 96u, &desc));
     if (setjmp(stopped) == 0) { invoke(0x347fa0u, TEXTURE + 96u, 0x80000000u, 0u, 0u, 0u); return 1; }
     CHECK(strcmp(reason, "d3d8:volume-register:12220c3a:00000000") == 0);
     recomp_runtime.registers.ecx = 0x81bc0u;

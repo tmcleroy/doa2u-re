@@ -187,9 +187,12 @@ static void attach_texture(uint32_t device, uint32_t stage, RecompD3dPresenterDr
         recomp_stop(2, "d3d8:draw-texture-description:depth:stage=%u:resource=%08x:fvf=%x:ret=%08x",
             stage, resource, draw->fvf, *recomp_memory_u32(recomp_runtime.registers.esp));
     const RecompD3dTextureDesc *desc = &draw->texture;
+    if (desc->volume_depth != 0u && stage != 0u)
+        recomp_stop(2, "d3d8:volume-texture-stage:%u", stage);
     uint64_t bytes = recomp_d3d_texture_compressed_mip_span(desc);
     if (bytes == 0u) bytes = desc->linear ? (uint64_t)desc->pitch * desc->height :
-        (uint64_t)desc->width * desc->height * desc->bits_per_pixel / 8u;
+        (uint64_t)desc->width * desc->height * (desc->volume_depth ? desc->volume_depth : 1u) *
+            desc->bits_per_pixel / 8u;
     if (bytes == 0u || bytes > RECOMP_XBOX_RAM_SIZE)
         recomp_stop(2, "d3d8:draw-texture-span");
     uint32_t address;
@@ -200,6 +203,7 @@ static void attach_texture(uint32_t device, uint32_t stage, RecompD3dPresenterDr
     draw->has_texture = true;
     draw->address_u = *recomp_memory_u32(STAGES + stage * 128u);
     draw->address_v = *recomp_memory_u32(STAGES + stage * 128u + 4u);
+    draw->address_w = *recomp_memory_u32(STAGES + stage * 128u + 8u);
     if (desc->format_byte == RECOMP_D3D_TEXTURE_FORMAT_P8) {
         const uint32_t palette = *recomp_memory_u32(device + 0xf98u + stage * 4u);
         if (palette == 0u) recomp_stop(2, "d3d8:draw-missing-palette");
@@ -881,7 +885,8 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
             !layout->pretransformed;
         /* COUNT2 over 2D UV0: the texture-matrix upload (0x34f7d0, case 0x220)
            emits s = (m00, m10, 0, m20), t = (m01, m11, 0, m21) and q = 1. */
-        const bool uv_transform = stage[0][21] == 2u && stage[0][28] == 0u &&
+        const bool uv_transform = (stage[0][21] == 2u ||
+            (draw->texture.volume_depth != 0u && stage[0][21] == 3u)) && stage[0][28] == 0u &&
             !draw->has_reflection && !layout->pretransformed;
         /* Camera-space position: 0x34f7d0 uploads S/T from TEXTURE0 columns 0/1;
            COUNT3|PROJECTED takes Q from column 2, COUNT2 (case 0x320) sets Q=1. */
@@ -909,6 +914,10 @@ static void fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
             recomp_guest_load(draw->reflection_transform, device + 0xce0u, sizeof draw->reflection_transform);
             for (uint32_t i = 0u; i < 16u; ++i)
                 if (!isfinite(draw->reflection_transform[i])) recomp_stop(2, "d3d8:texture-transform");
+            if (stage[0][21] == 2u) {
+                draw->reflection_transform[2] = draw->reflection_transform[6] =
+                    draw->reflection_transform[10] = draw->reflection_transform[14] = 0.0f;
+            }
             draw->texture_transform_uv = true;
         }
         if (stage[0][12] == 1u) {
@@ -1407,6 +1416,11 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
         state->cull_mode == 0x901u ? RECOMP_D3D_CULL_COUNTER_CLOCKWISE : RECOMP_D3D_CULL_NONE;
     draw->texture_factor = state->texture_factor;
     attach_texture(device, 0u, draw);
+    if (draw->texture.volume_depth != 0u &&
+        (program || points || draw->fvf != 0x142u ||
+         *recomp_memory_u32(device + PIXEL_HANDLE) != 0u ||
+         draw->address_w < 1u || draw->address_w > 3u))
+        recomp_stop(2, "d3d8:volume-draw-layout:fvf=%x:w=%u", draw->fvf, draw->address_w);
     if (!program && !points) attach_lighting(device, &layout, draw);
     uint8_t *expanded = NULL;
     if (points && (program || *recomp_memory_u32(device + PIXEL_HANDLE) != 0u)) {

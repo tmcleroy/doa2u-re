@@ -168,8 +168,8 @@ typedef struct RecompD3dPresenterDrawCommand {
        of guest pixel memory, valid only for the duration of the submit. */
     RecompD3dTextureDesc texture;
     bool has_texture;
-    /* Guest D3DTADDRESS U/V for the texture's stage; 0 (unknown) wraps. */
-    uint32_t address_u, address_v;
+    /* Guest D3DTADDRESS U/V/W for the texture's stage; 0 (unknown) wraps. */
+    uint32_t address_u, address_v, address_w;
     /* Stage-0 mip selection; zero initialization keeps linear mips and no bias. */
     bool point_mip_filter;
     float mip_lod_bias;

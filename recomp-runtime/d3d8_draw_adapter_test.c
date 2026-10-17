@@ -1520,11 +1520,43 @@ static int bump_tests(void)
     return 0;
 }
 
+static int volume_tests(void)
+{
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected volume stop: %s\n", stop_reason); return 1; }
+    initialize();
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x142u;
+    *recomp_memory_u32(DEVICE + 0xf88u) = 0x7000u;
+    *recomp_memory_u32(STAGES + 8u) = 3u;
+    texture.width = texture.height = 64u;
+    texture.volume_depth = 8u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 24u);
+    const RecompD3dPresenterDrawCommand *draw = &submitted.data.draw;
+    CHECK(draw->texture.volume_depth == 8u && draw->texture_byte_count == 64u * 64u * 8u * 4u &&
+        draw->address_w == 3u);
+    const float transform[16] = {1,0,0,0, 0,1,0,0, 0,0,0.75f,0, 0,0,0,1};
+    recomp_guest_store(DEVICE + 0xce0u, transform, sizeof transform);
+    *recomp_memory_u32(STAGES + 21u * 4u) = 3u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 24u);
+    CHECK(draw->texture_transform_uv && draw->reflection_transform[10] == 0.75f);
+    texture.data = RECOMP_XBOX_RAM_SIZE - 64u * 64u * 4u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 24u); return 1; }
+    CHECK(strcmp(stop_reason, "test:guest-span") == 0);
+    texture.data = 0x8000u;
+    *recomp_memory_u32(STAGES + 8u) = 4u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 24u); return 1; }
+    CHECK(strncmp(stop_reason, "d3d8:volume-draw-layout:", 23) == 0);
+    *recomp_memory_u32(STAGES + 8u) = 1u;
+    *recomp_memory_u32(STAGES + 28u * 4u) = 1u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 24u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:draw-texture-coordinates") == 0);
+    return 0;
+}
+
 int main(void)
 {
     initialize();
     if (pixel_tests() || draw_tests() || line_tests() || quad_tests() || point_tests() || lighting_tests() || filter_tests() || bright_tests() ||
-        distortion_tests() || factor_tests() || position_texgen_tests() || effect_tests() || program_tests() || bump_tests()) return 1;
+        distortion_tests() || factor_tests() || position_texgen_tests() || effect_tests() || program_tests() || bump_tests() || volume_tests()) return 1;
     puts("PASS D3D8 pixel lifecycle/constants and semantic draw ABI/snapshots");
     return 0;
 }

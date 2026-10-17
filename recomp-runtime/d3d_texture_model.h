@@ -43,6 +43,8 @@ typedef struct RecompD3dTextureDesc {
     uint32_t pitch;
     uint32_t data;
     uint32_t mip_levels;
+    /* Zero for a 2D texture; otherwise the number of volume slices. */
+    uint32_t volume_depth;
 } RecompD3dTextureDesc;
 
 typedef struct RecompD3dTextureCensusEntry {
@@ -109,6 +111,13 @@ bool recomp_d3d_texture_unswizzle(
     uint8_t *destination,
     uint32_t width,
     uint32_t height,
+    uint32_t bytes_per_texel);
+bool recomp_d3d_texture_unswizzle_volume(
+    const uint8_t *source,
+    uint8_t *destination,
+    uint32_t width,
+    uint32_t height,
+    uint32_t depth,
     uint32_t bytes_per_texel);
 
 #ifdef __cplusplus

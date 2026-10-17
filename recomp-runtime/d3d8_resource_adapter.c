@@ -141,7 +141,10 @@ bool recomp_d3d8_resource_describe(uint32_t resource, RecompD3dTextureDesc *out)
     uint32_t value = common(resource), type = value & TYPE_MASK;
     if (type != 0x40000u && type != 0x50000u) return false;
     uint32_t format = word(resource + 12u);
-    if ((format & 0xf0u) != 0x20u || (format & 4u) != 0u) return false;
+    const bool volume = (format & 0xf0u) == 0x30u;
+    if (((format & 0xf0u) != 0x20u && !volume) || (format & 4u) != 0u) return false;
+    if (volume && (((format >> 8u) & 255u) != 6u ||
+        ((format >> 16u) & 15u) > 1u || word(resource + 16u) != 0u)) return false;
     uint8_t descriptor = *recomp_memory(FORMAT_TABLE + ((format >> 8u) & 255u), 1u);
     return recomp_d3d_texture_describe(format, word(resource + 16u), word(resource + 4u), descriptor, out);
 }
@@ -155,7 +158,8 @@ static LevelView level_view(uint32_t resource, uint32_t level)
 {
     LevelView view = {0};
     if (!recomp_d3d8_resource_describe(resource, &view.desc) ||
-        level >= view.desc.mip_levels || (view.desc.linear && level != 0u)) {
+        view.desc.volume_depth != 0u || level >= view.desc.mip_levels ||
+        (view.desc.linear && level != 0u)) {
         recomp_stop(2, "d3d8:resource-level:%u:%08x:%08x:%08x:ret=%08x", level, common(resource),
             word(resource + 12u), word(resource + 16u), word(recomp_runtime.registers.esp));
     }

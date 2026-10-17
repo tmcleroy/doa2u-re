@@ -108,6 +108,38 @@ bool recomp_d3d_texture_unswizzle(
     return true;
 }
 
+bool recomp_d3d_texture_unswizzle_volume(
+    const uint8_t *source, uint8_t *destination, uint32_t width,
+    uint32_t height, uint32_t depth, uint32_t bytes_per_texel)
+{
+    if (source == NULL || destination == NULL || bytes_per_texel == 0u ||
+        bytes_per_texel > 4u || !is_power_of_two(width) ||
+        !is_power_of_two(height) || !is_power_of_two(depth) ||
+        width > 32768u || height > 32768u || depth > 32768u ||
+        (uint64_t)width * height * depth * bytes_per_texel > 0x04000000u)
+        return false;
+    uint32_t masks[3] = {0}, slot = 1u;
+    const uint32_t dimensions[3] = {width, height, depth};
+    /* Morton order takes one bit from each remaining axis, X then Y then Z. */
+    for (uint32_t bit = 1u; bit < width || bit < height || bit < depth; bit <<= 1u) {
+        for (uint32_t axis = 0u; axis < 3u; ++axis) {
+            if (bit < dimensions[axis]) { masks[axis] |= slot; slot <<= 1u; }
+        }
+    }
+    for (uint32_t z = 0u; z < depth; ++z) {
+        for (uint32_t y = 0u; y < height; ++y) {
+            const uint32_t row = spread_bits(z, masks[2]) | spread_bits(y, masks[1]);
+            for (uint32_t x = 0u; x < width; ++x) {
+                const uint32_t from = (row | spread_bits(x, masks[0])) * bytes_per_texel;
+                const uint32_t to = ((z * height + y) * width + x) * bytes_per_texel;
+                for (uint32_t byte = 0u; byte < bytes_per_texel; ++byte)
+                    destination[to + byte] = source[from + byte];
+            }
+        }
+    }
+    return true;
+}
+
 void recomp_d3d_texture_reset(RecompD3dTextureModel *model)
 {
     if (model != NULL) {
@@ -187,6 +219,8 @@ bool recomp_d3d_texture_describe(
         desc.linear = false;
         desc.width = 1u << ((format_dword >> 20u) & 0xfu);
         desc.height = 1u << ((format_dword >> 24u) & 0xfu);
+        if ((format_dword & 0xf0u) == 0x30u)
+            desc.volume_depth = 1u << ((format_dword >> 28u) & 0xfu);
         desc.pitch = 0u;
     }
 
@@ -204,7 +238,7 @@ uint32_t recomp_d3d_texture_compressed_mip_span(
     uint64_t total = 0u;
     uint32_t level;
 
-    if (desc == NULL || !is_power_of_two(desc->width) ||
+    if (desc == NULL || desc->volume_depth != 0u || !is_power_of_two(desc->width) ||
         !is_power_of_two(desc->height)) {
         return 0u;
     }
@@ -255,6 +289,7 @@ static bool texture_desc_equal(
         a->linear == b->linear &&
         a->width == b->width &&
         a->height == b->height &&
+        a->volume_depth == b->volume_depth &&
         a->pitch == b->pitch;
 }
 
