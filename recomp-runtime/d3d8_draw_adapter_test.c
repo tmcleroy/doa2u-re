@@ -606,6 +606,58 @@ static int lighting_tests(void)
     CHECK(lit->normal_transforms[0][0] == 0.5f && lit->normal_transforms[0][10] == 0.25f);
     CHECK(lit->world_transforms[0][12] == 5.0f && lit->view[2] == -1.0f && lit->view[3] == 16.0f);
     CHECK(lit->stage[0] == 1.0f && lit->stage[1] == 1.0f && lit->stage[2] == 1.0f && lit->stage[3] == 1.0f);
+    /* SDK 0x34ff80 uploads direction, not position, for a directional light. */
+    directional.desc.position[0] = NAN;
+    recomp_guest_store(lights, &directional, sizeof directional);
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    CHECK(lit->enabled && lit->positions[0][0] == 0.0f);
+    directional.desc.position[0] = 0.0f;
+    recomp_guest_store(lights, &directional, sizeof directional);
+    const uint32_t ignored[2][16] = {
+        {3,7,11,12,13,14,15,16,17,18,19,20,21,22,23,24},
+        {3,7,11,15,16,17,19,23,24}
+    };
+    for (uint32_t kind = 0u; kind < 2u; ++kind) {
+        const uint32_t address = lights + (kind == 0u ? 0u : 3u * sizeof point);
+        const uint32_t count = kind == 0u ? 16u : 9u;
+        for (uint32_t k = 0u; k < count; ++k) {
+            const uint32_t field = address + 4u + ignored[kind][k] * 4u;
+            const uint32_t saved = *recomp_memory_u32(field);
+            *recomp_memory_u32(field) = 0x7fc00000u;
+            invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+            CHECK(lit->enabled && lit->colors[0][0] == 1.0f && lit->positions[1][0] == 2.0f &&
+                lit->directions[0][2] == 1.0f && lit->attenuation[0][3] == 0.0f);
+            *recomp_memory_u32(field) = saved;
+        }
+    }
+    point.normalized_direction[0] = NAN;
+    recomp_guest_store(lights + 3u * sizeof point, &point, sizeof point);
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    CHECK(lit->directions[1][0] == 0.0f);
+    point.normalized_direction[0] = 0.0f;
+    recomp_guest_store(lights + 3u * sizeof point, &point, sizeof point);
+    *recomp_memory_u32(0x3553fcu) = 0u;
+    directional.desc.specular[1] = NAN;
+    recomp_guest_store(lights, &directional, sizeof directional);
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    CHECK(lit->specular[0][1] == 0.0f);
+    *recomp_memory_u32(0x3553fcu) = 1u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
+    CHECK(strstr(stop_reason, ":slot=0:type=3:field=5:bits=7fc00000:") != NULL);
+    directional.desc.specular[1] = 0.5f;
+    recomp_guest_store(lights, &directional, sizeof directional);
+    point.desc.position[0] = NAN;
+    recomp_guest_store(lights + 3u * sizeof point, &point, sizeof point);
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
+    CHECK(strstr(stop_reason, ":slot=3:type=1:field=12:bits=7fc00000:") != NULL);
+    point.desc.position[0] = 2.0f;
+    recomp_guest_store(lights + 3u * sizeof point, &point, sizeof point);
+    directional.normalized_direction[2] = NAN;
+    recomp_guest_store(lights, &directional, sizeof directional);
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
+    CHECK(strcmp(stop_reason, "d3d8:lighting-direction") == 0);
+    directional.normalized_direction[2] = 1.0f;
+    recomp_guest_store(lights, &directional, sizeof directional);
     /* A disabled first color op ends both channels, even with a texture bound. */
     *recomp_memory_u32(STAGES + 48u) = *recomp_memory_u32(STAGES + 64u) = 1u;
     invoke(0x348240u, 5u, 3u, VERTICES, 32u);

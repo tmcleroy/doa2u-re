@@ -608,21 +608,33 @@ static void attach_lighting(uint32_t device, const RecompD3dVertexLayout *layout
         const RecompD3dLightDesc *light = &record.desc;
         if (record.slot != slot || (light->type != 1u && light->type != 3u))
             recomp_stop(2, "d3d8:lighting-type-or-slot");
+        const bool point = light->type == 1u;
         const float *values = (const float *)(const void *)((const uint8_t *)light + 4u);
-        for (uint32_t i = 0u; i < 25u; ++i)
-            if (!isfinite(values[i])) recomp_stop(2, "d3d8:lighting-nonfinite");
+        for (uint32_t i = 0u; i < 25u; ++i) {
+            /* 0x34fb90 reads RGB only; 0x34ff80 selects direction or point data. */
+            const bool used = i < 3u || (i >= 8u && i <= 10u) ||
+                (specular && i >= 4u && i <= 6u) ||
+                (point && ((i >= 12u && i <= 14u) || i == 18u || (i >= 20u && i <= 22u)));
+            if (used && !isfinite(values[i])) {
+                uint32_t bits;
+                memcpy(&bits, &values[i], sizeof bits);
+                recomp_stop(2, "d3d8:lighting-nonfinite:slot=%u:type=%u:field=%u:bits=%08x:fvf=%x:spec=%u:ret=%08x",
+                    slot, light->type, i, bits, draw->fvf, specular,
+                    *recomp_memory_u32(recomp_runtime.registers.esp));
+            }
+        }
         const uint32_t i = result.count++;
         for (uint32_t c = 0u; c < 3u; ++c) {
             result.colors[i][c] = light->diffuse[c];
             result.specular[i][c] = specular ? light->specular[c] * material[8u + c] : 0.0f;
             result.ambient[i][c] = light->ambient[c] * material[4u + c];
-            result.positions[i][c] = light->position[c];
-            result.directions[i][c] = record.normalized_direction[c];
-            result.attenuation[i][c] = light->attenuation[c];
+            result.positions[i][c] = point ? light->position[c] : 0.0f;
+            result.directions[i][c] = point ? 0.0f : record.normalized_direction[c];
+            result.attenuation[i][c] = point ? light->attenuation[c] : 0.0f;
             if (!isfinite(result.directions[i][c])) recomp_stop(2, "d3d8:lighting-direction");
         }
-        result.positions[i][3] = light->type == 1u;
-        result.attenuation[i][3] = light->range;
+        result.positions[i][3] = point;
+        result.attenuation[i][3] = point ? light->range : 0.0f;
     }
     for (uint32_t i = 0u; i <= layout->blend_weight_count; ++i) {
         recomp_guest_load(result.world_transforms[i], device + 0xde0u + i * 64u, 64u);

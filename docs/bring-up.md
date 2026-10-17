@@ -264,6 +264,11 @@ sources. Skinned reflection draws (including FVF 0x116) blend camera-space
 positions and normal-matrix results with the position weights and final
 remainder. The SDK upload at 0x3502d0 supplies each world-view matrix; with
 NORMALIZENORMALS, 0x34b530 supplies signed cofactors before the final normalize.
+Light snapshots validate only RGB coefficients and the fields consumed by
+the selected light type. Directional lights use the normalized record direction;
+point lights use position, range and attenuation. Unused descriptor alphas,
+spot parameters and disabled specular RGB do not affect the draw. Non-finite
+consumed fields still stop with the light slot, type and field index.
 Native pixel tests cover both endpoint weights and an equal blend. Exact
 hardware rounding remains unverified. Vertex color lighting sources,
 local-view specular, two-sided/spot lighting, other
