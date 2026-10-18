@@ -4,14 +4,21 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import uuid
 
-from extract_iso import run_logged, sha256
+from extract_iso import extract, run_logged, sha256
 
 ROOT = Path(__file__).resolve().parents[1]
 LIFTER = ROOT / "tools/xboxrecomp"
+XBE_SHA256 = "30d5bd3ff363afb72ea4d5058537013e284df0930f1921d345aeaf44af288a0c"
+CAPSTONE = "5.0.7"
+# The generated program the runtime was validated against. Changing the lifter
+# pin or tools/doa2u/seed_functions.json changes it; regenerate and update both.
+PROGRAM_SHA256 = "5f43bf496a7b2e22c66598ed75eda161220eb420b55e833e5f3e70ce84ad1760"
+PROGRAM_EBP = 0
 
 
 def selected_xbe():
@@ -35,7 +42,47 @@ def program_manifest(generated):
     return hashlib.sha256(manifest.encode("utf-8")).hexdigest(), ebp
 
 
-def build(build_only=False, lift_only=False):
+def import_disc(iso):
+    """Extract a user's ISO once into private/imported-disc and select its game executable."""
+    if not iso.is_file():
+        raise ValueError("Drag your Dead or Alive Ultimate Disc 2 ISO onto BuildGame.cmd")
+    imported = ROOT / "private/imported-disc"
+    receipt = imported / "receipt.json"
+    if receipt.is_file():
+        print("Checking the ISO against the existing extraction...", flush=True)
+        if json.loads(receipt.read_text(encoding="utf-8"))["iso_sha256"] != sha256(iso):
+            raise ValueError(f"{imported} holds a different disc; move it away to use this ISO")
+        print(f"Using the disc already extracted to {imported / 'disc'}", flush=True)
+    else:
+        if imported.exists():
+            print(f"Removing the unfinished extraction in {imported}", flush=True)
+            shutil.rmtree(imported)
+        bundled = ROOT / "tools/artifacts/extract-xiso.exe"
+        extract(iso, imported, bundled if bundled.is_file() else "extract-xiso")
+    for xbe in sorted((imported / "disc").glob("*.xbe")):
+        if sha256(xbe) == XBE_SHA256:
+            path = ROOT / "private/target.json"
+            target = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+            target.update(xbe_path=xbe.relative_to(ROOT).as_posix(), xbe_sha256=XBE_SHA256)
+            path.write_text(json.dumps(target, indent=2) + "\n", encoding="utf-8")
+            return
+    raise ValueError("This build supports only Dead or Alive Ultimate (Xbox, USA) Disc 2")
+
+
+def build(build_only=False, lift_only=False, iso=None):
+    if iso is not None:
+        import_disc(iso)
+        if shutil.which("cmake") is None:
+            raise ValueError("Install CMake 3.20 or newer and add it to PATH")
+        try:
+            import capstone
+            ready = capstone.__version__ == CAPSTONE
+        except ImportError:
+            ready = False
+        if not ready:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", f"capstone=={CAPSTONE}"])
+            if "capstone" in sys.modules:
+                raise ValueError(f"Updated Capstone to {CAPSTONE}; run the build again")
     import capstone
     xbe = selected_xbe()
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=LIFTER, text=True).strip()
@@ -69,6 +116,8 @@ def build(build_only=False, lift_only=False):
                     "--icall-sites", work / "none.json", "--gen-dir", generated,
                     "--output-dir", work / "metadata"], logs / "lift.log", LIFTER)
         manifest, ebp = program_manifest(generated)
+        if iso is not None and (manifest, ebp) != (PROGRAM_SHA256, PROGRAM_EBP):
+            raise ValueError(f"Generated program {manifest} differs from the validated {PROGRAM_SHA256}")
         receipt = dict(recipe=recipe, manifest_sha256=manifest, ebp_count=ebp)
         receipt_path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     if lift_only:
@@ -87,15 +136,19 @@ def build(build_only=False, lift_only=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("iso", type=Path, nargs="?",
+                        help="Import this Disc 2 ISO and build the validated program")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--build-only", action="store_true", help="Rebuild authenticated generated sources")
     modes.add_argument("--lift-only", action="store_true", help="Generate without building the runner")
     args = parser.parse_args()
     try:
-        build(args.build_only, args.lift_only)
+        build(args.build_only, args.lift_only, args.iso)
     except (OSError, ValueError, KeyError, ImportError, subprocess.CalledProcessError) as error:
         print(f"Build failed: {error}", file=sys.stderr)
         return 1
+    if args.iso is not None:
+        print("Build complete. Double-click play.cmd to play.")
     return 0
 
 
