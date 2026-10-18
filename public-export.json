@@ -27,6 +27,8 @@
     "tools/build_game.py",
     "tools/test_build_game.py",
     "tools/run_game.py",
+    "tools/dedication_card.py",
+    "tools/test_dedication_card.py",
     "tools/test_run_game.py",
     "tools/doa2u/seed_functions.json"
   ],

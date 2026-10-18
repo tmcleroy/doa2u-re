@@ -94,6 +94,9 @@ typedef void (*RecompReadFilter)(uint64_t offset, uint8_t *bytes, uint32_t count
    read, query, and close bridges serve. filter may be NULL. Returns 0 on
    failure. */
 uint32_t recomp_kernel_open_readonly(const wchar_t *path, RecompReadFilter filter);
+/* Optional host hook after each guest read that returned bytes; offset is
+   the file offset of the first byte read. */
+extern void (*recomp_kernel_read_hook)(const char *host_path, uint64_t offset);
 
 /* Plain configuration model used by its import adapter. */
 uint32_t recomp_kernel_query_nonvolatile_setting(

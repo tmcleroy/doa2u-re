@@ -9,6 +9,7 @@ import sys
 import uuid
 
 from build_game import ROOT, program_manifest, selected_xbe
+import dedication_card
 from extract_iso import sha256
 
 
@@ -33,6 +34,7 @@ def prepare_disc(source, disc):
 def run(seconds, start_polls=(), a_polls=(), isolated=False, buttons_polls=(), analog_polls=()):
     if seconds is not None and seconds <= 0:
         raise ValueError("Probe duration must be positive")
+    env = os.environ.copy()
     if len(start_polls) > 4 or any(poll <= 0 or poll > 2**64 - 1 for poll in start_polls):
         raise ValueError("Start polls must be positive uint64 values, at most four")
     if len(a_polls) > 192 or any(poll <= 0 or poll > 2**64 - 1 for poll in a_polls):
@@ -57,6 +59,15 @@ def run(seconds, start_polls=(), a_polls=(), isolated=False, buttons_polls=(), a
     xbe = disc / selected.name
     if sha256(xbe) != sha256(selected):
         raise ValueError("Play disc belongs to a different game import")
+    card = ROOT / "private/dedication.bmp"
+    photo = ROOT / "private/dedication-photo.jpg"
+    if not card.is_file() and photo.is_file():
+        try:
+            dedication_card.build(selected.parent, photo, card)
+        except (ImportError, OSError, ValueError) as error:
+            print(f"Dedication card skipped: {error}", file=sys.stderr)
+    if card.is_file():
+        env["RECOMP_DEDICATION_CARD"] = str(card)
     logs = ROOT / ("private/play-logs" if seconds is None else "private/boot-logs")
     logs.mkdir(exist_ok=True)
     log_path = logs / (uuid.uuid4().hex[:8] + ".log")
@@ -78,7 +89,8 @@ def run(seconds, start_polls=(), a_polls=(), isolated=False, buttons_polls=(), a
             for poll, index in analog_polls:
                 command.extend(["--input-analog-pulse-at", str(poll), str(index)])
             result = subprocess.run(command,
-                                    cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, timeout=seconds)
+                                    cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, timeout=seconds,
+                                    env=env)
             code = result.returncode
         except subprocess.TimeoutExpired:
             log.write("\nprobe timed out; child process terminated\n")

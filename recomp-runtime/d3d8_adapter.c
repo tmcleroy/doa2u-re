@@ -2,6 +2,7 @@
 #include "d3d8_adapter.h"
 #include "d3d8_state_adapter.h"
 #include "d3d8_resource_adapter.h"
+#include "d3d_card_model.h"
 #include "d3d_device_model.h"
 #include "d3d_vertex_shader_model.h"
 #include "d3d_frame_model.h"
@@ -33,6 +34,7 @@ enum {
 static RecompD3dDeviceState device_state;
 static RecompD3dFrameState frame_state;
 static RecompD3dPresenter *presenter;
+void (*recomp_d3d_present_hook)(uint32_t swap_counter);
 static uint32_t submitted_draws;
 /* The host keeps one main color target across Swap and Reset (which clears
    only depth). It still holds the frame Present last showed, and the pixels
@@ -511,9 +513,34 @@ static void swap(void)
     *recomp_memory_u32(DEVICE + 0x1de4u) = result.command.data.present.swap_counter;
     for (uint32_t i = 0; i < 2u; ++i) store(color_header(i), &device_state.color[i], sizeof device_state.color[i]);
     *recomp_memory_u32(DEVICE + FRAME_COUNTER) = result.command.data.present.swap_counter;
+    if (recomp_d3d_present_hook != NULL) recomp_d3d_present_hook(result.command.data.present.swap_counter);
     recomp_runtime.registers.eax = result.command.data.present.swap_counter;
     recomp_runtime.registers.esp = entry + 8u;
     fprintf(stderr, "recomp d3d8: Swap frame=%u\n", result.command.data.present.swap_counter);
+}
+
+void recomp_d3d8_present_card(const uint32_t *pixels, uint32_t width, uint32_t height,
+    float display_aspect, uint8_t level)
+{
+    recomp_d3d8_require_device();
+    RecompD3dPresenterCommand command = {.type = RECOMP_D3D_PRESENTER_COMMAND_CLEAR};
+    resolve_target(color_header(0u), 0u, &command.data.clear.target);
+    const RecompD3dPresenterTarget target = command.data.clear.target;
+    command.data.clear.clear_color = true;
+    command.data.clear.color = 0xff000000u;
+    recomp_d3d8_submit(&command);
+    RecompD3dCardVertex vertices[4];
+    command = (RecompD3dPresenterCommand){.type = RECOMP_D3D_PRESENTER_COMMAND_DRAW};
+    recomp_d3d_card_draw(pixels, width, height, (float)target.color.width,
+        (float)target.color.height, display_aspect, level, vertices, &command.data.draw);
+    command.data.draw.target = target;
+    recomp_d3d8_submit(&command);
+    command = (RecompD3dPresenterCommand){.type = RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
+    command.data.present.effective_flags = 5u;
+    command.data.present.swap_counter = frame_state.swap_counter;
+    recomp_d3d8_submit(&command);
+    back_buffer_displayed = true;
+    back_buffer_saved = false;
 }
 
 static void block_until_vertical_blank(void)

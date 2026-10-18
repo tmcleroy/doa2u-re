@@ -46,3 +46,9 @@ bool recomp_xapi_skip_wait(uint64_t deadline_ns)
         skipped_ns.fetch_add(deadline_ns - now, std::memory_order_relaxed);
     return true;
 }
+
+void recomp_xapi_hold_time(uint64_t held_ns)
+{
+    // Unsigned wraparound subtracts; the counter only stops while held.
+    skipped_ns.fetch_sub(held_ns, std::memory_order_relaxed);
+}

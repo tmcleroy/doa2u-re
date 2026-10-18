@@ -72,6 +72,7 @@ static void ensure_symbolic_links_initialized(void)
 
 /* Supplied by runner.cpp from the directory containing the XBE. */
 const char *recomp_disc_root_path = NULL;
+void (*recomp_kernel_read_hook)(const char *host_path, uint64_t offset);
 
 /* Private proving runs use these fail-loud checkpoints to interrupt real
    save writes. They are inactive unless explicitly selected in the environment. */
@@ -2059,6 +2060,9 @@ static void bridge_nt_read_file(void)
         bytes_read = host_bytes_read;
         if (file_handles[i].read_filter != NULL && bytes_read != 0u) {
             file_handles[i].read_filter(read_offset, host_buffer, bytes_read);
+        }
+        if (recomp_kernel_read_hook != NULL && bytes_read != 0u) {
+            recomp_kernel_read_hook(file_handles[i].host_path, read_offset);
         }
         file_handles[i].cursor = read_offset + bytes_read;
         status = bytes_read == 0u && length != 0u

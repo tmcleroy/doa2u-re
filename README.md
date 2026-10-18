@@ -102,6 +102,13 @@ Input uses SDL gamepads or the focused game window's keyboard. Enter sends
 Start; arrows move the D-pad and Z/X send A/B. A bounded intro-skip probe can
 use repeated `--input-start-pulse-at <poll>` arguments (up to four).
 
+When `private/dedication.bmp` exists (an uncompressed 24- or 32-bit BMP),
+the launcher shows it for 10 seconds, fading in and out, each time the staff
+roll starts. The game is held meanwhile and resumes unchanged.
+If it is missing and `private/dedication-photo.jpg` exists, `run_game.py`
+first builds the 4K card from that photo with Pillow (`pip install pillow`),
+drawing the name in the game's fight-screen capitals read from your disc.
+
 ## Layout
 
 | Path | Purpose |

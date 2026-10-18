@@ -1,3 +1,4 @@
+#include "d3d_card_model.h"
 #include "d3d_presenter.h"
 #include "d3d_presenter_d3d11_backend.h"
 #include "d3d_draw_model.h"
@@ -5,11 +6,13 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <thread>
+#include <string>
 #include <vector>
 
 // d3d_vblank.cpp's guest pacing reaches the kernel; these tests use only its host sleep.
@@ -2110,6 +2113,52 @@ static bool testDepthBias(bool scaled = false)
     return passed;
 }
 
+static bool testCard()
+{
+    char folder[MAX_PATH], path[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "card", 0, path)) return false;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", path);
+    _putenv_s("RECOMP_D3D_SCALE", "1");
+    RecompD3dPresenter *presenter = nullptr;
+    bool passed = expect("create card", d3d11_backend_create(&config, &presenter));
+    if (passed) {
+        auto clear = clearCommand();
+        clear.data.clear.color = 0xff000000u;
+        passed &= expect("card clear", d3d11_backend_submit(presenter, &clear));
+        std::vector<uint32_t> pixels(16 * 9, 0xff4080c0u);
+        RecompD3dCardVertex vertices[4];
+        RecompD3dPresenterCommand command{RECOMP_D3D_PRESENTER_COMMAND_DRAW};
+        // A 16:9 card on a 4:3 display fills 3/4 of the height: rows 30..209.
+        recomp_d3d_card_draw(pixels.data(), 16, 9, 320.0f, 240.0f, 4.0f / 3.0f, 128,
+            vertices, &command.data.draw);
+        passed &= expect("card draw", d3d11_backend_submit(presenter, &command));
+        RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
+        present.data.present = {5, 1};
+        passed &= expect("card present", d3d11_backend_submit(presenter, &present));
+    }
+    d3d11_backend_destroy(&presenter);
+    FILE *file = passed ? std::fopen(path, "rb") : nullptr;
+    passed &= file != nullptr;
+    const struct { int y; unsigned b, g, r; } probes[] = {{10, 0, 0, 0}, {120, 96, 64, 32}, {229, 0, 0, 0}};
+    for (const auto &probe : probes) {
+        unsigned char bgr[3]{};
+        if (file == nullptr) break;
+        std::fseek(file, 54 + (239 - probe.y) * 960 + 160 * 3, SEEK_SET);
+        passed &= std::fread(bgr, 1, 3, file) == 3;
+        if (std::abs(bgr[0] - int(probe.b)) > 3 || std::abs(bgr[1] - int(probe.g)) > 3 ||
+            std::abs(bgr[2] - int(probe.r)) > 3) {
+            std::fprintf(stderr, "FAIL card row %d BGR=%u,%u,%u\n", probe.y, bgr[0], bgr[1], bgr[2]);
+            passed = false;
+        }
+    }
+    if (file != nullptr) std::fclose(file);
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
+    _putenv_s("RECOMP_D3D_SCALE", "");
+    DeleteFileA(path);
+    if (passed) std::puts("PASS dedication card letterboxes and fades a linear BGRA image");
+    return passed;
+}
+
 static bool testScaledMsaaDepthBias()
 {
     char folder[MAX_PATH], path[MAX_PATH];
@@ -2543,6 +2592,7 @@ int main()
         !testReflectionAddress(false, false, false, false, 1.0f) ||
         !testScreenSpaceOffsetAndScissor() || !testBrightPass() || !testDistortion() || !testStageEffect() ||
         !testVolume() || !testVolume(true) || !testFrameBufferBlend() || !testDepthBias() || !testDepthBias(true) ||
+        !testCard() ||
         !testScaledMsaaDepthBias() || !testProgramMaxSlt() ||
         !testProgramLitSge() ||
         !testStageBump() ||

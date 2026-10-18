@@ -68,6 +68,17 @@ The startup legal presentation is skipped automatically at its game-owned
 wrapper (`0xd92c0`), before its menu and asset setup. The first startup movie
 (`0xd9300`), opening movie and later story movies keep their normal controls.
 
+The optional dedication card (`RECOMP_DEDICATION_CARD`, set by `run_game.py`
+from `private/dedication.bmp`) starts on the first guest read of the staff
+roll track. Music table entry 17 (`0x6a0c3c`) points at the track's file name
+at +8, and the runner finds that entry through each AFS archive's own
+directory. Track loops seek past
+the entry's start, so they do not repeat the card. At the next Swap the runner
+presents the card through the D3D8 adapter for 10 seconds and then subtracts
+the held time from the guest clock. In Kasumi's Story the track is first read
+after the final KO's white flash, so the card plays just before the ending,
+which carries the staff credits over it.
+
 The first boot copies about 700 MB of disc archives into the `Z:` cache
 partition, 32 KB per frame, while drawing only cleared frames. At the native
 pace this takes roughly 12 minutes and shows a black window. The cache lives in

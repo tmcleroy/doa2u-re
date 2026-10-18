@@ -7,6 +7,8 @@
 #include "input_pulse_source.h"
 #include "runner_load.h"
 #include "save_transaction.h"
+#include "d3d_vblank.h"
+#include "xapi_time_adapter.h"
 #include "xbox_memory_layout.h"
 extern "C" {
 #include "kernel_abi.h"
@@ -14,10 +16,16 @@ extern "C" {
 RecompFunction recomp_program_lookup(std::uint32_t address);
 }
 
+#include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
+#include <map>
 #include <string>
 #include <vector>
 #include <charconv>
@@ -37,6 +45,101 @@ static bool sampleInput(std::uint32_t port, RecompInputGamepad *gamepad)
         startHeld = start;
     }
     return sampled;
+}
+
+/* Dedication card shown each time the staff roll starts. The BMP is a private
+   input named by RECOMP_DEDICATION_CARD. Music table entry 17 (0x6a0c3c,
+   "Staffroll") points at its track's file name at +8; the guest's first read
+   of that entry in an AFS archive starts the roll. */
+static std::vector<std::uint32_t> cardPixels;
+static std::uint32_t cardWidth, cardHeight;
+static std::map<std::string, std::uint64_t> staffrollOffsets; // per archive; 0 if absent
+static bool cardPending;
+
+// 24- or 32-bit uncompressed BMP to top-down opaque BGRA.
+static bool loadCard(const char *path)
+{
+    std::ifstream file(path, std::ios::binary);
+    const std::vector<unsigned char> b{std::istreambuf_iterator<char>(file), {}};
+    if (b.size() < 54u || b[0] != 'B' || b[1] != 'M') return false;
+    const auto u32 = [&](std::size_t at) {
+        return static_cast<std::uint32_t>(b[at] | b[at + 1] << 8 | b[at + 2] << 16) |
+            static_cast<std::uint32_t>(b[at + 3]) << 24;
+    };
+    const std::uint32_t data = u32(10u), width = u32(18u), bits = b[28] | b[29] << 8;
+    const auto rawHeight = static_cast<std::int32_t>(u32(22u));
+    const std::uint32_t height = rawHeight < 0 ? 0u - static_cast<std::uint32_t>(rawHeight)
+                                               : static_cast<std::uint32_t>(rawHeight);
+    if (width == 0u || height == 0u || width > 4096u || height > 4096u ||
+        (bits != 24u && bits != 32u) || u32(30u) != 0u) return false;
+    const std::size_t stride = (width * bits / 8u + 3u) & ~3u;
+    if (data > b.size() || stride * height > b.size() - data) return false;
+    cardPixels.resize(static_cast<std::size_t>(width) * height);
+    for (std::uint32_t y = 0; y < height; ++y) {
+        const unsigned char *row = &b[data + stride * (rawHeight < 0 ? y : height - 1u - y)];
+        for (std::uint32_t x = 0; x < width; ++x, row += bits / 8u)
+            cardPixels[static_cast<std::size_t>(y) * width + x] =
+                0xff000000u | row[2] << 16 | row[1] << 8 | row[0];
+    }
+    cardWidth = width;
+    cardHeight = height;
+    return true;
+}
+
+// Offset of a named entry from the AFS archive's own directory; zero if absent.
+static std::uint64_t afsEntryOffset(const char *path, const char *name)
+{
+    std::ifstream file(path, std::ios::binary);
+    std::uint32_t header[2]{};
+    if (!file.read(reinterpret_cast<char *>(header), sizeof header) ||
+        header[0] != 0x00534641u || header[1] == 0u || header[1] > 65536u) return 0u;
+    std::vector<std::uint32_t> toc(header[1] * 2u + 2u);
+    if (!file.read(reinterpret_cast<char *>(toc.data()), toc.size() * 4u)) return 0u;
+    std::vector<char> names(header[1] * 48u);
+    if (toc[header[1] * 2u] == 0u || toc[header[1] * 2u + 1u] < names.size() ||
+        !file.seekg(toc[header[1] * 2u]) || !file.read(names.data(), names.size())) return 0u;
+    for (std::uint32_t i = 0; i < header[1]; ++i)
+        if (std::strncmp(&names[i * 48u], name, 32u) == 0) return toc[i * 2u];
+    return 0u;
+}
+
+static void noteRead(const char *hostPath, std::uint64_t offset)
+{
+    const std::size_t length = std::strlen(hostPath);
+    if (cardPixels.empty() || length < 4u || _stricmp(hostPath + length - 4u, ".afs") != 0) return;
+    const auto [entry, added] = staffrollOffsets.try_emplace(hostPath, 0u);
+    if (added) entry->second = afsEntryOffset(hostPath,
+        reinterpret_cast<const char *>(recomp_memory(*recomp_memory_u32(0x006a0c44u), 32u)));
+    if (entry->second != 0u && offset == entry->second) cardPending = true;
+}
+
+// Holds the guest at a Swap: 1.5 s fade in, hold, 1.5 s fade out over 10 s.
+static void showCard()
+{
+    using namespace std::chrono;
+    constexpr auto fade = milliseconds(1500), total = milliseconds(10000);
+    const char *wide = std::getenv("RECOMP_D3D_WIDESCREEN");
+    const float aspect = wide != nullptr && std::strcmp(wide, "0") != 0 ? 16.0f / 9.0f : 4.0f / 3.0f;
+    std::fprintf(stderr, "recomp runner: staff roll starts; dedication card shown\n");
+    const auto start = steady_clock::now();
+    for (auto next = start;;) {
+        const auto elapsed = steady_clock::now() - start;
+        if (elapsed >= total) break;
+        const auto edge = std::min<steady_clock::duration>(elapsed, total - elapsed);
+        const auto level = static_cast<std::uint8_t>(edge >= fade ? 255 : 255 * edge / fade);
+        recomp_d3d8_present_card(cardPixels.data(), cardWidth, cardHeight, aspect, level);
+        next += microseconds(16667);
+        recomp_d3d_sleep_until(duration_cast<nanoseconds>(next.time_since_epoch()).count());
+    }
+    recomp_xapi_hold_time(static_cast<std::uint64_t>(
+        duration_cast<nanoseconds>(steady_clock::now() - start).count()));
+}
+
+static void onSwap(std::uint32_t)
+{
+    if (!cardPending) return;
+    cardPending = false;
+    showCard();
 }
 
 int main(int argc, char **argv)
@@ -164,6 +267,11 @@ int main(int argc, char **argv)
     recomp_runtime_set_lookup(recomp_program_lookup);
     recomp_input_adapter_reset();
     recomp_input_adapter_set_source(sampleInput);
+    recomp_d3d_present_hook = onSwap;
+    if (const char *card = std::getenv("RECOMP_DEDICATION_CARD"); card != nullptr && *card != '\0') {
+        if (loadCard(card)) recomp_kernel_read_hook = noteRead;
+        else std::fprintf(stderr, "recomp runner: dedication card is not a 24/32-bit BMP; skipped\n");
+    }
     if (!scriptedInputOnly) recomp_input_adapter_set_feedback_sink(recomp_input_host_set_vibration);
     std::atexit(recomp_input_host_stop_vibration);
     std::atexit(recomp_d3d8_shutdown);

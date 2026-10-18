@@ -48,7 +48,7 @@ add_executable(recomp_manual_test program_manual.c program_manual_test.c)
 add_test(NAME recomp-runtime-unbound-lookups COMMAND recomp_manual_test)
 
 add_executable(recomp_d3d8_adapter_test d3d8_adapter.c d3d8_adapter_test.c
-    d3d_device_model.c d3d_frame_model.c d3d_tile_model.c d3d_vertex_shader_model.c)
+    d3d_device_model.c d3d_frame_model.c d3d_tile_model.c d3d_vertex_shader_model.c d3d_card_model.c)
 add_test(NAME recomp-runtime-d3d8-adapter COMMAND recomp_d3d8_adapter_test)
 
 add_executable(recomp_d3d8_state_test d3d8_state_adapter.c d3d8_state_adapter_test.c
@@ -153,7 +153,7 @@ if(WIN32)
     target_link_libraries(recomp_d3d_presenter PUBLIC d3d11 d3dcompiler dxgi user32 recomp_keyboard)
     add_executable(recomp_d3d_capture_test d3d_presenter_capture_test.cpp d3d_presenter_capture.cpp)
     add_test(NAME recomp-runtime-d3d-capture COMMAND recomp_d3d_capture_test)
-    add_executable(recomp_d3d_presenter_test d3d_presenter_thread_test.cpp xapi_clock.cpp)
+    add_executable(recomp_d3d_presenter_test d3d_presenter_thread_test.cpp xapi_clock.cpp d3d_card_model.c)
     target_link_libraries(recomp_d3d_presenter_test PRIVATE recomp_d3d_presenter)
     add_test(NAME recomp-runtime-d3d-presenter COMMAND recomp_d3d_presenter_test)
     set_tests_properties(recomp-runtime-d3d-presenter PROPERTIES TIMEOUT 30)
@@ -297,7 +297,7 @@ if(RECOMP_PROGRAM_DIR)
     message(STATUS "Generated ${_missing_count} fail-loud stubs for absent snapshot bodies")
     add_executable(recomp_program_runner runner.cpp program_adapters.c program_manual.c
         d3d8_adapter.c d3d8_state_adapter.c d3d8_resource_adapter.c d3d8_draw_adapter.c
-        d3d_device_model.c d3d_light_model.c d3d_render_state_model.c
+        d3d_device_model.c d3d_light_model.c d3d_render_state_model.c d3d_card_model.c
         d3d_frame_model.c d3d_tile_model.c d3d_vertex_shader_model.c
         dsound_api_adapter.c dsound_device_model.c dsound_buffer_adapter.c
         dsound_buffer_model.c dsound_effects_adapter.c dsound_effects_image.c dsound_mix_model.c
