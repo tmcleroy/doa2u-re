@@ -18,7 +18,7 @@ What you need (Windows 10 or 11, 64-bit):
 - Your Disc 2 as an Xbox ISO, and about 5 GB of free space on the drive
   holding this folder.
 
-Build (once, about 10-20 minutes):
+Build (once, about 45 minutes; most of it is disassembly):
 
 1. Extract this ZIP to a folder with a short path, for example C:\DOA2U.
 2. Drag your Disc 2 ISO onto BuildGame.cmd. The ISO is only read.
