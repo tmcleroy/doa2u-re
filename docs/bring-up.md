@@ -519,7 +519,9 @@ for one frame TEXTURE0 holds infinities and NaNs. With camera-space position
 (w = 1) a non-finite translation makes every S and T non-finite, and CLAMP
 sends them to the texture edge. When every edge texel of a single-level DXT5
 texture has one exact value, the adapter samples that corner; other
-non-finite texture matrices stop.
+non-finite texture matrices stop. Only columns the SDK upload (0x34f7d0)
+sends for the stage's COUNT are checked: COUNT2 sends columns 0-1, so a
+non-finite _43 under camera-space reflection texgen is never read.
 MultiSampleMode and MultiSampleRenderTargetMode (0x3477a0/0x3477d0) store
 their guest shadow only. The game's 4X stencil pass on a one-sample back
 buffer shades fewer pixels, but it covers every sample, as the host's

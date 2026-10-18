@@ -777,8 +777,10 @@ static bool clamped_edge_transform(RecompD3dPresenterDrawCommand *draw)
     return true;
 }
 
-static bool reflection_inputs(uint32_t device, uint32_t texture_matrix, bool needs_normal,
-    RecompD3dPresenterDrawCommand *draw)
+/* columns: how many texture-matrix columns the SDK upload (0x34f7d0) sends for
+   the stage's TEXTURETRANSFORMFLAGS count; the rest never reach the GPU. */
+static bool reflection_inputs(uint32_t device, uint32_t texture_matrix, uint32_t columns,
+    bool needs_normal, RecompD3dPresenterDrawCommand *draw)
 {
     float world[16], view[16];
     recomp_guest_load(view, device + 0xc60u, sizeof view);
@@ -820,7 +822,7 @@ static bool reflection_inputs(uint32_t device, uint32_t texture_matrix, bool nee
     recomp_guest_load(draw->reflection_transform, device + texture_matrix, sizeof draw->reflection_transform);
     if (texture_matrix == 0xce0u && clamped_edge_transform(draw)) return true;
     for (uint32_t i = 0u; i < 16u; ++i)
-        if (!isfinite(draw->reflection_transform[i]))
+        if (i % 4u < columns && !isfinite(draw->reflection_transform[i]))
             recomp_stop(2, "d3d8:reflection-transform:fvf=%x:matrix=%x:field=%u:bits=%08x:tci=%x,%x:ret=%08x",
                 draw->fvf, texture_matrix, i, *recomp_memory_u32(device + texture_matrix + i * 4u),
                 *recomp_memory_u32(STAGES + 28u * 4u), *recomp_memory_u32(STAGES + 128u + 28u * 4u),
@@ -861,7 +863,7 @@ static bool attach_reflection(uint32_t device, const RecompD3dVertexLayout *layo
     draw->reflection_address_v = texture.address_v;
     draw->reflection_bytes = texture.texture_bytes;
     draw->reflection_byte_count = texture.texture_byte_count;
-    if (!reflection_inputs(device, 0xd20u,
+    if (!reflection_inputs(device, 0xd20u, 4u,
         layout->normal_offset != RECOMP_D3D_FVF_ABSENT && stages[1][28] == 0x30000u, draw)) return false;
     recomp_guest_load(draw->reflection_diffuse, device + 0xf00u, sizeof draw->reflection_diffuse);
     for (uint32_t i = 0u; i < 4u; ++i)
@@ -1033,7 +1035,8 @@ static bool fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
             if (draw->has_reflection && !draw->reflection_mesh_uv)
                 memcpy(draw->reflection_stage1_transform, draw->reflection_transform,
                     sizeof draw->reflection_stage1_transform);
-            if (!reflection_inputs(device, 0xce0u,
+            /* COUNT2 (case 0x320) uploads columns 0-1 and zeros; COUNT3 adds column 2. */
+            if (!reflection_inputs(device, 0xce0u, stage[0][21] & 0xffu,
                 texgen && layout->normal_offset != RECOMP_D3D_FVF_ABSENT, draw)) return false;
             draw->texgen_reflection = texgen;
             draw->texgen_projected = camera_position;

@@ -939,6 +939,14 @@ static int lighting_tests(void)
     CHECK(submitted.data.draw.texgen_reflection && !submitted.data.draw.has_reflection &&
         submitted.data.draw.reflection_transform[12] == 9.0f &&
         submitted.data.draw.reflection_world_view[12] == 5.0f);
+    /* COUNT2 never uploads column 2, so a stale all-ones _43 is unused. */
+    *recomp_memory_u32(DEVICE + 0xce0u + 14u * 4u) = 0xffffffffu;
+    invoke(0x348240u, 5u, 3u, VERTICES, 24u);
+    CHECK(submitted.data.draw.texgen_reflection && submitted.data.draw.reflection_transform[12] == 9.0f);
+    *recomp_memory_u32(DEVICE + 0xce0u + 13u * 4u) = 0xffffffffu;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 24u); return 1; }
+    CHECK(strstr(stop_reason, "d3d8:reflection-transform:fvf=142:matrix=ce0:field=13:") != NULL);
+    recomp_guest_store(DEVICE + 0xce0u, texture0, sizeof texture0);
     *recomp_memory_u32(STAGES + 21u * 4u) = 3u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 24u); return 1; }
     CHECK(strncmp(stop_reason, "d3d8:draw-texture-coordinates:", 29u) == 0 &&
