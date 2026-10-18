@@ -86,6 +86,8 @@ static bool testTicks()
     passed &= expect("partial clear", recomp_d3d_presenter_submit(presenter, &clear));
     passed &= expect("partial release", recomp_d3d_presenter_release_memory(
         presenter, 0x00200000u, 4096u));
+    passed &= expect("partial texture invalidation", recomp_d3d_presenter_invalidate_textures(
+        presenter, 0x00200000u, 4096u));
     passed &= expect("publish without present", recomp_d3d_presenter_flush(presenter, false));
     passed &= expect("wait idle", recomp_d3d_presenter_flush(presenter, true));
     passed &= expect("empty wait idle", recomp_d3d_presenter_flush(presenter, true));

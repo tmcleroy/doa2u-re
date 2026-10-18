@@ -4320,7 +4320,7 @@ RecompD3dPresenterError d3d11_backend_draw_coverage(
 }
 
 RecompD3dPresenterError d3d11_backend_release_memory(
-    RecompD3dPresenter *presenter, uint32_t base, uint32_t size)
+    RecompD3dPresenter *presenter, uint32_t base, uint32_t size, bool targets)
 {
     if (presenter == nullptr || presenter != active_presenter) {
         return RECOMP_D3D_PRESENTER_NOT_INITIALIZED;
@@ -4339,7 +4339,7 @@ RecompD3dPresenterError d3d11_backend_release_memory(
     const auto colors = presenter->render_targets.size();
     const auto depths = presenter->depth_targets.size();
     bool changed = false;
-    for (uint32_t i = 0u; i < presenter->render_targets.size();) {
+    for (uint32_t i = 0u; targets && i < presenter->render_targets.size();) {
         RenderTargetEntry &entry = presenter->render_targets[i];
         if (!released(entry.desc.data)) { ++i; continue; }
         releaseCom(entry.sample_view);
@@ -4349,7 +4349,7 @@ RecompD3dPresenterError d3d11_backend_release_memory(
         presenter->render_targets.pop_back();
         changed = true;
     }
-    for (uint32_t i = 0u; i < presenter->depth_targets.size();) {
+    for (uint32_t i = 0u; targets && i < presenter->depth_targets.size();) {
         DepthTargetEntry &entry = presenter->depth_targets[i];
         if (!released(entry.desc.data)) { ++i; continue; }
         releaseCom(entry.view);

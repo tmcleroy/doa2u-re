@@ -11,8 +11,9 @@ RecompD3dPresenterError d3d11_backend_submit(
    covered true; an open guest visibility query cannot include this probe. */
 RecompD3dPresenterError d3d11_backend_draw_coverage(
     RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand *draw, bool *covered);
+/* targets=false keeps render and depth targets and drops only cached textures. */
 RecompD3dPresenterError d3d11_backend_release_memory(
-    RecompD3dPresenter *presenter, uint32_t base, uint32_t size);
+    RecompD3dPresenter *presenter, uint32_t base, uint32_t size, bool targets);
 RecompD3dPresenterError d3d11_backend_destroy(RecompD3dPresenter **presenter);
 void d3d11_backend_set_immediate_present(bool enabled);
 void d3d11_backend_report_draw_textures();

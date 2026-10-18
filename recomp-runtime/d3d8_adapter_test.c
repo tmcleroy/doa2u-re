@@ -108,6 +108,12 @@ RecompD3dPresenterError recomp_d3d_presenter_release_memory(
     (void)presenter; (void)base; (void)size;
     return RECOMP_D3D_PRESENTER_OK;
 }
+RecompD3dPresenterError recomp_d3d_presenter_invalidate_textures(
+    RecompD3dPresenter *presenter, uint32_t base, uint32_t size)
+{
+    (void)presenter; (void)base; (void)size;
+    return RECOMP_D3D_PRESENTER_OK;
+}
 void recomp_d3d_wait_vblank(void) { ++wait_vblank_count; }
 static bool visibility_complete;
 static uint32_t visibility_pixels, visibility_queried;

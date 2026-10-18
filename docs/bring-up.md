@@ -149,11 +149,13 @@ buffers and surface views. Binding references retain storage independently
 of visible references. Native-created vertex buffers and mip surface wrappers
 have owned lifetimes; final destruction of external headers is guarded until
 their allocator is verified. Locks validate mip/rectangle spans. Write locks
-and texture registration invalidate native texture caches. Queued draws own
+retire native textures and rendered targets in their span. Registration drops
+only cached texture uploads: the attract demo re-registers a render-target
+texture between rendering and sampling it. Queued draws own
 all submitted vertex, index, palette and texture bytes, including non-linear
 formats. Cube/volume views and displaced swizzled locks remain unsupported.
 The XPR loader (FUN_00289f80) registers volume textures (a 64x64x8 A8R8G8B8
-map appears after a Story fight), so Register releases a swizzled,
+map appears after a Story fight), so Register invalidates a swizzled,
 uncompressed volume's full span: width x height x depth per level, each
 axis halving to 1. Stage-0 fixed-function FVF 0x142 draws can sample a
 single-level A8R8G8B8 volume through a native D3D11 Texture3D. The upload

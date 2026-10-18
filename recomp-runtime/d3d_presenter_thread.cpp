@@ -117,7 +117,9 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
                 break;
             }
             case D3dCapturePacket::RELEASE:
-                error = d3d11_backend_release_memory(backend, record.base, record.size);
+            case D3dCapturePacket::INVALIDATE:
+                error = d3d11_backend_release_memory(backend, record.base, record.size,
+                    record.kind == D3dCapturePacket::RELEASE);
                 break;
             case D3dCapturePacket::REPORT:
                 d3d11_backend_report_draw_textures();
@@ -353,6 +355,17 @@ RecompD3dPresenterError recomp_d3d_presenter_release_memory(
     error = status(thread);
     if (error != RECOMP_D3D_PRESENTER_OK) return error;
     return thread.packets[thread.open].addRelease(base, size);
+}
+
+RecompD3dPresenterError recomp_d3d_presenter_invalidate_textures(
+    RecompD3dPresenter *presenter, uint32_t base, uint32_t size)
+{
+    auto error = validate(presenter);
+    if (error != RECOMP_D3D_PRESENTER_OK) return error;
+    auto &thread = *active_thread;
+    error = status(thread);
+    if (error != RECOMP_D3D_PRESENTER_OK) return error;
+    return thread.packets[thread.open].addInvalidate(base, size);
 }
 
 RecompD3dPresenterError recomp_d3d_presenter_flush(RecompD3dPresenter *presenter, bool wait)

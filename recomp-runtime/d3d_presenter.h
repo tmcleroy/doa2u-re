@@ -341,6 +341,11 @@ RecompD3dPresenterError recomp_d3d_presenter_visibility_result(
 RecompD3dPresenterError recomp_d3d_presenter_release_memory(
     RecompD3dPresenter *presenter, uint32_t base, uint32_t size);
 
+/* Drop cached CPU texture uploads in a range but keep rendered color and depth
+   targets: re-registering a header over rendered memory leaves its pixels. */
+RecompD3dPresenterError recomp_d3d_presenter_invalidate_textures(
+    RecompD3dPresenter *presenter, uint32_t base, uint32_t size);
+
 /* Process-wide host pacing toggle. When enabled, presents use
    DXGI_PRESENT_DO_NOT_WAIT instead of vsync so the guest frame loop runs at
    CPU speed. The guest does not depend on wall-clock time (kernel waits are
