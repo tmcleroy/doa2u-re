@@ -571,8 +571,9 @@ static void wait_idle(void) { flush(true); recomp_runtime.registers.esp += 4u; }
 
 static void insert_fence(void)
 {
-    /* Complete queued native work before publishing a reusable-resource fence. */
-    flush(true);
+    /* Queued commands own copies of their bytes, so a fence is complete at once.
+       Draining here stalled the guest on the presenter's vsync every frame. */
+    recomp_d3d8_require_device();
     const uint32_t fence = *recomp_memory_u32(DEVICE + 0x2cu);
     *recomp_memory_u32(DEVICE + 0x2cu) = fence + 2u;
     recomp_runtime.registers.eax = fence;
@@ -581,8 +582,8 @@ static void insert_fence(void)
 
 static void block_on_fence(void)
 {
-    /* All returned fences have already completed; draining also orders new work. */
-    flush(true);
+    /* All returned fences have already completed; the queue keeps work ordered. */
+    recomp_d3d8_require_device();
     recomp_runtime.registers.esp += 8u;
 }
 

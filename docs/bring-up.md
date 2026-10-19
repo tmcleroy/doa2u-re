@@ -470,8 +470,8 @@ capacity across resolution and AA settings. Host color storage and resolve
 textures grow with those settings; D3D11 allocation failures remain explicit.
 
 KickPushBuffer publishes queued native commands. WaitForIdle drains them.
-InsertFence returns an even sequence after draining; BlockOnFence drains too.
-These synchronous fences order captured resource use without a console GPU.
+InsertFence returns an even sequence and BlockOnFence returns at once: queued
+commands own copies of their bytes, so every fence is already complete.
 They do not supply render-target readback or hardware timing parity.
 PersistDisplay retains the native displayed image, and same-mode Reset replaces
 the guest surface headers, viewport and scissors while preserving other state

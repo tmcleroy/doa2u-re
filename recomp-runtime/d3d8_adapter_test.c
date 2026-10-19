@@ -750,8 +750,8 @@ int main(void)
     arguments[0] = PARAMETERS;
     *recomp_memory_u32(DEVICE + 0x2cu) = 2u;
     passed &= call(0x3445f0u, arguments, 0u, NULL);
-    passed &= expect("insert completes queued work before returning fence", flush_count == 7u &&
-        flush_wait && recomp_runtime.registers.eax == 2u &&
+    passed &= expect("insert returns a fence without draining", flush_count == 6u &&
+        recomp_runtime.registers.eax == 2u &&
         recomp_runtime.registers.esp == ENTRY_ESP + 4u &&
         *recomp_memory_u32(DEVICE + 0x2cu) == 4u);
     passed &= call(0x3445f0u, arguments, 0u, NULL);
@@ -759,8 +759,8 @@ int main(void)
         *recomp_memory_u32(DEVICE + 0x2cu) == 6u);
     arguments[0] = 2u;
     passed &= call(0x344430u, arguments, 1u, NULL);
-    passed &= expect("fence wait drains and preserves void ABI", flush_count == 9u &&
-        flush_wait && recomp_runtime.registers.eax == EAX_SENTINEL &&
+    passed &= expect("fence wait returns at once and preserves void ABI", flush_count == 6u &&
+        recomp_runtime.registers.eax == EAX_SENTINEL &&
         recomp_runtime.registers.esp == ENTRY_ESP + 8u);
     /* 0x276d40 brackets a draw with Begin/End(index), inserts a WRITE
        callback (0x276b50) and polls the result on a later frame. */
