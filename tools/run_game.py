@@ -12,6 +12,8 @@ from build_game import ROOT, program_manifest, selected_xbe
 import dedication_card
 from extract_iso import sha256
 
+RELAUNCH = 4  # runner exit code for XLaunchNewImage of the game's own XBE
+
 
 def prepare_disc(source, disc):
     if disc.exists():
@@ -102,10 +104,15 @@ def run(seconds, start_polls=(), a_polls=(), isolated=False, buttons_polls=(), a
                 command.extend(["--input-buttons-pulse-at", str(poll), str(mask)])
             for poll, index in analog_polls:
                 command.extend(["--input-analog-pulse-at", str(poll), str(index)])
-            result = subprocess.run(command,
-                                    cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, timeout=seconds,
-                                    env=env)
-            code = result.returncode
+            code = RELAUNCH
+            # The game's soft reset relaunches its own XBE; a fresh runner is that cold boot.
+            while code == RELAUNCH:
+                result = subprocess.run(command,
+                                        cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, timeout=seconds,
+                                        env=env)
+                code = result.returncode
+                if seconds is not None:
+                    break
         except subprocess.TimeoutExpired:
             log.write("\nprobe timed out; child process terminated\n")
             code = 124

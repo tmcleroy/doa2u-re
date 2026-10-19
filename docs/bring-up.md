@@ -65,8 +65,13 @@ It uses the player's existing saves and physical controls with no time limit.
 Close the game window to exit. Session logs, including the runner identity and any
 runtime stop, are kept under `private/play-logs/`.
 The startup legal presentation is skipped automatically at its game-owned
-wrapper (`0xd92c0`), before its menu and asset setup. The first startup movie
-(`0xd9300`), opening movie and later story movies keep their normal controls.
+wrapper (`0xd92c0`), before its menu and asset setup. The logo movie
+(`0xd9300`) keeps its setup and teardown but omits its playback wait. The boot
+opening movie (scene 5, ticked by `0x69180`) ends on its first tick; attract
+replays and story movies keep their normal controls. The game's soft reset
+relaunches its own XBE through XLaunchNewImage (`0x2bab9d`); the runner exits
+with code 4 and `run_game.py` starts a fresh runner, so the relaunch boots
+like a cold start without its launch data.
 
 The optional dedication card (`RECOMP_DEDICATION_CARD`, set by `run_game.py`
 from `private/dedication.bmp`) starts on the first guest read of the staff

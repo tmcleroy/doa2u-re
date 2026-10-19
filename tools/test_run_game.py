@@ -6,7 +6,7 @@ import unittest
 import json
 import os
 import subprocess
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from run_game import prepare_disc, run
 
@@ -80,9 +80,14 @@ foreach ($enabled in @($true, $false)) {
                 self.assertEqual(execute.call_args.args[0], [
                     str(root / "build/recomp-program/Release/recomp_program_runner.exe"),
                     "--xbe", str(disc / selected.name), "--disc-root", str(disc)])
+                # A soft-reset relaunch starts one more runner in the same session log.
+                execute.reset_mock()
+                execute.side_effect = [Mock(returncode=4), Mock(returncode=0)]
+                self.assertEqual(run(None), 0)
+                self.assertEqual(execute.call_count, 2)
             self.assertEqual(save.read_text(), "user save")
             logs = list((root / "private/play-logs").glob("*.log"))
-            self.assertEqual(len(logs), 5)
+            self.assertEqual(len(logs), 6)
             self.assertIn("runner_sha256=hash", logs[0].read_text())
 
     def test_isolated_probe_uses_separate_saves_and_scripted_input(self):
