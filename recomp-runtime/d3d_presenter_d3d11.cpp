@@ -661,6 +661,8 @@ struct RecompD3dPresenter {
     // RECOMP_PERF_COUNTER pacing: present-to-present gaps within the second.
     double last_present_ms = 0.0;
     double present_call_max_ms = 0.0;
+    double texture_create_ms = 0.0;  // cache-miss texture builds within the second
+    unsigned textures_created = 0u;
     std::vector<double> present_gaps;
     // Display refreshes each present stayed on screen (DXGI statistics), 1..8+.
     unsigned refresh_holds[9]{};
@@ -675,6 +677,11 @@ struct RecompD3dPresenter {
     bool first_present_reported = false;
     unsigned frame_dump_count = 0u;
     ULONGLONG next_frame_dump_ms = 0u;
+    /* RECOMP_D3D_DRAW_LOG names a trigger file: when it appears, the next
+       frame's draws are logged, that frame is saved beside it, and it is deleted. */
+    const char *draw_log_trigger = nullptr;
+    bool draw_log_active = false;
+    unsigned draw_log_index = 0u;
 };
 
 namespace {
@@ -2568,6 +2575,16 @@ ID3D11ShaderResourceView *lookupTexture(
     }
     const DXGI_FORMAT format = linear_bgra
         ? DXGI_FORMAT_B8G8R8A8_UNORM : hostTextureFormat(desc.format_byte);
+    struct CreateTimer {
+        RecompD3dPresenter *presenter;
+        std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        ~CreateTimer()
+        {
+            presenter->texture_create_ms += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start).count();
+            ++presenter->textures_created;
+        }
+    } create_timer{presenter};
     if (format == DXGI_FORMAT_UNKNOWN || draw.texture_bytes == nullptr ||
         draw.texture_byte_count == 0u || (desc.linear && !linear_bgra)) {
         return nullptr;
@@ -3493,6 +3510,10 @@ bool frameDumpDue(ULONGLONG now, unsigned interval_ms, ULONGLONG &next)
     return true;
 }
 
+void writeBackBufferBmp(
+    RecompD3dPresenter *presenter, const char *path, uint32_t present_count,
+    ID3D11Texture2D *source = nullptr);
+
 /* RECOMP_D3D_FRAME_DUMP names the BMP path; AT and COUNT select presents.
    INTERVAL_MS optionally spaces captures in host time. Capture stays inside
    the renderer, without cross-process window painting or missed-frame bursts. */
@@ -3540,8 +3561,19 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
         path = burst_path;
     }
 
+    writeBackBufferBmp(presenter, path, present_count);
+    presenter->next_frame_dump_ms = GetTickCount64() + interval_ms;
+}
+
+void writeBackBufferBmp(
+    RecompD3dPresenter *presenter, const char *path, uint32_t present_count,
+    ID3D11Texture2D *source)
+{
     ID3D11Texture2D *back_buffer = nullptr;
-    if (FAILED(presenter->swap_chain->GetBuffer(
+    if (source != nullptr) {
+        back_buffer = source;
+        back_buffer->AddRef();
+    } else if (FAILED(presenter->swap_chain->GetBuffer(
             0u, __uuidof(ID3D11Texture2D),
             reinterpret_cast<void **>(&back_buffer)))) {
         return;
@@ -3617,7 +3649,6 @@ void dumpBackBufferOnce(RecompD3dPresenter *presenter, uint32_t present_count)
     }
     staging->Release();
     back_buffer->Release();
-    presenter->next_frame_dump_ms = GetTickCount64() + interval_ms;
 }
 
 RecompD3dPresenterError submitGamma(
@@ -3981,6 +4012,33 @@ RecompD3dPresenterError submitPresent(
     }
     // Capture the rendered buffer before flip presentation releases it.
     dumpBackBufferOnce(presenter, presenter->present_count + 1u);
+    if (presenter->draw_log_active) {
+        char path[1024];
+        std::snprintf(path, sizeof path, "%s-%u.bmp",
+            presenter->draw_log_trigger, presenter->present_count + 1u);
+        writeBackBufferBmp(presenter, path, presenter->present_count + 1u);
+        // Offscreen targets too (reflections, glow), as their single-sample views hold them.
+        for (RenderTargetEntry &entry : presenter->render_targets) {
+            ID3D11Resource *resource = nullptr;
+            entry.sample_view->GetResource(&resource);
+            if (entry.multisampled && !entry.resolved) {
+                ID3D11Resource *rendered = nullptr;
+                entry.render_view->GetResource(&rendered);
+                presenter->context->ResolveSubresource(resource, 0u, rendered, 0u, DXGI_FORMAT_B8G8R8A8_UNORM);
+                releaseCom(rendered);
+                entry.resolved = true;
+            }
+            std::snprintf(path, sizeof path, "%s-%u-rt%08x.bmp", presenter->draw_log_trigger,
+                presenter->present_count + 1u, entry.desc.data);
+            writeBackBufferBmp(presenter, path, presenter->present_count + 1u,
+                static_cast<ID3D11Texture2D *>(resource));
+            releaseCom(resource);
+        }
+        std::fprintf(stderr, "recomp draw log: end present=%u draws=%u\n",
+            presenter->present_count + 1u, presenter->draw_log_index);
+        presenter->draw_log_active = false;
+        DeleteFileA(presenter->draw_log_trigger);
+    }
     /* Keep the presented guest frame for GetBackBuffer(-1) once a draw has used it. */
     if (presenter->previous_frame != nullptr) {
         ID3D11ShaderResourceView *none = nullptr;
@@ -4026,6 +4084,12 @@ RecompD3dPresenterError submitPresent(
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
     ++presenter->present_count;
+    if (presenter->draw_log_trigger != nullptr && !presenter->draw_log_active &&
+        GetFileAttributesA(presenter->draw_log_trigger) != INVALID_FILE_ATTRIBUTES) {
+        presenter->draw_log_active = true;
+        presenter->draw_log_index = 0u;
+        std::fprintf(stderr, "recomp draw log: begin present=%u\n", presenter->present_count + 1u);
+    }
     DXGI_FRAME_STATISTICS stats{};
     const HRESULT stats_result = presenter->present_log != nullptr || presenter->performance_counter
         ? presenter->swap_chain->GetFrameStatistics(&stats) : E_FAIL;
@@ -4067,15 +4131,19 @@ RecompD3dPresenterError submitPresent(
                 late += gap > frame_ms * 1.5;
             }
             std::fprintf(stderr, "recomp performance: tick_ms=%llu present=%u fps=%.2f frame_ms=%.3f "
-                "max_ms=%.1f late=%u present_max_ms=%.1f holds=%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+                "max_ms=%.1f late=%u present_max_ms=%.1f holds=%u,%u,%u,%u,%u,%u,%u,%u,%u "
+                "tex_new=%u tex_ms=%.1f\n",
                 static_cast<unsigned long long>(now), presenter->present_count, fps, frame_ms,
                 max_ms, late, presenter->present_call_max_ms,
                 presenter->refresh_holds[0], presenter->refresh_holds[1], presenter->refresh_holds[2],
                 presenter->refresh_holds[3], presenter->refresh_holds[4], presenter->refresh_holds[5],
-                presenter->refresh_holds[6], presenter->refresh_holds[7], presenter->refresh_holds[8]);
+                presenter->refresh_holds[6], presenter->refresh_holds[7], presenter->refresh_holds[8],
+                presenter->textures_created, presenter->texture_create_ms);
             std::fill(std::begin(presenter->refresh_holds), std::end(presenter->refresh_holds), 0u);
             presenter->present_gaps.clear();
             presenter->present_call_max_ms = 0.0;
+            presenter->texture_create_ms = 0.0;
+            presenter->textures_created = 0u;
         }
     }
 
@@ -4178,6 +4246,7 @@ RecompD3dPresenterError d3d11_backend_create(
     created->widescreen = widescreen != nullptr && std::strcmp(widescreen, "0") != 0;
     const char *performance = std::getenv("RECOMP_PERF_COUNTER");
     created->performance_counter = performance != nullptr && std::strcmp(performance, "1") == 0;
+    created->draw_log_trigger = std::getenv("RECOMP_D3D_DRAW_LOG");
     if (const char *scale = std::getenv("RECOMP_D3D_SCALE")) {
         const float value = static_cast<float>(std::atof(scale));
         if (std::isfinite(value)) created->scale = std::clamp(value, 1.0f, 8.0f);
@@ -4234,6 +4303,50 @@ RecompD3dPresenterError d3d11_backend_create(
     return RECOMP_D3D_PRESENTER_OK;
 }
 
+static void logDraw(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &d,
+    RecompD3dPresenterError result, double us)
+{
+    const auto describe = [](bool on, const RecompD3dTextureDesc &t, char (&out)[48]) {
+        if (on) std::snprintf(out, sizeof out, "%02x:%ux%u@%08x%s", t.format_byte,
+            t.width, t.height, t.data, t.render_target ? "rt" : "");
+    };
+    char tex[48] = "-", mask[48] = "-", refl[48] = "-", refl2[48] = "-", target[48] = "back";
+    describe(d.has_texture, d.texture, tex);
+    describe(d.has_alpha_mask, d.alpha_mask, mask);
+    describe(d.has_reflection || d.bump_env || d.bump_water || d.distortion, d.reflection_texture, refl);
+    describe(d.reflection_stage2, d.reflection_stage2_texture, refl2);
+    describe(d.target.offscreen, d.target.color, target);
+    const struct { bool on; const char *name; } features[] = {
+        {d.directional.enabled, "light"}, {d.blend_weight_count != 0u, "skin"},
+        {d.texgen_reflection, "texgen"}, {d.texgen_projected, "proj"},
+        {d.texture_transform_uv, "uvxf"}, {d.reflection_mesh_uv, "reflmesh"},
+        {d.distortion, "distort"}, {d.bump_env, "bump"}, {d.bump_water, "water"},
+        {d.four_tap_filter, "4tap"}, {d.bright_pass, "bright"}, {d.luminance_tint, "lumtint"},
+        {d.alpha_kill, "akill"}, {d.stage1_alpha_mask, "s1mask"},
+        {d.texture_is_backbuffer, "fromback"}, {d.texture_is_front_buffer, "fromfront"},
+        {d.has_scissor, "scissor"}, {d.target.no_depth, "nodepth"}};
+    char flags[192] = "";
+    size_t used = 0u;
+    for (const auto &feature : features) {
+        if (feature.on && used < sizeof flags)
+            used += std::snprintf(flags + used, sizeof flags - used, "%s%s", used ? "," : "", feature.name);
+    }
+    std::fprintf(stderr,
+        "recomp draw: present=%u n=%u us=%.1f err=%d prim=%u idx=%u tri=%u vtx=%u stride=%u "
+        "fvf=%08x prog=%u tex=%s mask=%s refl=%s refl2=%s target=%s blend=%d:%d/%d/%d "
+        "depth=%d%d:%d atest=%d:%d:%u cull=%d vp=%g,%g,%g,%g flags=%s\n",
+        presenter->present_count + 1u, presenter->draw_log_index, us, static_cast<int>(result),
+        d.primitive_type, d.index_count, d.triangle_count, d.vertex_count, d.vertex_stride,
+        d.fvf, d.program_count, tex, mask, refl, refl2, target,
+        d.blend.blend_enable ? 1 : 0, static_cast<int>(d.blend.src_factor),
+        static_cast<int>(d.blend.dst_factor), static_cast<int>(d.blend.op),
+        d.depth.depth_test_enable ? 1 : 0, d.depth.depth_write_enable ? 1 : 0,
+        static_cast<int>(d.depth.depth_func), d.depth.alpha_test_enable ? 1 : 0,
+        static_cast<int>(d.depth.alpha_func), d.depth.alpha_ref, static_cast<int>(d.cull_mode),
+        d.viewport[0], d.viewport[1], d.viewport[2], d.viewport[3], flags[0] ? flags : "-");
+    ++presenter->draw_log_index;
+}
+
 RecompD3dPresenterError d3d11_backend_submit(
     RecompD3dPresenter *presenter,
     const RecompD3dPresenterCommand *command)
@@ -4256,6 +4369,16 @@ RecompD3dPresenterError d3d11_backend_submit(
     case RECOMP_D3D_PRESENTER_COMMAND_PRESENT:
         return submitPresent(presenter, command->data.present);
     case RECOMP_D3D_PRESENTER_COMMAND_DRAW:
+        if (presenter->draw_log_active) {
+            LARGE_INTEGER frequency{}, start{}, end{};
+            QueryPerformanceFrequency(&frequency);
+            QueryPerformanceCounter(&start);
+            const RecompD3dPresenterError result = submitDraw(presenter, command->data.draw);
+            QueryPerformanceCounter(&end);
+            logDraw(presenter, command->data.draw, result,
+                1e6 * static_cast<double>(end.QuadPart - start.QuadPart) / frequency.QuadPart);
+            return result;
+        }
         return submitDraw(presenter, command->data.draw);
     case RECOMP_D3D_PRESENTER_COMMAND_VISIBILITY_BEGIN:
         return beginVisibility(presenter);
