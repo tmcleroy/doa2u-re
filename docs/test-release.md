@@ -25,11 +25,12 @@ Build (once, about 45 minutes; most of it is disassembly):
 3. Wait for "Build complete". The build is checked against the exact
    program the developers tested; any difference stops the build.
 
-Play: double-click play.cmd, pick resolution, MSAA, SMAA and widescreen,
-and press Play; it remembers your choices. Widescreen uses the game's own
-16:9 camera and menus. The first boot copies the game's archives into its
-cache and shows a black window for about 12 minutes; later boots start
-normally. Saves and the cache live in private\play-disc.
+Play: double-click play.cmd, pick resolution, MSAA, SMAA, widescreen and
+whether to skip the intro movies, and press Play; it remembers your
+choices. Widescreen uses the game's own 16:9 camera and menus. The first
+boot copies the game's archives into its cache and shows a black window
+for about 12 minutes; later boots start normally. Saves and the cache live
+in private\play-disc. Start + Back + both triggers resets the game.
 
 Every character and costume is unlocked, and the game saves the unlocks
 to your profile. Before the Story staff roll, a 10-second card honors the
@@ -42,10 +43,12 @@ controllers SDL3 supports). The keyboard drives player 1:
     A = X    S = Y    Z = A    X = B
     Q = White    W = Black    E = Left trigger    R = Right trigger
 
-Known limits: this is bring-up software. Story mode and the attract demo
+Known limits: this is bring-up software. Story, Watch and the attract demo
 play in development runs, but many modes, stages and characters have not
 been tried. A draw the port cannot render yet stops the game, and the log
-says why.
+says why. The Xbox Live menus stop the game, as there is no online service.
+A demanding moment on The Burai Zenin can still drop a single frame, and
+the safari stage's heat haze does not ripple yet.
 
 Reporting problems: open an issue at
 https://github.com/NoRain211/doa2u-re/issues and say what you did and what

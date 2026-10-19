@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="https://github.com/NoRain211/doa2u-re/releases/download/readme-media/doa2u-logo.png" alt="Dead or Alive 2 Ultimate logo" width="420">
+
 # DOA2U Native PC Port
 
 **A native Windows port of _Dead or Alive 2 Ultimate_ (Xbox), built by static recompilation, with the goal of rewriting it into readable source.**
@@ -10,6 +12,7 @@
 ![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D6)
 
 [Download](https://github.com/NoRain211/doa2u-re/releases/latest) ·
+[Features](#features) ·
 [Bring-up notes](docs/bring-up.md) ·
 [Report a bug](https://github.com/NoRain211/doa2u-re/issues)
 
@@ -36,25 +39,58 @@ keeps running.
 The port carries a short card in memory of Tomonobu Itagaki, shown before the
 Story staff roll.
 
+## Features
+
+- **The whole game, recompiled.** Boot, menus, character select, Story,
+  Watch and the attract demo run on the original game code, lifted to C.
+- **Native renderer.** Direct3D 11 at 480p to 4K, the game's own 16:9
+  widescreen camera and menus, MSAA up to 32x and SMAA Ultra. Water
+  reflections render at the output resolution; bloom and lighting follow the
+  game's own passes.
+- **Xbox-like pacing.** Frames flip on the next refresh as on the Xbox, at
+  60 fps, including heavy rain-stage fights at 4K.
+- **Audio and movies.** Music and voices through XAudio2, with 3D voices
+  through the game's HRTF tables and I3DL2 reverb. The intro and story
+  movies play.
+- **Controllers.** Xbox, PlayStation and other SDL3 controllers, and the
+  keyboard for player 1.
+- **Launcher.** `play.cmd` picks resolution, anti-aliasing, widescreen and an
+  optional intro-movie skip, and remembers them.
+- **Saves.** Your profile and unlocks save to `private\play-disc`; every
+  character and costume starts unlocked. The game's soft reset
+  (Start + Back + both triggers) restarts it.
+- **Built from your disc.** `BuildGame.cmd` lifts the game from your ISO and
+  refuses any executable other than the one the developers tested.
+
 ## Status
 
 > [!WARNING]
-> **0.1 Alpha is bring-up software.** Story mode and the attract demo play in
-> development runs, but many modes, stages and characters have not been tried.
-> A draw the port cannot render yet stops the game with a message in the log.
+> **0.1 Alpha is bring-up software.** Story, Watch and the attract demo play
+> in development runs, but many modes, stages and characters have not been
+> tried. A draw the port cannot render yet stops the game with a message in
+> the log.
 
 | Area | State |
 | --- | --- |
 | Boot, menus, attract demo, character select | Working |
 | Story, Kasumi | Played through the final fight, ending, credits and CG Gallery unlock (with the `--story-finale` shortcut) |
 | Story, Ayane and Gen Fu | Stages 1-6 cleared without a stop in scripted runs; the Tengu fight was lost each time |
-| Other characters, Versus, Tag, Survival, Time Attack, Sparring | Not yet tried |
+| Watch | Fights played, including Kasumi vs Lei Fang on The Burai Zenin at 4K and 60 fps |
+| Other characters, Versus, Tag, Survival, Time Attack, Sparring | Not yet played through |
 | Every character and costume | Unlocked; the game saves the unlocks to your profile |
 | Native 16:9 widescreen, up to 4K, MSAA up to 32x, SMAA Ultra | Working, chosen in the launcher |
 | Audio, including 3D voices and reverb | Working |
+| Intro and story movies | Play; the launcher can skip the intro ones |
 | Xbox and other SDL3 controllers, keyboard | Working; keyboard drives player 1 |
+| Xbox Live menus | Stop the game; there is no online service |
 | Hand-written game logic | Not started; the game runs as generated code |
 | macOS and Linux | Planned ([ADR 0001](docs/adr/0001-three-platform-targets.md)) |
+
+**Known issues:** a demanding moment on The Burai Zenin can still drop a
+single frame; the safari stage's heat haze does not ripple yet, and its water
+leaves a gap between the elephants' reflections. The game's bloom glows
+around bright surfaces as on the Xbox, which reads more strongly on a sharp
+4K image.
 
 ## Play the alpha
 
