@@ -95,11 +95,17 @@ through one fight, the Tengu scenes and fight, the dedication card, the ending
 with credits, the epilogue and the CG Gallery unlock without a stop. Other
 characters' Story lengths are unverified.
 
-The first boot copies about 700 MB of disc archives into the `Z:` cache
-partition, 32 KB per frame, while drawing only cleared frames. At the native
-pace this takes roughly 12 minutes and shows a black window. The cache lives in
-`private/play-disc/.recomp-storage/partition5`. A probe stopped before all
-three archives finish leaves a partial install that the next boot repeats.
+On first boot the game installs `voice.afs`, `datahdd.afs` and `datahdd2.afs`
+(about 700 MB) from `D:\doa2` to the `Z:` cache. `check_hdd_install`
+(`0xf6cc0`) accepts a cached archive whose size matches the disc's (the host
+reports no file times outside save profiles). Otherwise `hdd_install_thread`
+(`0xf70c0`) streams it 32 KB at a time behind `g_hdd_install_gate`
+(`0x8a9920`: 0 runs, 1 asks to pause, -1 is paused, 2 stops), and ADX init
+holds the boot on a black screen until `voice.afs` is in; measured on this
+runtime that alone took six minutes. `run_game.py` therefore copies the three
+archives into `private/play-disc/.recomp-storage/partition5` before launch,
+replacing any of the wrong size. They are copies, not hardlinks: the installer
+reopens a stale archive with `CREATE_ALWAYS`.
 
 The CRT remainder intrinsic at `0x336dfe` is replaced as a whole with native
 `fmod`. It consumes the x87 divisor at ST(0) and dividend at ST(1), returns

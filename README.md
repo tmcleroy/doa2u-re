@@ -111,8 +111,8 @@ and your Disc 2 ISO with about 5 GB free.
 3. Run `play.cmd`, pick resolution, MSAA, SMAA, widescreen and whether to
    skip the intro movies, then press **Play**. Your choices are remembered.
 
-The first boot copies the game's archives into its cache and shows a black
-window for about 12 minutes; later boots start normally. Saves and the cache
+The first launch copies about 700 MB of the game's disc archives into its
+hard-disk cache, which takes a few seconds. Saves and the cache
 live in `private\play-disc`. The package contains tools and source, never a
 prebuilt runner or game data. GitHub's automatic source archives lack the
 pinned lifter and extractor; use the release ZIP.

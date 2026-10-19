@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import uuid
@@ -13,6 +14,8 @@ import dedication_card
 from extract_iso import sha256
 
 RELAUNCH = 4  # runner exit code for XLaunchNewImage of the game's own XBE
+# The archives check_hdd_install (0xf6cc0) expects on Z:, copied there by hdd_install_thread.
+HDD_ARCHIVES = ("voice.afs", "datahdd.afs", "datahdd2.afs")
 
 
 def prepare_disc(source, disc):
@@ -31,6 +34,24 @@ def prepare_disc(source, disc):
             destination.parent.mkdir(parents=True, exist_ok=True)
             os.link(path, destination)
     staging.rename(disc)
+
+
+def seed_hdd_cache(disc):
+    """Copy the disc archives the game would install to Z: on first boot.
+
+    The game's own install streams them 32 KB at a time and holds the boot for
+    minutes; with matching sizes, check_hdd_install accepts the cache at once.
+    Copies, not hardlinks: the installer reopens a stale file with CREATE_ALWAYS.
+    """
+    cache = disc / ".recomp-storage/partition5"
+    for name in HDD_ARCHIVES:
+        source, target = disc / "doa2" / name, cache / name
+        if not source.is_file() or (target.is_file() and target.stat().st_size == source.stat().st_size):
+            continue
+        cache.mkdir(parents=True, exist_ok=True)
+        partial = target.with_name(name + ".tmp")
+        shutil.copyfile(source, partial)
+        partial.replace(target)
 
 
 def run(seconds, start_polls=(), a_polls=(), isolated=False, buttons_polls=(), analog_polls=(),
@@ -71,6 +92,7 @@ def run(seconds, start_polls=(), a_polls=(), isolated=False, buttons_polls=(), a
     # A finale run clears Story, so it keeps its unlocks out of the player's saves.
     disc = ROOT / ("private/probe-disc" if isolated or story_finale else "private/play-disc")
     prepare_disc(selected.parent, disc)
+    seed_hdd_cache(disc)
     xbe = disc / selected.name
     if sha256(xbe) != sha256(selected):
         raise ValueError("Play disc belongs to a different game import")

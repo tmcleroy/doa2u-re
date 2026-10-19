@@ -8,7 +8,7 @@ import os
 import subprocess
 from unittest.mock import Mock, patch
 
-from run_game import prepare_disc, run
+from run_game import prepare_disc, run, seed_hdd_cache
 
 
 class DiscTests(unittest.TestCase):
@@ -180,6 +180,24 @@ foreach ($enabled in @($true, $false)) {
             with self.assertRaises(FileExistsError):
                 prepare_disc(source, disc)
             self.assertFalse(disc.exists())
+
+    def test_seeds_hdd_cache_with_copies_and_replaces_partial_archives(self):
+        with tempfile.TemporaryDirectory() as folder:
+            disc = Path(folder)
+            (disc / "doa2").mkdir()
+            for name in ("voice.afs", "datahdd.afs", "datahdd2.afs"):
+                (disc / "doa2" / name).write_bytes(name.encode() * 3)
+            cache = disc / ".recomp-storage/partition5"
+            cache.mkdir(parents=True)
+            (cache / "datahdd.afs").write_bytes(b"partial")
+            (cache / "voice.afs").write_bytes(b"x" * len(b"voice.afs" * 3))
+            seed_hdd_cache(disc)
+            self.assertEqual((cache / "datahdd.afs").read_bytes(), b"datahdd.afs" * 3)
+            self.assertEqual((cache / "datahdd2.afs").read_bytes(), b"datahdd2.afs" * 3)
+            # A complete-size archive is the game's own install; it is kept.
+            self.assertEqual((cache / "voice.afs").read_bytes(), b"x" * 27)
+            self.assertFalse((cache / "datahdd2.afs").samefile(disc / "doa2/datahdd2.afs"))
+            self.assertEqual(list(cache.glob("*.tmp")), [])
 
     def test_rejects_a_stale_runner_before_preparing_disc(self):
         with tempfile.TemporaryDirectory() as folder:

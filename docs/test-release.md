@@ -28,9 +28,9 @@ Build (once, about 45 minutes; most of it is disassembly):
 Play: double-click play.cmd, pick resolution, MSAA, SMAA, widescreen and
 whether to skip the intro movies, and press Play; it remembers your
 choices. Widescreen uses the game's own 16:9 camera and menus. The first
-boot copies the game's archives into its cache and shows a black window
-for about 12 minutes; later boots start normally. Saves and the cache live
-in private\play-disc. Start + Back + both triggers resets the game.
+launch copies about 700 MB of the game's disc archives into its hard-disk
+cache, which takes a few seconds. Saves and the cache live in
+private\play-disc. Start + Back + both triggers resets the game.
 
 Every character and costume is unlocked, and the game saves the unlocks
 to your profile. Before the Story staff roll, a 10-second card honors the
