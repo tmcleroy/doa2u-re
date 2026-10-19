@@ -36,9 +36,6 @@ XAudio2 and SDL3. The rest of the game still runs as generated code. The plan
 is to replace game logic with readable, hand-written source while the game
 keeps running.
 
-The port carries a short card in memory of Tomonobu Itagaki, shown before the
-Story staff roll.
-
 ## Features
 
 - **The whole game, recompiled.** Boot, menus, character select, Story,
@@ -170,9 +167,8 @@ highest count the GPU supports. Arguments to `play.cmd` bypass the settings
 window. The build fetches pinned, hash-verified copies of SDL3 and
 [upstream SMAA](https://github.com/iryoku/smaa).
 
-The dedication card is built at first launch from
-`private/dedication-photo.jpg` (shipped in the release ZIP) with Pillow,
-drawing the name in the game's fight-screen capitals read from your disc.
+At first launch `run_game.py` builds an image from
+`private/dedication-photo.jpg` (shipped in the release ZIP) with Pillow.
 `python tools/run_game.py --play --story-finale` is a debug shortcut to the
 ending that uses separate probe saves.
 
@@ -183,7 +179,7 @@ python tools/package_test.py 0.1.1-Alpha
 ```
 
 It zips committed HEAD, the pinned lifter, extract-xiso and its license, and
-the dedication photo from `private/release-assets/`, with
+the photo from `private/release-assets/`, with
 [test-release.md](docs/test-release.md) as `README.txt`.
 
 ## Repository layout

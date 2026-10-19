@@ -33,8 +33,7 @@ cache, which takes a few seconds. Saves and the cache live in
 private\play-disc. Start + Back + both triggers resets the game.
 
 Every character and costume is unlocked, and the game saves the unlocks
-to your profile. Before the Story staff roll, a 10-second card honors the
-memory of Tomonobu Itagaki.
+to your profile.
 
 Controls: the first connected controller (Xbox, PlayStation and other
 controllers SDL3 supports). The keyboard drives player 1:
