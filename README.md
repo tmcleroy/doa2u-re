@@ -66,13 +66,14 @@ Story staff roll.
 
 > [!WARNING]
 > **0.1 Alpha is bring-up software.** Story, Watch and the attract demo play
-> in development runs, but many modes, stages and characters have not been
-> tried. A draw the port cannot render yet stops the game with a message in
-> the log.
+> in development runs on every stage, but many modes and characters have not
+> been tried. A draw the port cannot render yet stops the game with a message
+> in the log.
 
 | Area | State |
 | --- | --- |
 | Boot, menus, attract demo, character select | Working |
+| Stages | Every stage played |
 | Story, Kasumi | Played through the final fight, ending, credits and CG Gallery unlock (with the `--story-finale` shortcut) |
 | Story, Ayane and Gen Fu | Stages 1-6 cleared without a stop in scripted runs; the Tengu fight was lost each time |
 | Watch | Fights played, including Kasumi vs Lei Fang on The Burai Zenin at 4K and 60 fps |

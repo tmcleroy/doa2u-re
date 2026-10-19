@@ -44,8 +44,8 @@ controllers SDL3 supports). The keyboard drives player 1:
     Q = White    W = Black    E = Left trigger    R = Right trigger
 
 Known limits: this is bring-up software. Story, Watch and the attract demo
-play in development runs, but many modes, stages and characters have not
-been tried. A draw the port cannot render yet stops the game, and the log
+play in development runs on every stage, but many modes and characters
+have not been tried. A draw the port cannot render yet stops the game, and the log
 says why. The Xbox Live menus stop the game, as there is no online service.
 A demanding moment on The Burai Zenin can still drop a single frame, and
 the safari stage's heat haze does not ripple yet.
