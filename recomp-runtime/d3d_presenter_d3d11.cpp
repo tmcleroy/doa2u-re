@@ -545,6 +545,7 @@ struct RenderTargetEntry {
     ID3D11RenderTargetView *render_view;
     ID3D11ShaderResourceView *sample_view;
     bool multisampled;
+    bool resolved;  // sample_view holds every write since the last resolve
     uint64_t bytes;
 };
 
@@ -1365,6 +1366,7 @@ RecompD3dPresenterError bindTarget(
                 desc.data, desc.format_byte, desc.width, desc.height);
         }
         color_view = entry->render_view;
+        entry->resolved = false;
         width = desc.width;
         height = desc.height;
     }
@@ -2487,7 +2489,8 @@ ID3D11ShaderResourceView *lookupTexture(
     }
 
     if (RenderTargetEntry *entry = findRenderTarget(presenter, desc)) {
-        if (entry->multisampled) {
+        // Full-frame effects sample one target many times per frame; resolve after writes only.
+        if (entry->multisampled && !entry->resolved) {
             ID3D11Resource *source = nullptr, *resolved = nullptr;
             entry->render_view->GetResource(&source);
             entry->sample_view->GetResource(&resolved);
@@ -2495,6 +2498,7 @@ ID3D11ShaderResourceView *lookupTexture(
                 DXGI_FORMAT_B8G8R8A8_UNORM);
             releaseCom(source);
             releaseCom(resolved);
+            entry->resolved = true;
         }
         return entry->sample_view;
     }

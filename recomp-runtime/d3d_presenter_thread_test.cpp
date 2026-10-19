@@ -2729,11 +2729,77 @@ static bool testQueuedDrawCoverage()
     else std::fprintf(stderr, "FAIL queued coverage result\n");
     return passed;
 }
+// A full-frame MSAA target sampled, redrawn and sampled again must show the redraw.
+static bool testResampledMsaaTarget()
+{
+    char folder[MAX_PATH], path[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "rs", 0, path)) return false;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", path);
+    _putenv_s("RECOMP_D3D_SCALE", "2");
+    _putenv_s("RECOMP_D3D_MSAA", "4");
+    RecompD3dPresenter *presenter = nullptr;
+    bool passed = expect("create resampled target", d3d11_backend_create(&config, &presenter));
+    if (passed) {
+        RecompD3dPresenterTarget target{};
+        target.offscreen = true;
+        target.color.data = 0x10000u;
+        target.color.format_byte = 0x12u;
+        target.color.bits_per_pixel = 32u;
+        target.color.width = 320u; target.color.height = 240u; target.color.pitch = 1280u;
+        target.color.linear = true;
+        const float quad[4][7] = {{0,0,0,1,0,0,0}, {320,0,0,1,0,320,0},
+            {0,240,0,1,0,0,240}, {320,240,0,1,0,320,240}};
+        const uint16_t indices[] = {0,1,2,3};
+        RecompD3dPresenterCommand composite{RECOMP_D3D_PRESENTER_COMMAND_DRAW};
+        auto &draw = composite.data.draw;
+        draw.fvf = 0x144u;
+        draw.vertex_stride = sizeof quad[0];
+        draw.vertex_count = draw.index_count = 4u;
+        draw.triangle_count = 2u;
+        draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+        draw.vertex_bytes = quad;
+        draw.index_bytes = indices;
+        draw.blend.color_write_mask = 15u;
+        draw.has_texture = true;
+        draw.texture = target.color;
+        draw.address_u = draw.address_v = 3u;
+        draw.directional.stage_mode = true;
+        draw.directional.stage[0] = draw.directional.stage[3] = 1u;
+        for (const uint32_t color : {0xffff0000u, 0xff00ff00u}) {
+            auto clear = clearCommand();
+            clear.data.clear.target = target;
+            clear.data.clear.clear_depth = false;
+            clear.data.clear.color = color;
+            passed &= expect("resampled target clear", d3d11_backend_submit(presenter, &clear));
+            passed &= expect("resampled target composite", d3d11_backend_submit(presenter, &composite));
+        }
+        RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
+        present.data.present = {5u, 1u};
+        passed &= expect("resampled present", d3d11_backend_submit(presenter, &present));
+        passed &= expect("resampled release", d3d11_backend_release_memory(presenter, 0x10000u, 4096u, true));
+    }
+    d3d11_backend_destroy(&presenter);
+    unsigned char bgr[3]{};
+    if (FILE *file = std::fopen(path, "rb")) {
+        std::fseek(file, 54 + 239 * 1920 + 320 * 3, SEEK_SET);
+        passed &= std::fread(bgr, 1, 3, file) == 3;
+        std::fclose(file);
+    } else passed = false;
+    passed &= bgr[0] < 8u && bgr[1] > 247u && bgr[2] < 8u;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
+    _putenv_s("RECOMP_D3D_SCALE", "");
+    _putenv_s("RECOMP_D3D_MSAA", "");
+    DeleteFileA(path);
+    std::fprintf(passed ? stdout : stderr, "%s resampled MSAA target shows its redraw BGR=%u,%u,%u\n",
+        passed ? "PASS" : "FAIL", bgr[0], bgr[1], bgr[2]);
+    return passed;
+}
 
 int main()
 {
     recomp_d3d_presenter_set_immediate_present(false);
-    if (!testWidescreenAntialiasing(false, false) || !testWidescreenAntialiasing(true, false) ||
+    if (!testResampledMsaaTarget() ||
+        !testWidescreenAntialiasing(false, false) || !testWidescreenAntialiasing(true, false) ||
         !testWidescreenAntialiasing(false, true) || !testWidescreenAntialiasing(true, true) ||
         !testWidescreenAntialiasing(false, false, 1080u) || !testWidescreenAntialiasing(true, true, 1080u, 32u) ||
         !testDrawCoverage() || !testDrawCoverage(true) || !testQueuedDrawCoverage() ||
