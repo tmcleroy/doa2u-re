@@ -12,6 +12,7 @@
 #include "xbox_memory_layout.h"
 extern "C" {
 #include "kernel_abi.h"
+#include "program_manual.h"
 #include "stop_report.h"
 RecompFunction recomp_program_lookup(std::uint32_t address);
 }
@@ -209,6 +210,10 @@ int main(int argc, char **argv)
             storyFinale = true;
             continue;
         }
+        if (argument == "--skip-intro") {
+            recomp_skip_intro = true;
+            continue;
+        }
         if (argument == "--input-start-pulse-at" && i + 1 < argc) {
             const std::string value = argv[++i];
             std::uint64_t poll = 0u;
@@ -291,7 +296,7 @@ int main(int argc, char **argv)
                 " [--input-buttons-pulse-at <poll> <decimal-mask>]"
                 " [--input-analog-pulse-at <poll> <button-index>]"
                 " [--input-analog-pulse-every <first-poll> <period> <last-poll> <button-index>]"
-                " [--input-script-only] [--story-finale]\n";
+                " [--input-script-only] [--story-finale] [--skip-intro]\n";
             return 64;
         }
         const std::string value = argv[++i];

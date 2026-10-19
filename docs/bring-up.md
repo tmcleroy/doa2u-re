@@ -65,10 +65,11 @@ It uses the player's existing saves and physical controls with no time limit.
 Close the game window to exit. Session logs, including the runner identity and any
 runtime stop, are kept under `private/play-logs/`.
 The startup legal presentation is skipped automatically at its game-owned
-wrapper (`0xd92c0`), before its menu and asset setup. The logo movie
-(`0xd9300`) keeps its setup and teardown but omits its playback wait. The boot
-opening movie (scene 5, ticked by `0x69180`) ends on its first tick; attract
-replays and story movies keep their normal controls. The game's soft reset
+wrapper (`0xd92c0`), before its menu and asset setup. The intro movies play
+unless `--skip-intro` (the launcher's **Skip intro movies**) is set. Then the
+logo movie (`0xd9300`) keeps its setup and teardown but omits its playback
+wait, and the boot opening movie (scene 5, ticked by `0x69180`) ends on its
+first tick; attract replays and story movies still play. The game's soft reset
 relaunches its own XBE through XLaunchNewImage (`0x2bab9d`); the runner exits
 with code 4 and `run_game.py` starts a fresh runner, so the relaunch boots
 like a cold start without its launch data.

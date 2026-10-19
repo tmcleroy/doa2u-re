@@ -4,6 +4,11 @@
 
 #include "runtime.h"
 
+#include <stdbool.h>
+
+/* --skip-intro: omit the logo movie's playback wait and end the boot opening movie. */
+extern bool recomp_skip_intro;
+
 RecompFunction recomp_lookup_manual(uint32_t guest_address);
 
 #endif

@@ -71,8 +71,8 @@ and your Disc 2 ISO with about 5 GB free.
 2. Drag your Disc 2 ISO onto `BuildGame.cmd` and wait for **Build complete**
    (about 45 minutes). The build stops unless it reproduces the exact program
    the developers tested.
-3. Run `play.cmd`, pick resolution, MSAA, SMAA and widescreen, then press
-   **Play**. Your choices are remembered.
+3. Run `play.cmd`, pick resolution, MSAA, SMAA, widescreen and whether to
+   skip the intro movies, then press **Play**. Your choices are remembered.
 
 The first boot copies the game's archives into its cache and shows a black
 window for about 12 minutes; later boots start normally. Saves and the cache

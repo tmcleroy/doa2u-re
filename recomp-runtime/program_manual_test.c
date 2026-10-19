@@ -220,6 +220,9 @@ static int test_launch_new_image(void)
 
 int main(void)
 {
+    /* The movie skips are opt-in. */
+    if (recomp_lookup_manual(0x000d9300u) != NULL || recomp_lookup_manual(0x00069180u) != NULL) return 1;
+    recomp_skip_intro = true;
     if (!test_fmod() || !test_startup_legal_skip() || !test_startup_logo_skip() ||
         !test_boot_opening_skip() || !test_launch_new_image()) return 1;
     RecompFunction init_segment = recomp_lookup_manual(0x002bd531u);

@@ -29,16 +29,17 @@ foreach ($enabled in @($true, $false)) {
     $settingsPath = Join-Path $env:RECOMP_LAUNCHER_TEST_ROOT 'launcher.json'
     $resolution.SelectedIndex = if ($enabled) { 4 } else { 0 }
     $msaa.SelectedIndex = if ($enabled) { 5 } else { 4 }
-    $smaa.Checked = $widescreen.Checked = $enabled
+    $smaa.Checked = $widescreen.Checked = $skipIntro.Checked = $enabled
     Invoke-Expression $tail
     $saved = Get-Content $settingsPath -Raw | ConvertFrom-Json
     $height = if ($enabled) { 2160 } else { 480 }
     $count = if ($enabled) { 32 } else { 16 }
     if ($saved.height -ne $height -or $saved.msaa -ne $count -or
-        $saved.smaa -ne $enabled -or $saved.widescreen -ne $enabled) { throw 'Wrong saved graphics settings' }
+        $saved.smaa -ne $enabled -or $saved.widescreen -ne $enabled -or
+        $saved.skipIntro -ne $enabled) { throw 'Wrong saved graphics settings' }
     $wide = if ($enabled) { '--widescreen' } else { '--no-widescreen' }
     $smaaOption = if ($enabled) { '--smaa' } else { '--no-smaa' }
-    $expected = "--play --resolution $height --msaa $count $wide $smaaOption"
+    $expected = "--play --resolution $height --msaa $count $wide $smaaOption" + $(if ($enabled) { ' --skip-intro' } else { '' })
     if (($launched[1..($launched.Count - 1)] -join ' ') -ne $expected) { throw 'Wrong runner options' }
 }
 '''
@@ -80,6 +81,8 @@ foreach ($enabled in @($true, $false)) {
                 self.assertEqual(execute.call_args.args[0], [
                     str(root / "build/recomp-program/Release/recomp_program_runner.exe"),
                     "--xbe", str(disc / selected.name), "--disc-root", str(disc)])
+                self.assertEqual(run(None, skip_intro=True), 0)
+                self.assertEqual(execute.call_args.args[0][-1], "--skip-intro")
                 # A soft-reset relaunch starts one more runner in the same session log.
                 execute.reset_mock()
                 execute.side_effect = [Mock(returncode=4), Mock(returncode=0)]
@@ -87,7 +90,7 @@ foreach ($enabled in @($true, $false)) {
                 self.assertEqual(execute.call_count, 2)
             self.assertEqual(save.read_text(), "user save")
             logs = list((root / "private/play-logs").glob("*.log"))
-            self.assertEqual(len(logs), 6)
+            self.assertEqual(len(logs), 7)
             self.assertIn("runner_sha256=hash", logs[0].read_text())
 
     def test_isolated_probe_uses_separate_saves_and_scripted_input(self):

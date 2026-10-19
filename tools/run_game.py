@@ -34,7 +34,8 @@ def prepare_disc(source, disc):
 
 
 def run(seconds, start_polls=(), a_polls=(), isolated=False, buttons_polls=(), analog_polls=(),
-        widescreen=None, msaa=None, smaa=None, resolution=None, story_finale=False):
+        widescreen=None, msaa=None, smaa=None, resolution=None, story_finale=False,
+        skip_intro=False):
     if seconds is not None and seconds <= 0:
         raise ValueError("Probe duration must be positive")
     if msaa is not None and msaa not in (1, 2, 4, 8, 16, 32):
@@ -96,6 +97,8 @@ def run(seconds, start_polls=(), a_polls=(), isolated=False, buttons_polls=(), a
                 command.append("--input-script-only")
             if story_finale:
                 command.append("--story-finale")
+            if skip_intro:
+                command.append("--skip-intro")
             for poll in start_polls:
                 command.extend(["--input-start-pulse-at", str(poll)])
             for poll in a_polls:
@@ -144,12 +147,14 @@ if __name__ == "__main__":
                         metavar=("POLL", "INDEX"), help="Press A/B/X/Y/Black/White/LTrig/RTrig (0..7)")
     parser.add_argument("--story-finale", action="store_true",
                         help="Debug: Story skips to its last fights with each CPU at 1 life")
+    parser.add_argument("--skip-intro", action="store_true",
+                        help="Skip the logo and opening movies at boot")
     args = parser.parse_args()
     try:
         raise SystemExit(run(None if args.play else args.seconds, args.input_start_pulse_at,
                              args.input_a_pulse_at, args.isolated, args.input_buttons_pulse_at,
                              args.input_analog_pulse_at, args.widescreen, args.msaa, args.smaa,
-                             args.resolution, args.story_finale))
+                             args.resolution, args.story_finale, args.skip_intro))
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         print(f"Cannot run game: {error}", file=sys.stderr)
         raise SystemExit(1)

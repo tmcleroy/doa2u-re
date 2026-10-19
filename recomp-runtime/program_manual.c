@@ -75,6 +75,7 @@ static void skip_startup_logo(void)
 }
 
 static bool boot_opening_pending = true;
+bool recomp_skip_intro;
 
 static void movie_scene_tick(void)
 {
@@ -117,8 +118,8 @@ static void launch_new_image(void)
 RecompFunction recomp_lookup_manual(uint32_t guest_address)
 {
     if (guest_address == 0x000d92c0u) return skip_startup_legal;
-    if (guest_address == 0x000d9300u) return skip_startup_logo;
-    if (guest_address == 0x00069180u) return movie_scene_tick;
+    if (recomp_skip_intro && guest_address == 0x000d9300u) return skip_startup_logo;
+    if (recomp_skip_intro && guest_address == 0x00069180u) return movie_scene_tick;
     if (guest_address == 0x002bab9du) return launch_new_image;
     if (guest_address == 0x00336dfeu) return crt_fmod_intrinsic;
     if (guest_address == 0x002bd531u) return host_kernel_init_segment;
