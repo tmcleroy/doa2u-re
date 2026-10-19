@@ -33,6 +33,10 @@ call for the main game. Before analysis, call `list_binaries` and verify
 the target's Project Path and executable identity. If renamed or
 reimported, resolve its new path; never rely on the active tab.
 `program_name="/DOA2U-default.xbe"` is for launcher analysis only.
+Name functions and globals in Ghidra as you identify them, in snake_case
+for what they do (e.g. `hdd_install_thread`, `g_hdd_install_gate`); leave
+nothing you have confirmed as `FUN_`/`DAT_`. GhidrAssistMCP cannot save, so
+ask the user to save the program (Ctrl+S) after naming.
 
 ## Custody and disk use
 
