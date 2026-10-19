@@ -1,5 +1,6 @@
 #include "d3d_presenter_capture.h"
 #include "d3d_presenter_d3d11_backend.h"
+#include "d3d_vblank.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -44,6 +45,9 @@ struct PresenterThread {
     bool pacing = false;
     double last_frame_ms = 0.0;
     double frame_max_ms = 0.0;
+    double busy_max_ms = 0.0;  // game frame minus its vblank sleeps: the guest's own CPU work
+    double busy_total_ms = 0.0;
+    unsigned frames = 0u;
     double queue_wait_ms = 0.0;
     ULONGLONG pacing_start = 0u;
 
@@ -244,17 +248,28 @@ double clock_ms()
 void notePacing(PresenterThread &thread, double wait_start_ms, double wait_end_ms)
 {
     if (thread.last_frame_ms != 0.0) {
-        thread.frame_max_ms = (std::max)(thread.frame_max_ms, wait_start_ms - thread.last_frame_ms);
+        const double frame_ms = wait_start_ms - thread.last_frame_ms;
+        const double busy_ms = (std::max)(0.0, frame_ms - recomp_d3d_vblank_wait_ms);
+        thread.frame_max_ms = (std::max)(thread.frame_max_ms, frame_ms);
+        thread.busy_max_ms = (std::max)(thread.busy_max_ms, busy_ms);
+        thread.busy_total_ms += busy_ms;
+        ++thread.frames;
     }
+    recomp_d3d_vblank_wait_ms = 0.0;
     thread.last_frame_ms = wait_end_ms;
     thread.queue_wait_ms += wait_end_ms - wait_start_ms;
     const ULONGLONG now = GetTickCount64();
     if (thread.pacing_start == 0u) thread.pacing_start = now;
     if (now - thread.pacing_start < 1000u) return;
-    std::fprintf(stderr, "recomp pacing: tick_ms=%llu tick_max_ms=%.1f queue_wait_ms=%.1f\n",
-        static_cast<unsigned long long>(now), thread.frame_max_ms, thread.queue_wait_ms);
+    std::fprintf(stderr, "recomp pacing: tick_ms=%llu tick_max_ms=%.1f queue_wait_ms=%.1f "
+        "busy_avg_ms=%.1f busy_max_ms=%.1f\n",
+        static_cast<unsigned long long>(now), thread.frame_max_ms, thread.queue_wait_ms,
+        thread.frames != 0u ? thread.busy_total_ms / thread.frames : 0.0, thread.busy_max_ms);
     thread.pacing_start = now;
     thread.frame_max_ms = 0.0;
+    thread.busy_max_ms = 0.0;
+    thread.busy_total_ms = 0.0;
+    thread.frames = 0u;
     thread.queue_wait_ms = 0.0;
 }
 
@@ -341,7 +356,10 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         return error;
     }
     error = thread.packets[thread.open].add(*command);
+    if (thread.pacing) ++recomp_d3d_submit_count;
     if (error != RECOMP_D3D_PRESENTER_OK) return error;
+    if (thread.pacing && command->type == RECOMP_D3D_PRESENTER_COMMAND_PRESENT)
+        recomp_d3d_submit_mb = thread.packets[thread.open].bytes() / 1048576.0;
     return command->type == RECOMP_D3D_PRESENTER_COMMAND_PRESENT
         ? publish(thread, false) : RECOMP_D3D_PRESENTER_OK;
 }

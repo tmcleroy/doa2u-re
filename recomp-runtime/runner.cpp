@@ -195,6 +195,7 @@ static void onSwap(std::uint32_t frame)
 int main(int argc, char **argv)
 {
     recomp_install_host_diagnostics();
+    recomp_d3d_frame_breakdown = recomp_kernel_thread_times;
     std::string xbePath, discRoot, expectStop, milestoneLog;
     recomp_input_pulse_source_init(&inputPulses, recomp_input_host_sample, 0u);
     for (int i = 1; i < argc; ++i) {

@@ -553,6 +553,7 @@ void recomp_d3d8_present_card(const uint32_t *pixels, uint32_t width, uint32_t h
 static void block_until_vertical_blank(void)
 {
     recomp_d3d8_require_device();
+    recomp_d3d_note_block(*recomp_memory_u32(recomp_runtime.registers.esp));
     recomp_d3d_wait_vblank();
     recomp_runtime.registers.esp += 4u;
 }

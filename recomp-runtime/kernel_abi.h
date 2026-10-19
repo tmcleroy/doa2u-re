@@ -80,6 +80,7 @@ uint32_t recomp_kernel_current_thread_id(void);
 uint32_t recomp_kernel_close_thread_handle(uint32_t handle);
 void recomp_kernel_run_threads(void);
 void recomp_kernel_wait_for_vblank(uint64_t deadline_ns);
+void recomp_kernel_thread_times(char *out, size_t size);
 RecompFunction recomp_kernel_video(uint32_t ordinal);
 RecompFunction recomp_kernel_file(uint32_t ordinal);
 bool recomp_kernel_save_handles_closed(uint32_t owner);

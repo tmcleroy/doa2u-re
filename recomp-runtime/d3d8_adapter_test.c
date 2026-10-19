@@ -115,6 +115,7 @@ RecompD3dPresenterError recomp_d3d_presenter_invalidate_textures(
     return RECOMP_D3D_PRESENTER_OK;
 }
 void recomp_d3d_wait_vblank(void) { ++wait_vblank_count; }
+void recomp_d3d_note_block(uint32_t return_address) { (void)return_address; }
 static bool visibility_complete;
 static uint32_t visibility_pixels, visibility_queried;
 RecompD3dPresenterError recomp_d3d_presenter_visibility_result(

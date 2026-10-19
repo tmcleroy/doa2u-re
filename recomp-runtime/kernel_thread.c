@@ -71,6 +71,37 @@ static GuestThread threads[MAX_THREADS] = {
 static unsigned current_thread;
 static bool scheduler_started;
 
+/* RECOMP_PERF_COUNTER frame breakdown: host QPC ticks each guest thread ran,
+   and ticks the scheduler slept with nothing runnable, since the last report. */
+static int64_t run_ticks[MAX_THREADS], idle_ticks, slice_start;
+
+static void charge_slice(bool idle)
+{
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    if (slice_start != 0) {
+        if (idle) idle_ticks += now.QuadPart - slice_start;
+        else run_ticks[current_thread] += now.QuadPart - slice_start;
+    }
+    slice_start = now.QuadPart;
+}
+
+/* Appends " idle=<ms> <handle>=<ms>..." for threads that ran at least 0.5 ms, then resets. */
+void recomp_kernel_thread_times(char *out, size_t size)
+{
+    LARGE_INTEGER frequency;
+    QueryPerformanceFrequency(&frequency);
+    const double ms = 1000.0 / (double)frequency.QuadPart;
+    charge_slice(false);
+    size_t used = (size_t)snprintf(out, size, " idle=%.1f", idle_ticks * ms);
+    idle_ticks = 0;
+    for (unsigned i = 0u; i < MAX_THREADS; ++i) {
+        if (run_ticks[i] * ms >= 0.5 && used < size)
+            used += (size_t)snprintf(out + used, size - used, " %08x=%.1f", threads[i].handle, run_ticks[i] * ms);
+        run_ticks[i] = 0;
+    }
+}
+
 uint32_t recomp_kernel_current_thread_id(void)
 {
     return threads[current_thread].handle;
@@ -309,6 +340,7 @@ static void switch_thread(unsigned index)
     GuestThread *outgoing = &threads[current_thread];
     GuestThread *target = &threads[index];
     if (target == outgoing) return;
+    charge_slice(false);
     outgoing->registers = recomp_runtime.registers;
     recomp_fpu_context_save(&outgoing->fpu);
     recomp_guest_load(outgoing->fs, XBOX_PCR_BASE, sizeof outgoing->fs);
@@ -377,6 +409,7 @@ static void schedule(void)
             recomp_xapi_skip_wait(earliest * 100u)) continue;
         /* With no runnable thread, sleep until the first deadline. */
         uint64_t now = interrupt_time();
+        charge_slice(false);
         uint64_t ms = earliest == UINT64_MAX ? 1000u
             : earliest > now ? (earliest - now + 9999u) / 10000u : 1u;
         if (earliest != UINT64_MAX && earliest > now) {
@@ -391,10 +424,12 @@ static void schedule(void)
             if (idle_timer != NULL &&
                 SetWaitableTimer(idle_timer, &due, 0, NULL, NULL, FALSE)) {
                 WaitForSingleObject(idle_timer, INFINITE);
+                charge_slice(true);
                 continue;
             }
         }
         Sleep((DWORD)(ms > 1000u ? 1000u : ms));
+        charge_slice(true);
     }
 }
 
