@@ -123,6 +123,7 @@ typedef struct RecompD3dPresenterDrawCommand {
     float program_constants[192][4];
     bool program_alpha_mask;
     float program_mask_lod_bias;
+    /* Capture copies all but enabled/normalize/stage_mode/count/stage only when enabled. */
     RecompD3dDirectionalLighting directional;
     const void *vertex_bytes;
     const void *index_bytes;
@@ -256,6 +257,8 @@ typedef struct RecompD3dPresenterDrawCommand {
     float reflection_mip_lod_bias;
     const void *reflection_bytes;
     uint32_t reflection_byte_count;
+    /* Capture copies through reflection_diffuse only with has_reflection,
+       texgen_reflection, texture_transform_uv or texgen_projected. */
     float reflection_world_view[16];
     float reflection_normal[16];
     float reflection_blend_world_view[3][16];

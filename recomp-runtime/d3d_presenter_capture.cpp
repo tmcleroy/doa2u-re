@@ -45,13 +45,20 @@ void copyCommand(RecompD3dPresenterCommand &to, const RecompD3dPresenterCommand 
         to = from;
         return;
     }
-    // Fixed-function draws never read the 5 KiB program arrays.
-    constexpr size_t head = offsetof(Draw, program);
-    constexpr size_t tail = offsetof(Draw, program_alpha_mask);
+    using Lighting = RecompD3dDirectionalLighting;
+    const Draw &draw = from.data.draw;
+    Draw &out = to.data.draw;
     to.type = from.type;
-    std::memcpy(&to.data.draw, &from.data.draw, head);
-    std::memcpy(reinterpret_cast<char *>(&to.data.draw) + tail,
-        reinterpret_cast<const char *>(&from.data.draw) + tail, sizeof(Draw) - tail);
+    constexpr size_t lighting = offsetof(Draw, directional);
+    copyRange(out, draw, 0u, offsetof(Draw, program));
+    copyRange(out, draw, offsetof(Draw, program_alpha_mask), lighting + (draw.directional.enabled
+        ? sizeof(Lighting) : offsetof(Lighting, normal_transforms)));
+    // Unlit stage_mode draws still read the stage selection.
+    if (!draw.directional.enabled) std::memcpy(out.directional.stage, draw.directional.stage, sizeof draw.directional.stage);
+    copyRange(out, draw, lighting + sizeof(Lighting), offsetof(Draw, reflection_world_view));
+    if (draw.has_reflection || draw.texgen_reflection || draw.texture_transform_uv || draw.texgen_projected)
+        copyRange(out, draw, offsetof(Draw, reflection_world_view), offsetof(Draw, reflection_stage2));
+    copyRange(out, draw, offsetof(Draw, reflection_stage2), sizeof(Draw));
 }
 
 } // namespace

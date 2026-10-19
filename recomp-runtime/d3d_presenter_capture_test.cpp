@@ -171,6 +171,13 @@ int main()
     value.data.draw.texture.format_byte = value.data.draw.alpha_mask.format_byte =
         value.data.draw.reflection_texture.format_byte = 0x12u;
     for (size_t i = 0u; i < sources.size(); ++i) value.data.draw.*fields[i] = sources[i].data();
+    // Lit and reflective: the guarded sections are captured.
+    value.data.draw.directional.enabled = true;
+    value.data.draw.has_reflection = true;
+    value.data.draw.reflection_world_view[12] = 3.0f;
+    value.data.draw.reflection_blend_normal[2][15] = 4.0f;
+    value.data.draw.reflection_stage1_transform[3] = 5.0f;
+    value.data.draw.reflection_diffuse[2] = 0.5f;
     value.data.draw.directional.world_transforms[3][14] = 12.0f;
     value.data.draw.directional.positions[7][2] = 30.0f;
     value.data.draw.directional.positions[7][3] = 1.0f;
@@ -179,10 +186,17 @@ int main()
     value.data.draw.directional.ambient[7][0] = 0.25f;
     CHECK(packet.add(value) == RECOMP_D3D_PRESENTER_OK);
     value.data.draw.directional = {};
+    // Unlit stage selection without reflection keeps the stage and flags.
+    value.data.draw.directional.stage_mode = true;
+    value.data.draw.directional.stage[2] = 1.0f;
+    value.data.draw.has_reflection = false;
     value.data.draw.texture.format_byte = 0u; // Swizzled uploads also own their bytes.
     CHECK(packet.add(value) == RECOMP_D3D_PRESENTER_OK);
     for (auto field : fields) value.data.draw.*field = nullptr;
     value.data.draw.texture_byte_count = 12u;
+    // Projected texgen alone still reads the reflection matrices.
+    value.data.draw.texgen_projected = true;
+    value.data.draw.reflection_transform[5] = 2.5f;
     CHECK(packet.add(value) == RECOMP_D3D_PRESENTER_OK);
     packet.seal();
     CHECK(packet.count() == 8u);
@@ -205,6 +219,14 @@ int main()
     CHECK(packet.command(5).data.draw.directional.attenuation[7][1] == 0.05f);
     CHECK(packet.command(5).data.draw.directional.attenuation[7][3] == 100.0f);
     CHECK(packet.command(5).data.draw.directional.ambient[7][0] == 0.25f);
+    CHECK(packet.command(5).data.draw.directional.enabled && packet.command(5).data.draw.has_reflection);
+    CHECK(packet.command(5).data.draw.reflection_world_view[12] == 3.0f);
+    CHECK(packet.command(5).data.draw.reflection_blend_normal[2][15] == 4.0f);
+    CHECK(packet.command(5).data.draw.reflection_stage1_transform[3] == 5.0f);
+    CHECK(packet.command(5).data.draw.reflection_diffuse[2] == 0.5f);
+    CHECK(!packet.command(6).data.draw.directional.enabled && !packet.command(6).data.draw.has_reflection);
+    CHECK(packet.command(6).data.draw.directional.stage_mode && packet.command(6).data.draw.directional.stage[2] == 1.0f);
+    CHECK(packet.command(7).data.draw.texgen_projected && packet.command(7).data.draw.reflection_transform[5] == 2.5f);
     CHECK(packet.command(6).data.draw.texture_bytes != sources[2].data());
     CHECK(packet.command(6).data.draw.vertex_bytes != sources[0].data());
     packet.clear();
