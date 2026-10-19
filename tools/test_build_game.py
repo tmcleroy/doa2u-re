@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from build_game import import_disc, program_manifest, selected_xbe
+from build_game import import_disc, lifter_revision, program_manifest, selected_xbe
 from extract_iso import sha256
 
 
@@ -72,6 +72,15 @@ class BuildTests(unittest.TestCase):
                 iso.write_bytes(b"synthetic image")
                 with self.assertRaises(ValueError):
                     import_disc(iso)
+
+    def test_packaged_lifter_uses_the_export_pin(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "lifter").mkdir()
+            links = [dict(path="tools/xboxrecomp", commit="a" * 40)]
+            (root / "public-export.json").write_text(json.dumps(dict(gitlinks=links)))
+            with patch("build_game.ROOT", root), patch("build_game.LIFTER", root / "lifter"):
+                self.assertEqual(lifter_revision(), "a" * 40)
 
 
 if __name__ == "__main__":

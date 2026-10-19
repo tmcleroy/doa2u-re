@@ -43,6 +43,17 @@ def program_manifest(generated):
     return hashlib.sha256(manifest.encode("utf-8")).hexdigest(), ebp
 
 
+def lifter_revision():
+    if not (LIFTER / ".git").exists():
+        # A release ZIP ships the pinned lifter as plain files, without Git.
+        manifest = json.loads((ROOT / "public-export.json").read_text(encoding="utf-8"))
+        return next(link["commit"] for link in manifest["gitlinks"] if link["path"] == "tools/xboxrecomp")
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=LIFTER, text=True).strip()
+    if subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"], cwd=LIFTER):
+        raise ValueError("Commit lifter changes and update its pin before generating")
+    return revision
+
+
 def import_disc(iso):
     """Extract a user's ISO once into private/imported-disc and select its game executable."""
     if not iso.is_file():
@@ -92,9 +103,7 @@ def build(build_only=False, lift_only=False, iso=None):
                 raise ValueError(f"Updated Capstone to {CAPSTONE}; run the build again")
     import capstone
     xbe = selected_xbe()
-    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=LIFTER, text=True).strip()
-    if subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"], cwd=LIFTER):
-        raise ValueError("Commit lifter changes and update its pin before generating")
+    revision = lifter_revision()
     seeds = ROOT / "tools/doa2u/seed_functions.json"
     recipe = dict(xbe_sha256=sha256(xbe), lifter_commit=revision, capstone=capstone.__version__,
                   seed_functions_sha256=sha256(seeds))
