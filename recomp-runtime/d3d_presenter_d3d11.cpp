@@ -389,18 +389,26 @@ int buildDrawShaderSource(
               "        shaded = input.color * float4(rgb, alpha);\n"
               "    } else\n"
             : has_texcoord
-            /* NV2A Gaussian-cubic: nine level-0 taps at one guest texel, 1-2-1 weights. */
+            /* NV2A Gaussian-cubic: nine level-0 taps at one guest texel, 1-2-1 weights.
+               A scaled back buffer has n host texels per guest texel; each tap box-averages
+               them so thin highlights match the guest image instead of aliasing into halos. */
             ? "    if (filter_flags.x > 1.5f) {\n"
               "        float l = dot(guest_texture.Sample(guest_sampler, input.texcoord * texture_flags.xy).rgb,\n"
               "            filter_constants[0].rgb);\n"
               "        shaded = saturate(filter_constants[1] * clamp(l, -1.0f, 1.0f));\n"
               "    } else if (filter_flags.x > 0.5f) {\n"
               "        float2 uv = input.texcoord * texture_flags.xy;\n"
+              "        float tw, th;\n"
+              "        guest_texture.GetDimensions(tw, th);\n"
+              "        int2 n = clamp(int2(ceil(float2(tw, th) * filter_texel.xy - 0.01f)), 1, 8);\n"
               "        float4 t0 = 0.0f;\n"
               "        [unroll] for (int y = -1; y <= 1; ++y)\n"
               "            [unroll] for (int x = -1; x <= 1; ++x)\n"
-              "                t0 += (2 - abs(x)) * (2 - abs(y)) / 16.0f *\n"
-              "                    guest_texture.SampleLevel(guest_sampler, uv + float2(x, y) * filter_texel.xy, 0);\n"
+              "                [loop] for (int j = 0; j < n.y; ++j)\n"
+              "                    [loop] for (int i = 0; i < n.x; ++i)\n"
+              "                        t0 += (2 - abs(x)) * (2 - abs(y)) / (16.0f * n.x * n.y) *\n"
+              "                            guest_texture.SampleLevel(guest_sampler, uv + (float2(x, y) +\n"
+              "                                (float2(i, j) + 0.5f) / float2(n) - 0.5f) * filter_texel.xy, 0);\n"
               "        shaded = saturate(2.0f * (t0 - filter_constants[0]) - 1.0f);\n"
               "    } else\n" : "",
         /* The fixed-function diffuse default is white. Preserve texture alpha
