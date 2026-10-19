@@ -158,13 +158,21 @@ static uint32_t stream_vertices(uint32_t first, uint32_t *stride)
     return (uint32_t)offset;
 }
 
-static void multiply(const float left[16], const float right[16], float result[16])
+static void multiply(const float left[16], const float right[16], float result[16], const char *site)
 {
     for (uint32_t row = 0u; row < 4u; ++row) {
         for (uint32_t column = 0u; column < 4u; ++column) {
             float value = 0.0f;
             for (uint32_t k = 0u; k < 4u; ++k) value += left[row * 4u + k] * right[k * 4u + column];
-            if (!isfinite(value)) recomp_stop(2, "d3d8:nonfinite-transform");
+            if (!isfinite(value)) {
+                uint32_t bad_left = 0u, bad_right = 0u;
+                for (uint32_t i = 0u; i < 16u; ++i) {
+                    bad_left += !isfinite(left[i]);
+                    bad_right += !isfinite(right[i]);
+                }
+                recomp_stop(2, "d3d8:nonfinite-transform:%s:cell=%u:left=%u:right=%u:ret=%08x", site,
+                    row * 4u + column, bad_left, bad_right, *recomp_memory_u32(recomp_runtime.registers.esp));
+            }
             result[row * 4u + column] = value;
         }
     }
@@ -790,7 +798,7 @@ static bool reflection_inputs(uint32_t device, uint32_t texture_matrix, uint32_t
         float *wv = i == 0u ? draw->reflection_world_view : draw->reflection_blend_world_view[i - 1u];
         float *normal = i == 0u ? draw->reflection_normal : draw->reflection_blend_normal[i - 1u];
         recomp_guest_load(world, device + 0xde0u + i * 64u, sizeof world);
-        multiply(world, view, wv);
+        multiply(world, view, wv, "reflection-world-view");
         /* Position texgen and the no-normal reflection shader never read an inverse. */
         if (!needs_normal) continue;
         if (!recomp_d3d_normal_transform(wv, normal)) {
@@ -1343,7 +1351,7 @@ static uint8_t *point_sprites(uint32_t device, const RecompD3dVertexLayout *layo
     recomp_guest_load(world, device + 0xde0u, sizeof world);
     recomp_guest_load(view, device + 0xc60u, sizeof view);
     recomp_guest_load(p, device + 0xca0u, sizeof p);
-    multiply(world, view, world_view);
+    multiply(world, view, world_view, "point-sprite-world-view");
     /* The quad offsets assume eye x and y reach only clip x and y. */
     if (p[1] != 0.0f || p[3] != 0.0f || p[4] != 0.0f || p[7] != 0.0f || p[0] == 0.0f || p[5] == 0.0f)
         recomp_stop(2, "d3d8:point-sprite-projection");
@@ -1520,21 +1528,38 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     draw->primitive_type = primitive;
     draw->triangle_count = triangles;
     if (!layout.pretransformed && !program) {
-        float view[16], projection[16], world[16], vp[16];
+        float view[16], projection[16], world[16], vp[16], blend[3][16];
         recomp_guest_load(view, device + 0xc60u, sizeof view);
         recomp_guest_load(projection, device + 0xca0u, sizeof projection);
-        multiply(view, projection, vp);
         recomp_guest_load(world, device + 0xde0u, sizeof world);
-        multiply(world, vp, draw->transform);
+        if (layout.blend_weight_count > 3u) recomp_stop(2, "d3d8:draw-vertex-blend");
+        recomp_guest_load(blend, device + 0xe20u, layout.blend_weight_count * sizeof blend[0]);
+        /* The game occasionally poses a mesh at a NaN position (seen after fights,
+           ret 0x28708b). NV2A vertices then become NaN and are clipped, so the
+           draw shows nothing; drop it instead of stopping. */
+        uint32_t nonfinite = 0u;
+        for (uint32_t i = 0u; i < 16u; ++i) {
+            nonfinite += !isfinite(view[i]) + !isfinite(projection[i]) + !isfinite(world[i]);
+            for (uint32_t b = 0u; b < layout.blend_weight_count; ++b) nonfinite += !isfinite(blend[b][i]);
+        }
+        if (nonfinite != 0u) {
+            static uint32_t dropped;
+            if ((++dropped & (dropped - 1u)) == 0u)
+                fprintf(stderr, "recomp d3d8: dropped nonfinite-position draws=%u cells=%u ret=%08x\n",
+                    dropped, nonfinite, *recomp_memory_u32(recomp_runtime.registers.esp));
+            free(sequential);
+            free(packed);
+            return;
+        }
+        multiply(view, projection, vp, "view-projection");
+        multiply(world, vp, draw->transform, "world");
         draw->has_transform = true;
         draw->blend_weight_count = layout.blend_weight_count;
         if (layout.blend_weight_count != 0u &&
             *recomp_memory_u32(0x355484u) != layout.blend_weight_count * 2u - 1u)
             recomp_stop(2, "d3d8:draw-vertex-blend");
-        for (uint32_t i = 0u; i < layout.blend_weight_count; ++i) {
-            recomp_guest_load(world, device + 0xe20u + i * 64u, sizeof world);
-            multiply(world, vp, draw->blend_transforms[i]);
-        }
+        for (uint32_t i = 0u; i < layout.blend_weight_count; ++i)
+            multiply(blend[i], vp, draw->blend_transforms[i], "blend-world");
     }
     RecompD3dViewport viewport;
     recomp_guest_load(&viewport, device + 0xee0u, sizeof viewport);

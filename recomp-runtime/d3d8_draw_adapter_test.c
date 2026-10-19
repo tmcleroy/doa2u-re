@@ -1734,8 +1734,11 @@ static int reflection_inverse_tests(void)
                 submitted.data.draw.reflection_blend_world_view[0][12] == 5.0f);
         }
         *recomp_memory_u32(DEVICE + 0xe20u) = 0x7fc00000u;
-        if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, normals ? 36u : 28u); return 1; }
-        CHECK(strcmp(stop_reason, "d3d8:nonfinite-transform") == 0);
+        /* A NaN skinning matrix drops the draw, as NV2A clips NaN vertices. */
+        if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected NaN stop: %s\n", stop_reason); return 1; }
+        const uint32_t before = submits;
+        invoke(0x348240u, 5u, 3u, VERTICES, normals ? 36u : 28u);
+        CHECK(submits == before);
     }
     return 0;
 }
