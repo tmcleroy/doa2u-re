@@ -547,6 +547,7 @@ struct RenderTargetEntry {
     bool multisampled;
     bool resolved;  // sample_view holds every write since the last resolve
     uint64_t bytes;
+    uint32_t host_width, host_height;
 };
 
 /* Depth belongs to its guest storage, which can serve several color targets. */
@@ -556,6 +557,7 @@ struct DepthTargetEntry {
     ID3D11DepthStencilView *view;
     bool host_main;  // created at the scaled/MSAA main target size
     uint64_t bytes;
+    uint32_t host_width;
 };
 
 } // namespace
@@ -694,6 +696,15 @@ uint32_t mainWidth(const RecompD3dPresenter *presenter)
 {
     return presenter->scale == 1.0f
         ? presenter->config.width : presentClientWidth(presenter, mainHeight(presenter));
+}
+
+/* Offscreen scenes with their own depth (water reflections) scale too; their samplers use
+   normalized UVs. Depthless filter chains (bloom, haze) keep guest size: their taps are one
+   guest texel apart, so scaling them leaves gaps between taps and a sharp halo. */
+uint32_t scaledSize(const RecompD3dPresenter *presenter, uint32_t guest)
+{
+    return (std::min)(static_cast<uint32_t>(guest * presenter->scale + 0.5f),
+        static_cast<uint32_t>(D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION));
 }
 
 /* Beyond the screen the swap chain downsamples into a screen-sized window. */
@@ -1167,6 +1178,8 @@ RecompD3dPresenterError lookupDepthTarget(
     const RecompD3dPresenterTarget &target,
     uint32_t color_width,
     uint32_t color_height,
+    uint32_t host_width,
+    uint32_t host_height,
     ID3D11DepthStencilView *&view)
 {
     view = nullptr;
@@ -1206,22 +1219,20 @@ RecompD3dPresenterError lookupDepthTarget(
     const bool host_main = color_width == presenter->config.width &&
         color_height == presenter->config.height &&
         (presenter->scale != 1.0f || presenter->msaa > 1u);
-    const uint32_t host_width = host_main ? mainWidth(presenter) : width;
-    const uint32_t host_height = host_main ? mainHeight(presenter) : height;
     const uint32_t samples = host_main ? presenter->msaa : 1u;
     for (uint32_t i = 0u; i < presenter->depth_targets.size(); ++i) {
         const DepthTargetEntry &entry = presenter->depth_targets[i];
         if (entry.desc.data == desc.data &&
             entry.desc.format_byte == desc.format_byte &&
             entry.desc.width == width && entry.desc.height == height &&
-            entry.host_main == host_main) {
+            entry.host_main == host_main && entry.host_width == host_width) {
             view = entry.view;
             return RECOMP_D3D_PRESENTER_OK;
         }
     }
     // Like the main color target, a main-sized depth is outside the offscreen budget.
     const uint64_t bytes = host_main
-        ? 0u : static_cast<uint64_t>(host_width) * host_height * 4u * samples;
+        ? 0u : static_cast<uint64_t>(width) * height * 4u * samples;
     if (bytes > kTargetByteLimit - presenter->target_bytes) {
         std::fprintf(stderr, "recomp d3d presenter: target memory budget exhausted\n");
         return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
@@ -1254,7 +1265,7 @@ RecompD3dPresenterError lookupDepthTarget(
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }
     try {
-        presenter->depth_targets.push_back({desc, view, host_main, bytes});
+        presenter->depth_targets.push_back({desc, view, host_main, bytes, host_width});
     } catch (const std::bad_alloc &) {
         releaseCom(view);
         return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
@@ -1275,6 +1286,8 @@ RecompD3dPresenterError bindTarget(
     color_view = presenter->render_target_view;
     uint32_t width = presenter->config.width;
     uint32_t height = presenter->config.height;
+    uint32_t host_width = mainWidth(presenter);
+    uint32_t host_height = mainHeight(presenter);
 
     // Full-frame effects must keep the main depth's dimensions and samples.
     const bool host_main = !target.offscreen ||
@@ -1299,8 +1312,9 @@ RecompD3dPresenterError bindTarget(
 
         RenderTargetEntry *entry = findRenderTarget(presenter, desc);
         if (entry == nullptr) {
-            const uint32_t host_width = host_main ? mainWidth(presenter) : desc.width;
-            const uint32_t host_height = host_main ? mainHeight(presenter) : desc.height;
+            const bool scaled = !host_main && target.custom_depth;
+            host_width = scaled ? scaledSize(presenter, desc.width) : host_main ? host_width : desc.width;
+            host_height = scaled ? scaledSize(presenter, desc.height) : host_main ? host_height : desc.height;
             // Budget guest storage, as with main-sized depth; quality must not reduce capacity.
             const uint64_t bytes = static_cast<uint64_t>(desc.width) * desc.height * 4u;
             if (bytes > kTargetByteLimit - presenter->target_bytes) {
@@ -1351,6 +1365,8 @@ RecompD3dPresenterError bindTarget(
             created.desc = desc;
             created.multisampled = samples > 1u;
             created.bytes = bytes;
+            created.host_width = host_width;
+            created.host_height = host_height;
             try {
                 presenter->render_targets.push_back(created);
             } catch (const std::bad_alloc &) {
@@ -1369,19 +1385,17 @@ RecompD3dPresenterError bindTarget(
         entry->resolved = false;
         width = desc.width;
         height = desc.height;
+        host_width = entry->host_width;
+        host_height = entry->host_height;
     }
 
     const RecompD3dPresenterError depth_result =
-        lookupDepthTarget(presenter, target, width, height, depth_view);
+        lookupDepthTarget(presenter, target, width, height, host_width, host_height, depth_view);
     if (depth_result != RECOMP_D3D_PRESENTER_OK) {
         return depth_result;
     }
-    const float host_width = static_cast<float>(
-        host_main ? mainWidth(presenter) : width);
-    const float host_height = static_cast<float>(
-        host_main ? mainHeight(presenter) : height);
-    presenter->target_scale_x = host_width / width;
-    presenter->target_scale_y = host_height / height;
+    presenter->target_scale_x = static_cast<float>(host_width) / width;
+    presenter->target_scale_y = static_cast<float>(host_height) / height;
     presenter->target_samples = samples;
 
     /* Clear can write a previously sampled target too. Switch the output
@@ -1390,7 +1404,7 @@ RecompD3dPresenterError bindTarget(
     presenter->context->PSSetShaderResources(0u, 1u, &no_texture);
     presenter->context->OMSetRenderTargets(1u, &color_view, depth_view);
     const D3D11_VIEWPORT viewport = {
-        0.0f, 0.0f, host_width, host_height,
+        0.0f, 0.0f, static_cast<float>(host_width), static_cast<float>(host_height),
         0.0f, 1.0f,
     };
     presenter->context->RSSetViewports(1u, &viewport);

@@ -464,8 +464,10 @@ adapter admits that pairing when the guest back buffer is not supersampled. The
 host gives full-frame offscreen colors the main target's scaled size and MSAA
 sample count, preserving shared depth and stencil. Multisampled colors resolve
 to single-sample textures before effects sample them. Smaller offscreen targets
-retain their guest size and one sample. Custom depth follows the matching color
-size. The 64 MiB offscreen budget counts guest storage, preserving scene
+keep one sample. Those with their own depth, such as water reflections, scale
+by the render scale; depthless filter chains such as bloom and heat haze keep
+their guest size, because their taps sit one guest texel apart. Custom depth
+follows the matching color size. The 64 MiB offscreen budget counts guest storage, preserving scene
 capacity across resolution and AA settings. Host color storage and resolve
 textures grow with those settings; D3D11 allocation failures remain explicit.
 
