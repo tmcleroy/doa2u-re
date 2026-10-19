@@ -17,6 +17,27 @@ constexpr const void *Draw::*pointer_fields[] = {
 // No readable guest span can exceed the runner's entire 64 MiB RAM region.
 constexpr uint64_t max_span_bytes = 64u * 1024u * 1024u;
 constexpr size_t null_offset = SIZE_MAX;
+
+// One pointer reused for thousands of small draws (rain) made a pointer-only key quadratic.
+uint64_t spanKey(const void *source, size_t size)
+{
+    uint64_t key = (reinterpret_cast<uintptr_t>(source) * 0x9e3779b97f4a7c15ull) ^ size;
+    const auto *bytes = static_cast<const unsigned char *>(source);
+    for (size_t i = 0u; size != 0u && i < 8u; ++i) {
+        uint64_t word = 0u;
+        std::memcpy(&word, bytes + (size <= 8u ? 0u : (size - 8u) * i / 7u), size < 8u ? size : 8u);
+        key = (key ^ word) * 0x100000001b3ull;
+    }
+    return key;
+}
+
+void copyRange(Draw &to, const Draw &from, size_t begin, size_t end)
+{
+    std::memcpy(reinterpret_cast<char *>(&to) + begin, reinterpret_cast<const char *>(&from) + begin, end - begin);
+}
+
+/* Fixed-function draws copy only the sections the presenter reads under their
+   flags; skipped bytes stay uninitialized. Keep in step with d3d_presenter.h. */
 void copyCommand(RecompD3dPresenterCommand &to, const RecompD3dPresenterCommand &from)
 {
     if ((from.type != RECOMP_D3D_PRESENTER_COMMAND_DRAW &&
@@ -64,7 +85,7 @@ RecompD3dPresenterError D3dCapturePacket::add(
 
     const size_t old_payload_size = payload_.size();
     const size_t old_command_count = commands_.size();
-    const void *inserted_sources[8]{};
+    uint64_t inserted_keys[8]{};
     size_t inserted_count = 0u;
     try {
         CapturedCommand &captured = commands_.emplace_back();
@@ -78,7 +99,8 @@ RecompD3dPresenterError D3dCapturePacket::add(
                 if (source == nullptr || (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW_COVERAGE && i >= 2u)) continue;
 
                 const size_t size = static_cast<size_t>(sizes[i]);
-                const auto range = spans_.equal_range(source);
+                const uint64_t key = spanKey(source, size);
+                const auto range = spans_.equal_range(key);
                 for (auto it = range.first; it != range.second; ++it) {
                     if (it->second.size == size && (size == 0u ||
                         std::memcmp(source, payload_.data() + it->second.offset, size) == 0)) {
@@ -96,8 +118,8 @@ RecompD3dPresenterError D3dCapturePacket::add(
                 // The allocator leaves new words uninitialized; define the tail before it can be relocated.
                 payload_[offset + words - 1u] = 0u;
                 if (size != 0u) std::memcpy(payload_.data() + offset, source, size);
-                spans_.emplace(source, Span{size, offset});
-                inserted_sources[inserted_count++] = source;
+                spans_.emplace(key, Span{size, offset});
+                inserted_keys[inserted_count++] = key;
                 captured.offsets[i] = offset;
             }
         }
@@ -109,7 +131,7 @@ RecompD3dPresenterError D3dCapturePacket::add(
 
     // Erase only spans from this failed add; rehashing may have moved iterators.
     for (size_t i = 0u; i < inserted_count; ++i) {
-        const auto range = spans_.equal_range(inserted_sources[i]);
+        const auto range = spans_.equal_range(inserted_keys[i]);
         for (auto it = range.first; it != range.second;) {
             if (it->second.offset >= old_payload_size) it = spans_.erase(it);
             else ++it;

@@ -68,7 +68,8 @@ private:
     // Word storage keeps indices and vertex data aligned after relocation.
     // resize() appends uninitialized words; add() overwrites the used bytes.
     std::vector<uint64_t, NoInitAllocator<uint64_t>> payload_;
-    std::unordered_multimap<const void *, Span> spans_;
+    // Keyed by source, size and sampled bytes; memcmp still confirms each reuse.
+    std::unordered_multimap<uint64_t, Span> spans_;
     bool sealed_ = false;
 };
 
