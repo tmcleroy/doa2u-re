@@ -801,7 +801,9 @@ static bool reflection_inputs(uint32_t device, uint32_t texture_matrix, uint32_t
         multiply(world, view, wv, "reflection-world-view");
         /* Position texgen and the no-normal reflection shader never read an inverse. */
         if (!needs_normal) continue;
-        if (!recomp_d3d_normal_transform(wv, normal)) {
+        /* 0x34b530 divides by det only without normalization (0x355498). */
+        if (!(draw->reflection_normalize ? recomp_d3d_normal_adjugate(wv, normal, NULL)
+                : recomp_d3d_normal_transform(wv, normal))) {
             /* A lone world of rank one or less (0xea6e0's squash with a zero
                animation scale) puts every vertex on one eye-space line, so no
                triangle has area; host snapping slivers are rounding. Otherwise
@@ -812,19 +814,6 @@ static bool reflection_inputs(uint32_t device, uint32_t texture_matrix, uint32_t
             recomp_stop(2, "d3d8:reflection-normal:fvf=%x:matrix=%x:influence=%u/%u:normalize=%u:ret=%08x",
                 draw->fvf, texture_matrix, i, draw->blend_weight_count, draw->reflection_normalize,
                 *recomp_memory_u32(recomp_runtime.registers.esp));
-        }
-        /* With normalization, 0x34b530 omits |det| division. Its per-matrix
-           scale matters when normals from different influences are blended. */
-        if (draw->reflection_normalize && draw->blend_weight_count != 0u) {
-            const float determinant = wv[0] * (wv[5] * wv[10] - wv[6] * wv[9]) -
-                wv[1] * (wv[4] * wv[10] - wv[6] * wv[8]) +
-                wv[2] * (wv[4] * wv[9] - wv[5] * wv[8]);
-            for (uint32_t j = 0u; j < 16u; ++j) {
-                normal[j] *= fabsf(determinant);
-                if (!isfinite(normal[j]))
-                    recomp_stop(2, "d3d8:reflection-normal-scale:fvf=%x:matrix=%x:influence=%u:field=%u:ret=%08x",
-                        draw->fvf, texture_matrix, i, j, *recomp_memory_u32(recomp_runtime.registers.esp));
-            }
         }
     }
     recomp_guest_load(draw->reflection_transform, device + texture_matrix, sizeof draw->reflection_transform);

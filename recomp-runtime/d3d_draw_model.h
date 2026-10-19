@@ -58,6 +58,7 @@ typedef struct RecompD3dDrawResult {
 } RecompD3dDrawResult;
 
 bool recomp_d3d_normal_transform(const float world[16], float normal[16]);
+bool recomp_d3d_normal_adjugate(const float world[16], float normal[16], float *determinant);
 
 void recomp_d3d_draw_reset(RecompD3dDrawState *state);
 

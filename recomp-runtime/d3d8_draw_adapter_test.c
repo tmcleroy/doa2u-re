@@ -863,8 +863,9 @@ static int lighting_tests(void)
     CHECK(strcmp(stop_reason, "d3d8:reflection-stage2-texture") == 0);
     *recomp_memory_u32(DEVICE + 0xf90u) = 0u;
     *recomp_memory_u32(STAGES + 256u + 14u * 4u) = *recomp_memory_u32(STAGES + 256u + 18u * 4u) = 0u;
+    /* Normalized (0x355498): the adjugate of diag(2, 3, 4), undivided by det. */
     CHECK(submitted.data.draw.reflection_world_view[12] == 5.0f &&
-        submitted.data.draw.reflection_normal[0] == 0.5f &&
+        submitted.data.draw.reflection_normal[0] == 12.0f &&
         submitted.data.draw.reflection_transform[15] == 1.0f &&
         submitted.data.draw.reflection_diffuse[3] == 0.25f);
     /* The fight's environment stage clamps (U/V 3); its sampler follows stage 1. */
@@ -1740,6 +1741,20 @@ static int reflection_inverse_tests(void)
         invoke(0x348240u, 5u, 3u, VERTICES, normals ? 36u : 28u);
         CHECK(submits == before);
     }
+    /* Normalized, 0x34b530 never divides: a subnormal determinant whose
+       inverse overflows still uploads a finite adjugate. */
+    initialize();
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x112u;
+    *recomp_memory_u32(DEVICE + 0xf88u) = *recomp_memory_u32(DEVICE + 0xf8cu) = 0x7000u;
+    *recomp_memory_u32(0x355498u) = 1u;
+    const float thin[16] = {1e-39f,0,0,0, 0,1,0,0, 0,0,1,0, 5,6,7,1};
+    recomp_guest_store(DEVICE + 0xde0u, thin, sizeof thin);
+    for (uint32_t stage = 0u; stage < 3u; ++stage)
+        for (uint32_t i = 0u; i < 6u; ++i) set_stage(stage, fields[i], reflection[stage][i]);
+    set_stage(0u, 21u, 2u); set_stage(0u, 28u, 0x30000u);
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    CHECK(submits == 1u && submitted.data.draw.reflection_normal[0] == 1.0f &&
+        submitted.data.draw.reflection_normal[5] == 1e-39f);
     return 0;
 }
 

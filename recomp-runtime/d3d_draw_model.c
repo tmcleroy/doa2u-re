@@ -3,7 +3,9 @@
 #include <string.h>
 #include <math.h>
 
-bool recomp_d3d_normal_transform(const float world[16], float normal[16])
+/* Cofactors of the 3x3 part times sign(det): 0x34b530's normal matrix with
+   normalization, which never divides, so any nonzero det stays finite. */
+bool recomp_d3d_normal_adjugate(const float world[16], float normal[16], float *determinant)
 {
     float n[16] = {0};
     if (world == NULL || normal == NULL) return false;
@@ -15,10 +17,23 @@ bool recomp_d3d_normal_transform(const float world[16], float normal[16])
             n[row*4+col] = world[a*4+c]*world[b*4+d] - world[a*4+d]*world[b*4+c];
         }
     }
-    float determinant = world[0]*n[0] + world[1]*n[1] + world[2]*n[2];
-    if (!isfinite(determinant) || determinant == 0) return false;
+    const float det = world[0]*n[0] + world[1]*n[1] + world[2]*n[2];
+    if (!isfinite(det) || det == 0) return false;
     for (uint32_t i = 0; i < 16; ++i) {
-        n[i] /= determinant;
+        if (det < 0) n[i] = -n[i];
+        if (!isfinite(n[i])) return false;
+    }
+    memcpy(normal, n, sizeof n);
+    if (determinant != NULL) *determinant = det;
+    return true;
+}
+
+bool recomp_d3d_normal_transform(const float world[16], float normal[16])
+{
+    float n[16], determinant;
+    if (!recomp_d3d_normal_adjugate(world, n, &determinant)) return false;
+    for (uint32_t i = 0; i < 16; ++i) {
+        n[i] /= fabsf(determinant);
         if (!isfinite(n[i])) return false;
     }
     memcpy(normal, n, sizeof n);
