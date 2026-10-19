@@ -1,6 +1,7 @@
 #include "kernel_abi.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 enum {
@@ -71,6 +72,17 @@ int recomp_kernel_video_test(void)
 
     memset(memory, 0xa5, sizeof memory);
     recomp_runtime_init(&region, 1u, NULL, 0u, NULL, 0u);
+    for (unsigned wide = 0u; wide < 2u; ++wide) {
+        _putenv_s("RECOMP_D3D_WIDESCREEN", wide ? "1" : "0");
+        passed &= expect_u32("video setting status",
+            recomp_kernel_query_nonvolatile_setting(8u, TEST_RESULT + 4u,
+                TEST_RESULT, 4u, TEST_RESULT + 8u), 0u);
+        passed &= expect_u32("video flags", *recomp_memory_u32(TEST_RESULT),
+            wide ? 0x004f0000u : 0x004e0000u);
+        passed &= expect_u32("video setting type", *recomp_memory_u32(TEST_RESULT + 4u), 4u);
+        passed &= expect_u32("video setting length", *recomp_memory_u32(TEST_RESULT + 8u), 4u);
+    }
+    _putenv_s("RECOMP_D3D_WIDESCREEN", "");
     recomp_kernel_av_set_saved_data_address(0u);
     get_saved_data = recomp_kernel_video(1u);
     send_option = recomp_kernel_video(2u);

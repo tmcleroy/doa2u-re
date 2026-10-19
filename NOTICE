@@ -13,6 +13,10 @@ are preserved. See docs/reuse.md for the scope of the reuse.
 The xboxrecomp submodule retains its own license and notices. The GPL license
 grants no rights to the game or third-party material.
 
+The Windows presenter builds SMAA by Jorge Jimenez and coauthors from
+iryoku/smaa, revision 71c806a838bdd7d517df19192a20f0c61b3ca29d, under its MIT
+license. Its original notices and LICENSE.txt remain in the fetched source.
+
 Dead or Alive, Xbox, and related names and marks belong to their respective
 owners. This project is not affiliated with or endorsed by those owners.
 

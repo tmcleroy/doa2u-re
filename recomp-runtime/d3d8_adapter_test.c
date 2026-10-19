@@ -393,6 +393,7 @@ int main(void)
         *recomp_memory_u32(DEVICE_GLOBAL) == 0u &&
         memcmp(saved_device, recomp_memory(DEVICE, DEVICE_SIZE), DEVICE_SIZE) == 0);
     reset_fixture();
+    *recomp_memory_u32(PARAMETERS + 0x28u) = 0x10u;
     passed &= create();
     passed &= expect("creation ABI and presenter configuration",
         recomp_runtime.registers.eax == RECOMP_D3D_OK &&

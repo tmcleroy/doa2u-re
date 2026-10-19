@@ -22,29 +22,31 @@ be reused unchanged.
 
 The whole-program lift and native runner are in place. The runtime loads the
 selected executable, binds kernel imports, initializes TLS and schedules
-guest threads. The initial D3D8 5849 adapter creates a native D3D11 device and
-handles framebuffer headers, viewport, tiles, clear, swap, gamma, transforms,
-point/directional lights and fog state. It reuses the sister projects'
-semantic presenter.
+guest threads. XAPI fibers run on native Windows fibers, so the game's scene
+tasks execute. The clock and vblank bindings let background archive workers
+progress; the first boot copies the disc archives into the cache partition
+and shows a black window for about 12 minutes.
 
-The graphics adapter supports the verified 720x480 startup mode and the
-fixed-function vertex format, frame render states, material and empty texture
-stages that the game sets each frame. Texture resources, programmable shaders
-and draw submission remain work, as does input.
-XAPI fibers run on native Windows fibers, so the game's scene tasks execute.
-They stop at the first D3D API that is still unbound; the window stays black
-until the draw path exists.
-The initial DirectSound 5849 adapter uses XAudio2 for PCM/Xbox ADPCM buffers,
+The D3D8 5849 adapter drives the sister projects' semantic D3D11 presenter.
+It covers device creation and Reset for the 720x480 mode and the supersampled
+character-select mode, frame and render state, lights and materials,
+textures, vertex buffers and render targets, programmable vertex shaders,
+the fight's pixel shaders and post-process passes, lines, point sprites and
+visibility tests. A draw whose state the presenter cannot yet express stops
+with a report of that state.
+
+The DirectSound 5849 adapter uses XAudio2 for PCM/Xbox ADPCM buffers,
 including data ownership, reference counts, headroom, looping and cursors.
 The effects-image adapter decodes programs, owns validated maps/state and
-binds native I3DL2 reverb with stereo dry/wet routing. Recording sends and
-DSP crosstalk cancellation need further native services; positioned 3D
-voices render through the game's HRTF tables. The clock and vblank bindings
-allow background archive workers to progress during startup.
-The graphics adapter also binds textures, vertex buffers, pixel-shader state
-and three draw APIs to the shared D3D11 presenter. Unsupported shader and
-resource paths stop explicitly. Passing synthetic tests does not establish
-title-screen or gameplay compatibility.
+binds native I3DL2 reverb with stereo dry/wet routing. Positioned 3D voices
+render through the game's HRTF tables. Recording sends and DSP crosstalk
+cancellation remain guarded. The XAPI 5849 input APIs read SDL gamepads and
+the keyboard.
+
+In bounded local probes the game reaches the first Story fight (Stage 01)
+and plays it for 180 seconds with audio. Other modes, stages and characters
+can still reach unbound draw paths and stop. Passing the synthetic tests
+alone does not establish compatibility.
 
 Read [reuse](docs/reuse.md) for the source provenance and what can be brought
 over next, and [bring-up](docs/bring-up.md) for the next implementation steps.
@@ -98,6 +100,34 @@ analysis and build receipts stay in `private/program/`; boot logs stay in
 `private/boot-logs/`. The probe creates `private/play-disc` with hardlinks,
 preserves its saves, and reports a timeout as termination of the probe.
 
+`play.cmd` opens a settings window with 480p, 720p, 1080p, 1440p and 2160p
+(4K) render resolutions; MSAA Off/2x/4x/8x/16x/32x; SMAA Ultra; and native
+16:9 widescreen. Choices are remembered in `private/launcher.json`. The first
+launch selects the nearest preset at or below the primary display's height,
+with widescreen, a 32x MSAA request and SMAA enabled. The game
+selects its own widescreen camera and menu layouts through the dashboard video
+setting; the presenter displays that anamorphic image at 16:9. MSAA resolves
+before SMAA, and gamma applies last. Unsupported MSAA counts fall back to the
+highest supported count below the request. The Windows build fetches a pinned,
+hash-verified copy of [upstream SMAA](https://github.com/iryoku/smaa).
+
+The Python launcher also accepts these switches for play or bounded probes:
+
+```powershell
+python tools/run_game.py --play --resolution 2160 --widescreen --msaa 32 --smaa
+python tools/run_game.py --play --no-widescreen --msaa 1 --no-smaa
+```
+
+Omitted switches preserve the existing `RECOMP_D3D_WIDESCREEN`,
+`RECOMP_D3D_MSAA`, `RECOMP_D3D_SMAA` and `RECOMP_D3D_SCALE` environment settings. Pass
+`--no-widescreen --msaa 1 --no-smaa` to `play.cmd` to disable the enhancements.
+Arguments to `play.cmd` bypass the settings window. Higher render resolutions
+fill the display when they reach its height, and downsample when larger;
+480p stays windowed. Width follows 4:3 or 16:9. A 32x request uses actual
+32-sample MSAA only when the GPU supports both color and depth at that count;
+otherwise the log reports the supported fallback. These options add GPU work
+and memory use while preserving the game's logical 720x480 coordinates.
+
 Input uses SDL gamepads or the focused game window's keyboard. Enter sends
 Start; arrows move the D-pad and Z/X send A/B. A bounded intro-skip probe can
 use repeated `--input-start-pulse-at <poll>` arguments (up to four).
@@ -108,6 +138,10 @@ roll starts. The game is held meanwhile and resumes unchanged.
 If it is missing and `private/dedication-photo.jpg` exists, `run_game.py`
 first builds the 4K card from that photo with Pillow (`pip install pillow`),
 drawing the name in the game's fight-screen capitals read from your disc.
+
+`python tools/run_game.py --play --story-finale` is a debug shortcut to the
+ending: every Story CPU has 1 life, and the first win skips to the final
+fight. It uses the separate probe saves so the clear does not touch yours.
 
 ## Layout
 

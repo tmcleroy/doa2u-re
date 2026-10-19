@@ -31,10 +31,21 @@ def prepare_disc(source, disc):
     staging.rename(disc)
 
 
-def run(seconds, start_polls=(), a_polls=(), isolated=False, buttons_polls=(), analog_polls=()):
+def run(seconds, start_polls=(), a_polls=(), isolated=False, buttons_polls=(), analog_polls=(),
+        widescreen=None, msaa=None, smaa=None, resolution=None, story_finale=False):
     if seconds is not None and seconds <= 0:
         raise ValueError("Probe duration must be positive")
+    if msaa is not None and msaa not in (1, 2, 4, 8, 16, 32):
+        raise ValueError("MSAA must be 1, 2, 4, 8, 16 or 32")
+    if resolution is not None and resolution not in (480, 720, 1080, 1440, 2160):
+        raise ValueError("Resolution must be 480, 720, 1080, 1440 or 2160")
     env = os.environ.copy()
+    for name, value in (("RECOMP_D3D_WIDESCREEN", widescreen),
+                        ("RECOMP_D3D_MSAA", msaa), ("RECOMP_D3D_SMAA", smaa)):
+        if value is not None:
+            env[name] = str(int(value))
+    if resolution is not None:
+        env["RECOMP_D3D_SCALE"] = str(resolution / 480)
     if len(start_polls) > 4 or any(poll <= 0 or poll > 2**64 - 1 for poll in start_polls):
         raise ValueError("Start polls must be positive uint64 values, at most four")
     if len(a_polls) > 192 or any(poll <= 0 or poll > 2**64 - 1 for poll in a_polls):
@@ -54,7 +65,8 @@ def run(seconds, start_polls=(), a_polls=(), isolated=False, buttons_polls=(), a
     runner = ROOT / "build/recomp-program/Release/recomp_program_runner.exe"
     if sha256(runner) != receipt["runner_sha256"]:
         raise ValueError("Runner differs from its successful build receipt")
-    disc = ROOT / ("private/probe-disc" if isolated else "private/play-disc")
+    # A finale run clears Story, so it keeps its unlocks out of the player's saves.
+    disc = ROOT / ("private/probe-disc" if isolated or story_finale else "private/play-disc")
     prepare_disc(selected.parent, disc)
     xbe = disc / selected.name
     if sha256(xbe) != sha256(selected):
@@ -80,6 +92,8 @@ def run(seconds, start_polls=(), a_polls=(), isolated=False, buttons_polls=(), a
             command = [str(runner), "--xbe", str(xbe), "--disc-root", str(disc)]
             if isolated:
                 command.append("--input-script-only")
+            if story_finale:
+                command.append("--story-finale")
             for poll in start_polls:
                 command.extend(["--input-start-pulse-at", str(poll)])
             for poll in a_polls:
@@ -105,6 +119,14 @@ if __name__ == "__main__":
     duration.add_argument("--seconds", type=int, default=30)
     duration.add_argument("--play", action="store_true",
                           help="Play without a time limit; close the game window to exit")
+    parser.add_argument("--widescreen", action=argparse.BooleanOptionalAction, default=None,
+                        help="Use the game's native 16:9 camera and menus")
+    parser.add_argument("--resolution", type=int, choices=(480, 720, 1080, 1440, 2160),
+                        help="Render height: 480p, 720p, 1080p, 1440p or 4K; width follows aspect ratio")
+    parser.add_argument("--msaa", type=int, choices=(1, 2, 4, 8, 16, 32),
+                        help="MSAA samples (1 disables); falls back to GPU support")
+    parser.add_argument("--smaa", action=argparse.BooleanOptionalAction, default=None,
+                        help="Apply SMAA Ultra after MSAA resolve")
     parser.add_argument("--input-start-pulse-at", type=int, action="append", default=[])
     parser.add_argument("--input-a-pulse-at", type=int, action="append", default=[])
     parser.add_argument("--input-buttons-pulse-at", type=int, nargs=2, action="append", default=[],
@@ -113,11 +135,14 @@ if __name__ == "__main__":
                         help="Use separate probe saves and ignore physical input")
     parser.add_argument("--input-analog-pulse-at", type=int, nargs=2, action="append", default=[],
                         metavar=("POLL", "INDEX"), help="Press A/B/X/Y/Black/White/LTrig/RTrig (0..7)")
+    parser.add_argument("--story-finale", action="store_true",
+                        help="Debug: Story skips to its last fights with each CPU at 1 life")
     args = parser.parse_args()
     try:
         raise SystemExit(run(None if args.play else args.seconds, args.input_start_pulse_at,
                              args.input_a_pulse_at, args.isolated, args.input_buttons_pulse_at,
-                             args.input_analog_pulse_at))
+                             args.input_analog_pulse_at, args.widescreen, args.msaa, args.smaa,
+                             args.resolution, args.story_finale))
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         print(f"Cannot run game: {error}", file=sys.stderr)
         raise SystemExit(1)

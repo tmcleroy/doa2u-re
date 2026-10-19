@@ -33,7 +33,8 @@ bool recomp_d3d_create_request_supported(
         presentation->device_window == 0u && presentation->windowed == 0u &&
         presentation->enable_auto_depth_stencil == 1u &&
         presentation->auto_depth_stencil_format == 0x2eu &&
-        presentation->flags == 0u &&
+        /* FUN_00282570 sets D3DPRESENTFLAG_WIDESCREEN for XC_VIDEO bit 0. */
+        (presentation->flags == 0u || presentation->flags == 0x10u) &&
         presentation->full_screen_refresh_rate == 0u &&
         (presentation->full_screen_presentation_interval == 0x80000001u ||
          presentation->full_screen_presentation_interval == 1u) &&

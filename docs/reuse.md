@@ -1,5 +1,20 @@
 # Sister-project reuse
 
+Widescreen and antialiasing follow committed DOA3 source at
+`26672b6` and DOAXBV at `0e5b1ea`. DOA2U already had their MSAA/SMAA presenter
+implementation; this pass connects the build to the same upstream SMAA
+revision `71c806a838bdd7d517df19192a20f0c61b3ca29d`. CMake fetches a
+hash-verified archive rather than adding another submodule. Upstream MIT
+notices remain with that source. DOA2U's verified native widescreen branches
+use XC_VIDEO's widescreen bit without DOA3's extra letterbox flag. Shared-depth
+full-frame effects now retain depth under scaling/MSAA instead of inheriting
+the sister presenter's depth-disabled fallback.
+The settings window adapts committed DOA3's native WinForms launcher at
+`26672b6`, keeping resolution, MSAA, SMAA and aspect choices and their private
+preferences. Audio controls and sister-specific game options are omitted.
+DOA2U extends the MSAA choices through 32x and uses its authenticated Python
+launcher. Resolution presets keep the same height/480 scaling contract.
+
 The frame-buffer correction follows committed DOA3 fixes `bb479cf` and
 `c10423f`: constant-alpha blend decoding and the shared host-frame flag with
 a separate previous-frame selector. DOA2U keeps its verified 5849 surface

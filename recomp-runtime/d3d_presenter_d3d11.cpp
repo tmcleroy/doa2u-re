@@ -530,14 +530,16 @@ uint64_t textureFingerprint(const void *bytes, uint32_t count)
 
 /* Rendered pixels have no CPU copy to re-upload after texture FIFO eviction.
    Retain targets until their guest backing storage is released.
-   ponytail: bound host target texels to 64 MiB; guest-arena suballocation
-   retirement is needed if retained scene targets exhaust this byte budget. */
+   shortcut: retain at most 64 MiB of guest target storage; add suballocation
+   retirement if scene targets exhaust this budget. Host storage scales with AA/resolution. */
 constexpr uint64_t kTargetByteLimit = 64u * 1024u * 1024u;
 
 struct RenderTargetEntry {
     RecompD3dTextureDesc desc;
     ID3D11RenderTargetView *render_view;
     ID3D11ShaderResourceView *sample_view;
+    bool multisampled;
+    uint64_t bytes;
 };
 
 /* Depth belongs to its guest storage, which can serve several color targets. */
@@ -1194,7 +1196,8 @@ RecompD3dPresenterError lookupDepthTarget(
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }
     /* A custom depth bound with the main target must match its host size and samples. */
-    const bool host_main = !target.offscreen &&
+    const bool host_main = color_width == presenter->config.width &&
+        color_height == presenter->config.height &&
         (presenter->scale != 1.0f || presenter->msaa > 1u);
     const uint32_t host_width = host_main ? mainWidth(presenter) : width;
     const uint32_t host_height = host_main ? mainHeight(presenter) : height;
@@ -1266,6 +1269,11 @@ RecompD3dPresenterError bindTarget(
     uint32_t width = presenter->config.width;
     uint32_t height = presenter->config.height;
 
+    // Full-frame effects must keep the main depth's dimensions and samples.
+    const bool host_main = !target.offscreen ||
+        (target.color.width == width && target.color.height == height);
+    const uint32_t samples = host_main ? presenter->msaa : 1u;
+
     if (target.offscreen) {
         const RecompD3dTextureDesc &desc = target.color;
         if (desc.depth || desc.data == 0u ||
@@ -1284,18 +1292,21 @@ RecompD3dPresenterError bindTarget(
 
         RenderTargetEntry *entry = findRenderTarget(presenter, desc);
         if (entry == nullptr) {
+            const uint32_t host_width = host_main ? mainWidth(presenter) : desc.width;
+            const uint32_t host_height = host_main ? mainHeight(presenter) : desc.height;
+            // Budget guest storage, as with main-sized depth; quality must not reduce capacity.
             const uint64_t bytes = static_cast<uint64_t>(desc.width) * desc.height * 4u;
             if (bytes > kTargetByteLimit - presenter->target_bytes) {
                 std::fprintf(stderr, "recomp d3d presenter: target memory budget exhausted\n");
                 return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
             }
             D3D11_TEXTURE2D_DESC texture_desc{};
-            texture_desc.Width = desc.width;
-            texture_desc.Height = desc.height;
+            texture_desc.Width = host_width;
+            texture_desc.Height = host_height;
             texture_desc.MipLevels = 1u;
             texture_desc.ArraySize = 1u;
             texture_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-            texture_desc.SampleDesc.Count = 1u;
+            texture_desc.SampleDesc.Count = samples;
             texture_desc.Usage = D3D11_USAGE_DEFAULT;
             texture_desc.BindFlags =
                 D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
@@ -1307,6 +1318,13 @@ RecompD3dPresenterError bindTarget(
             if (SUCCEEDED(result)) {
                 result = presenter->device->CreateRenderTargetView(
                     texture, nullptr, &created.render_view);
+            }
+            if (SUCCEEDED(result) && samples > 1u) {
+                releaseCom(texture);
+                texture_desc.SampleDesc.Count = 1u;
+                texture_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                result = presenter->device->CreateTexture2D(
+                    &texture_desc, nullptr, &texture);
             }
             if (SUCCEEDED(result)) {
                 result = presenter->device->CreateShaderResourceView(
@@ -1324,6 +1342,8 @@ RecompD3dPresenterError bindTarget(
                 return RECOMP_D3D_PRESENTER_HOST_FAILURE;
             }
             created.desc = desc;
+            created.multisampled = samples > 1u;
+            created.bytes = bytes;
             try {
                 presenter->render_targets.push_back(created);
             } catch (const std::bad_alloc &) {
@@ -1348,19 +1368,13 @@ RecompD3dPresenterError bindTarget(
     if (depth_result != RECOMP_D3D_PRESENTER_OK) {
         return depth_result;
     }
-    /* ponytail: an offscreen target cannot share the scaled/MSAA main depth;
-       it draws without depth. Give it its own depth if one ever needs it. */
-    if (target.offscreen && depth_view == presenter->depth_view &&
-        (presenter->scale != 1.0f || presenter->msaa > 1u)) {
-        depth_view = nullptr;
-    }
     const float host_width = static_cast<float>(
-        target.offscreen ? width : mainWidth(presenter));
+        host_main ? mainWidth(presenter) : width);
     const float host_height = static_cast<float>(
-        target.offscreen ? height : mainHeight(presenter));
+        host_main ? mainHeight(presenter) : height);
     presenter->target_scale_x = host_width / width;
     presenter->target_scale_y = host_height / height;
-    presenter->target_samples = target.offscreen ? 1u : presenter->msaa;
+    presenter->target_samples = samples;
 
     /* Clear can write a previously sampled target too. Switch the output
        before rebinding t0 so sampling the previous output remains valid. */
@@ -1898,7 +1912,9 @@ const DrawPipeline *lookupDrawPipeline(
     uint32_t fvf, const RecompD3dPresenterDrawCommand *draw = nullptr, bool coverage_only = false)
 {
     const uint32_t count = draw ? draw->program_count : 0u;
-    const bool scaled_bias = draw && presenter->scale != 1.0f && !draw->target.offscreen &&
+    const bool scaled_bias = draw && presenter->scale != 1.0f &&
+        (!draw->target.offscreen || (draw->target.color.width == presenter->config.width &&
+            draw->target.color.height == presenter->config.height)) &&
         draw->slope_scaled_depth_bias != 0.0f;
     if (count > 136u) return nullptr;
     for (uint32_t i = 0u; i < presenter->draw_pipeline_count; ++i) {
@@ -2465,6 +2481,15 @@ ID3D11ShaderResourceView *lookupTexture(
     }
 
     if (RenderTargetEntry *entry = findRenderTarget(presenter, desc)) {
+        if (entry->multisampled) {
+            ID3D11Resource *source = nullptr, *resolved = nullptr;
+            entry->render_view->GetResource(&source);
+            entry->sample_view->GetResource(&resolved);
+            presenter->context->ResolveSubresource(resolved, 0u, source, 0u,
+                DXGI_FORMAT_B8G8R8A8_UNORM);
+            releaseCom(source);
+            releaseCom(resolved);
+        }
         return entry->sample_view;
     }
     if (linear_bgra && (!desc.linear || desc.depth ||
@@ -4344,7 +4369,7 @@ RecompD3dPresenterError d3d11_backend_release_memory(
         if (!released(entry.desc.data)) { ++i; continue; }
         releaseCom(entry.sample_view);
         releaseCom(entry.render_view);
-        presenter->target_bytes -= static_cast<uint64_t>(entry.desc.width) * entry.desc.height * 4u;
+        presenter->target_bytes -= entry.bytes;
         entry = presenter->render_targets.back();
         presenter->render_targets.pop_back();
         changed = true;

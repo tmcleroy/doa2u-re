@@ -108,6 +108,13 @@ int recomp_d3d_device_model_test(void)
         !recomp_d3d_create_request_supported(NULL));
     passed &= expect("startup request supported",
         recomp_d3d_create_request_supported(&request));
+    changed_request = request;
+    changed_request.presentation.flags = 0x10u;
+    passed &= expect("native widescreen request supported",
+        recomp_d3d_create_request_supported(&changed_request));
+    changed_request.presentation.flags = 0x30u;
+    passed &= expect("unverified presentation flags rejected",
+        !recomp_d3d_create_request_supported(&changed_request));
     for (size_t i = 0u; i < sizeof request / 4u; ++i) {
         uint32_t word;
 

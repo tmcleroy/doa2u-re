@@ -1,7 +1,8 @@
 # DOA2 Ultimate Native Port
 
-The product is a native Windows host shell for Dead or Alive 2 Ultimate on
-Xbox. The first scope is the offline DOA2 portion of Ultimate Disc 2. DOA1
+The product is a native Windows, macOS and Linux host shell for Dead or Alive
+2 Ultimate on Xbox. The first scope is the offline DOA2 portion of Ultimate
+Disc 2. DOA1
 Ultimate, online services and dashboard/update executables are separate work.
 
 The host shell contains game-independent code and public-safe tooling. The

@@ -47,6 +47,23 @@ static bool sampleInput(std::uint32_t port, RecompInputGamepad *gamepad)
     return sampled;
 }
 
+/* Offer every costume and character. 0x87cfa8 points at the live profile.
+   The game's own award loops (0xdc640, 0xdc100) set each costume byte at
+   +0x2ed8 to that character's costume count from 0x6e0f08 (the select screen
+   shows min(byte, count)), and the three character flags at +0x2ed2 to 1.
+   Repeating them each frame also covers profiles loaded later. */
+static void unlockProfile(std::uint32_t)
+{
+    const std::uint32_t profile = *recomp_memory_u32(0x0087cfa8u);
+    if (profile == 0u) return;
+    for (std::uint32_t i = 0; i < 15u; ++i) {
+        const std::uint8_t character = *recomp_memory(0x006959dcu + i, 1u);
+        const std::uint8_t slot = *recomp_memory(0x006959c0u + character, 1u);
+        *recomp_memory(profile + 0x2ed8u + slot, 1u) = *recomp_memory(0x006e0f08u + character, 1u);
+    }
+    std::memset(recomp_memory(profile + 0x2ed2u, 3u), 1, 3u);
+}
+
 /* Dedication card shown each time the staff roll starts. The BMP is a private
    input named by RECOMP_DEDICATION_CARD. Music table entry 17 (0x6a0c3c,
    "Staffroll") points at its track's file name at +8; the guest's first read
@@ -113,6 +130,37 @@ static void noteRead(const char *hostPath, std::uint64_t offset)
     if (entry->second != 0u && offset == entry->second) cardPending = true;
 }
 
+/* --story-finale debug shortcut: every live Story CPU is held at 1 life, and
+   the first CPU KO sets the stage to 5 so the game's own advance loads the
+   final fight. Measured on this image's Kasumi Story: mode 0x87cfa0 is 3,
+   stage 0x8783ec runs 0..6 with Tengu last, and each side's block (stride
+   0x94) keeps its human flag at 0x87ae30 and 16-bit life (300 at Normal; 320
+   between fights) at 0x87ae54. Changing either during fight setup crashed. */
+static bool storyFinale;
+
+static void applyStoryFinale()
+{
+    static bool fightLive;
+    if (*recomp_memory(0x0087cfa0u, 1u) != 3u) {
+        fightLive = false;
+        return;
+    }
+    for (std::uint32_t side = 0; side < 2u; ++side) {
+        if (*recomp_memory(0x0087ae30u + side * 0x94u, 1u) != 0u) continue;
+        std::uint8_t *life = recomp_memory(0x0087ae54u + side * 0x94u, 2u);
+        const auto value = static_cast<std::int16_t>(life[0] | life[1] << 8);
+        if (value >= 1 && value <= 300) fightLive = true;
+        if (value >= 2 && value <= 300) {
+            life[0] = 1u;
+            life[1] = 0u;
+        } else if (value == 0 && fightLive) {
+            fightLive = false;
+            std::uint8_t *stage = recomp_memory(0x008783ecu, 1u);
+            if (*stage < 5u) *stage = 5u;
+        }
+    }
+}
+
 // Holds the guest at a Swap: 1.5 s fade in, hold, 1.5 s fade out over 10 s.
 static void showCard()
 {
@@ -135,8 +183,10 @@ static void showCard()
         duration_cast<nanoseconds>(steady_clock::now() - start).count()));
 }
 
-static void onSwap(std::uint32_t)
+static void onSwap(std::uint32_t frame)
 {
+    unlockProfile(frame);
+    if (storyFinale) applyStoryFinale();
     if (!cardPending) return;
     cardPending = false;
     showCard();
@@ -152,6 +202,10 @@ int main(int argc, char **argv)
         if (argument == "--input-script-only") {
             scriptedInputOnly = true;
             inputPulses.base = nullptr;
+            continue;
+        }
+        if (argument == "--story-finale") {
+            storyFinale = true;
             continue;
         }
         if (argument == "--input-start-pulse-at" && i + 1 < argc) {
@@ -236,7 +290,7 @@ int main(int argc, char **argv)
                 " [--input-buttons-pulse-at <poll> <decimal-mask>]"
                 " [--input-analog-pulse-at <poll> <button-index>]"
                 " [--input-analog-pulse-every <first-poll> <period> <last-poll> <button-index>]"
-                " [--input-script-only]\n";
+                " [--input-script-only] [--story-finale]\n";
             return 64;
         }
         const std::string value = argv[++i];

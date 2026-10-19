@@ -9,7 +9,16 @@ enum {
     REG_DWORD = 4u,
 };
 
-/* Synthetic dashboard defaults: 60 Hz, standard 4:3 display. */
+/* DOA2U selects its native 16:9 camera and UI from XC_VIDEO's widescreen bit.
+   Keep this in step with the presenter's RECOMP_D3D_WIDESCREEN setting. */
+static uint32_t video_flags(void)
+{
+    const char *widescreen = getenv("RECOMP_D3D_WIDESCREEN");
+
+    return widescreen != NULL && strcmp(widescreen, "0") != 0
+        ? 0x004f0000u : 0x004e0000u;
+}
+
 uint32_t recomp_kernel_query_nonvolatile_setting(
     uint32_t value_index,
     uint32_t type,
@@ -17,7 +26,7 @@ uint32_t recomp_kernel_query_nonvolatile_setting(
     uint32_t value_length,
     uint32_t result_length)
 {
-    uint32_t dword_value = value_index == 0x08u ? 0x004e0000u : 0u;
+    uint32_t dword_value = value_index == 0x08u ? video_flags() : 0u;
     int dword_backed = value_length == sizeof dword_value;
 
     if (type != 0u) {

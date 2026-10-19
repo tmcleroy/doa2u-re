@@ -79,6 +79,16 @@ the held time from the guest clock. In Kasumi's Story the track is first read
 after the final KO's white flash, so the card plays just before the ending,
 which carries the staff credits over it.
 
+`--story-finale` (runner and `run_game.py`) holds every live Story CPU at 1
+life and sets the stage to 5 at the first CPU KO, so the game's own advance
+loads the final fight. Addresses were measured from Kasumi's Story: mode
+`0x87cfa0` (3 in Story), stage `0x8783ec` (0..6, Tengu last), and per side
+(stride `0x94`) the human flag `0x87ae30` and 16-bit life `0x87ae54`. Setting
+the stage during fight setup crashed in `0x120e0`. A scripted Kasumi run went
+through one fight, the Tengu scenes and fight, the dedication card, the ending
+with credits, the epilogue and the CG Gallery unlock without a stop. Other
+characters' Story lengths are unverified.
+
 The first boot copies about 700 MB of disc archives into the `Z:` cache
 partition, 32 KB per frame, while drawing only cleared frames. At the native
 pace this takes roughly 12 minutes and shows a black window. The cache lives in
@@ -93,6 +103,25 @@ include NaN for domain errors; guest CRT errno, math-error callbacks and
 unmasked floating-point exceptions are not implemented by this seam.
 
 ## Graphics API contract
+
+`RECOMP_D3D_WIDESCREEN=1` supplies XC_VIDEO 0x004f0000 (widescreen, no
+letterbox) instead of the standard 0x004e0000. The selected image's
+XGetVideoFlags (0x2bb87e) returns bit 0 from this setting; game initialization
+(0x282570) retains it and requests presentation flag 0x10. The device model
+accepts that flag at creation and Reset. The game's existing camera and UI
+branches select their 16:9 behavior, and the presenter sizes the window to
+match. No game matrices or guest code are patched.
+
+The Windows build includes pinned upstream SMAA shader and lookup tables.
+`RECOMP_D3D_MSAA=1/2/4/8/16/32` selects main-target samples, with GPU capability
+fallback; `RECOMP_D3D_SMAA=1` applies SMAA 1x Ultra to the resolved image
+before gamma. Both can run together. Native GPU tests compare each mode
+against the same AA-disabled image and cover widescreen window/target size,
+scaled shared-depth offscreen rendering, resolve, gamma and resource release.
+The launcher exposes 480p through 2160p, mapped to `RECOMP_D3D_SCALE` as
+height/480. The presenter's existing display-size and downsampling behavior
+applies. A 1080p GPU test requests 32 samples and checks the resolved output
+and shared depth after capability fallback.
 
 Textures aliasing either embedded frame-buffer surface use host-rendered
 storage. The front-buffer selector chooses the previous presented frame;
@@ -427,8 +456,13 @@ header alone, so an offscreen color can test against the main depth. The fight
 bloom source pass (0x2756f0) binds a 720x480 texture with the main depth,
 clears color only and draws its glow objects behind the scene's occluders. The
 adapter admits that pairing when the guest back buffer is not supersampled. The
-host then binds its main depth at scale 1 without MSAA; scaled or multisampled
-presentation draws such targets without depth.
+host gives full-frame offscreen colors the main target's scaled size and MSAA
+sample count, preserving shared depth and stencil. Multisampled colors resolve
+to single-sample textures before effects sample them. Smaller offscreen targets
+retain their guest size and one sample. Custom depth follows the matching color
+size. The 64 MiB offscreen budget counts guest storage, preserving scene
+capacity across resolution and AA settings. Host color storage and resolve
+textures grow with those settings; D3D11 allocation failures remain explicit.
 
 KickPushBuffer publishes queued native commands. WaitForIdle drains them.
 InsertFence returns an even sequence after draining; BlockOnFence drains too.
@@ -588,6 +622,16 @@ the current fiber is TLS block +0xC and the converted main fiber +0x10.
 Guest FS refers to the PCR block. The guest-thread scheduler saves and
 restores each thread's current fiber. Without this binding, the tasks never
 run and the game only clears frames.
+
+Every costume and character is offered. The game data pointer at `0x87cfa8`
+(observed `0x7feae0`) holds one costume byte per character at +0x2ed8, in the
+15-character order from `0x6959dc` mapped through `0x6959c0`. New saves start
+at 2; the select screen (`0x11e410`) shows `min(byte, count)` with counts from
+`0x6e0f08`. Characters 0x11, 0x18 and 0x15 need the flags at +0x2ed2, +0x2ed3
+and +0x2ed4 (`0x11e5f0`). After each Swap, the runner repeats the game's award
+loops (`0xdc640`, `0xdc100`): each costume byte becomes its count and the three
+flags become 1. Loaded profiles get the same values, and the next save stores
+them. Unlocks at +0x2ee7 to +0x2eeb (`0xdc4c0`) cover other content.
 
 ## Input API contract
 

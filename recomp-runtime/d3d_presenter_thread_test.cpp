@@ -1,13 +1,13 @@
-#include "d3d_card_model.h"
 #include "d3d_presenter.h"
 #include "d3d_presenter_d3d11_backend.h"
+#include "d3d_card_model.h"
 #include "d3d_draw_model.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-#include <algorithm>
 #include <cmath>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -2573,6 +2573,127 @@ static bool testDrawCoverage(bool scaled_msaa = false)
     return passed;
 }
 
+static bool testWidescreenAntialiasing(bool smaa, bool msaa, unsigned height = 480u, unsigned samples = 4u)
+{
+    char folder[MAX_PATH], path[MAX_PATH];
+    if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "aa", 0, path)) return false;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", path);
+    _putenv_s("RECOMP_D3D_WIDESCREEN", "1");
+    _putenv_s("RECOMP_D3D_SCALE", std::to_string(height / 240.0f).c_str());
+    _putenv_s("RECOMP_D3D_MSAA", msaa ? std::to_string(samples).c_str() : "1");
+    _putenv_s("RECOMP_D3D_SMAA", smaa ? "1" : "0");
+    RecompD3dPresenter *presenter = nullptr;
+    bool passed = expect("create widescreen AA", d3d11_backend_create(&config, &presenter));
+    if (passed) {
+        auto clear = clearCommand();
+        clear.data.clear.color = 0xff000000u;
+        passed &= expect("AA clear", d3d11_backend_submit(presenter, &clear));
+        struct Vertex { float x, y, z, rhw; uint32_t color; };
+        const Vertex occluder[] = {{0,0,0.25f,1,0}, {160,0,0.25f,1,0},
+            {0,240,0.25f,1,0}, {160,240,0.25f,1,0}};
+        const uint16_t indices[] = {0,1,2,3};
+        RecompD3dPresenterCommand command{RECOMP_D3D_PRESENTER_COMMAND_DRAW};
+        auto &draw = command.data.draw;
+        draw.fvf = 0x44u;
+        draw.vertex_stride = sizeof(Vertex);
+        draw.vertex_count = draw.index_count = 4u;
+        draw.triangle_count = 2u;
+        draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+        draw.vertex_bytes = occluder;
+        draw.index_bytes = indices;
+        draw.depth.depth_test_enable = draw.depth.depth_write_enable = true;
+        draw.depth.depth_func = RECOMP_D3D_COMPARE_LESS;
+        passed &= expect("AA main occluder", d3d11_backend_submit(presenter, &command));
+        RecompD3dPresenterTarget target{};
+        target.offscreen = true;
+        target.color.data = 0x10000u;
+        target.color.format_byte = 0x12u;
+        target.color.bits_per_pixel = 32u;
+        target.color.width = 320u; target.color.height = 240u; target.color.pitch = 1280u;
+        target.color.linear = true;
+        clear.data.clear.target = target;
+        clear.data.clear.clear_depth = false;
+        passed &= expect("AA offscreen color clear keeps depth", d3d11_backend_submit(presenter, &clear));
+        const Vertex triangle[] = {{20,20,0.5f,1,0xffffffffu}, {300,20,0.5f,1,0xffffffffu},
+            {300,220,0.5f,1,0xffffffffu}};
+        draw.vertex_bytes = triangle;
+        draw.vertex_count = draw.index_count = 3u;
+        draw.triangle_count = 1u;
+        draw.primitive_type = RECOMP_D3D_PT_TRIANGLELIST;
+        draw.depth.depth_write_enable = false;
+        draw.blend.color_write_mask = 15u;
+        draw.target = target;
+        passed &= expect("AA offscreen triangle shares main depth", d3d11_backend_submit(presenter, &command));
+        const float quad[4][7] = {{0,0,0,1,0,0,0}, {320,0,0,1,0,320,0},
+            {0,240,0,1,0,0,240}, {320,240,0,1,0,320,240}};
+        draw = {};
+        draw.fvf = 0x144u;
+        draw.vertex_stride = sizeof quad[0];
+        draw.vertex_count = draw.index_count = 4u;
+        draw.triangle_count = 2u;
+        draw.primitive_type = RECOMP_D3D_PT_TRIANGLESTRIP;
+        draw.vertex_bytes = quad;
+        draw.index_bytes = indices;
+        draw.blend.color_write_mask = 15u;
+        draw.has_texture = true;
+        draw.texture = target.color;
+        draw.address_u = draw.address_v = 3u;
+        draw.directional.stage_mode = true;
+        draw.directional.stage[0] = draw.directional.stage[3] = 1u;
+        passed &= expect("AA resolved offscreen composite", d3d11_backend_submit(presenter, &command));
+        if (smaa && msaa) {
+            RecompD3dPresenterCommand gamma{RECOMP_D3D_PRESENTER_COMMAND_GAMMA};
+            for (auto &channel : gamma.data.gamma)
+                for (unsigned i = 0u; i < 256u; ++i) channel[i] = static_cast<uint8_t>((i * i + 127u) / 255u);
+            passed &= expect("AA with gamma", d3d11_backend_submit(presenter, &gamma));
+        }
+        RecompD3dPresenterCommand present{RECOMP_D3D_PRESENTER_COMMAND_PRESENT};
+        present.data.present = {5u,1u};
+        passed &= expect("AA present", d3d11_backend_submit(presenter, &present));
+        RECT rect{};
+        const unsigned client_height = (std::min)(height, static_cast<unsigned>(GetSystemMetrics(SM_CYSCREEN)));
+        passed &= GetClientRect(presenterWindow(), &rect) &&
+            rect.right == (client_height * 16u + 8u) / 9u && rect.bottom == client_height;
+        passed &= expect("AA target release", d3d11_backend_release_memory(presenter, 0x10000u, 4096u, true));
+    }
+    d3d11_backend_destroy(&presenter);
+    unsigned partial = 0u, changed = 0u;
+    static std::vector<unsigned char> baseline;
+    if (FILE *file = std::fopen(path, "rb")) {
+        uint32_t width = 0u, dumped_height = 0u;
+        std::fseek(file, 18, SEEK_SET);
+        passed &= std::fread(&width, 4, 1, file) == 1 && std::fread(&dumped_height, 4, 1, file) == 1;
+        passed &= width == (height * 16u + 8u) / 9u && dumped_height == height;
+        const unsigned stride = (width * 3u + 3u) & ~3u;
+        std::vector<unsigned char> row(stride);
+        if (!smaa && !msaa) baseline.resize(static_cast<size_t>(stride) * height);
+        std::fseek(file, 54, SEEK_SET);
+        for (unsigned y = 0u; y < height; ++y) {
+            passed &= std::fread(row.data(), stride, 1, file) == 1;
+            for (unsigned x = 0u; x < width; ++x) {
+                const unsigned color = row[x * 3u];
+                partial += color > 0u && color < 255u;
+                const size_t offset = static_cast<size_t>(y) * stride + x * 3u;
+                if (!smaa && !msaa) baseline[offset] = static_cast<unsigned char>(color);
+                else if (offset < baseline.size()) changed += std::abs(static_cast<int>(color) - baseline[offset]) > 2;
+                if (x == width / 4u && y == height * 3u / 4u) passed &= color == 0u;
+                if (x == width * 3u / 4u && y == height * 3u / 4u) passed &= color == 255u;
+            }
+        }
+        std::fclose(file);
+    } else passed = false;
+    if (smaa || msaa) passed &= partial > 100u && changed > 100u;
+    _putenv_s("RECOMP_D3D_FRAME_DUMP", "");
+    _putenv_s("RECOMP_D3D_WIDESCREEN", "");
+    _putenv_s("RECOMP_D3D_SCALE", "");
+    _putenv_s("RECOMP_D3D_MSAA", "");
+    _putenv_s("RECOMP_D3D_SMAA", "");
+    DeleteFileA(path);
+    std::fprintf(passed ? stdout : stderr, "%s widescreen height=%u smaa=%d requested_msaa=%u partial=%u changed=%u and shared depth\n",
+        passed ? "PASS" : "FAIL", height, smaa, msaa ? samples : 1u, partial, changed);
+    return passed;
+}
+
 static bool testQueuedDrawCoverage()
 {
     RecompD3dPresenter *presenter = nullptr;
@@ -2609,7 +2730,10 @@ static bool testQueuedDrawCoverage()
 int main()
 {
     recomp_d3d_presenter_set_immediate_present(false);
-    if (!testDrawCoverage() || !testDrawCoverage(true) || !testQueuedDrawCoverage() ||
+    if (!testWidescreenAntialiasing(false, false) || !testWidescreenAntialiasing(true, false) ||
+        !testWidescreenAntialiasing(false, true) || !testWidescreenAntialiasing(true, true) ||
+        !testWidescreenAntialiasing(false, false, 1080u) || !testWidescreenAntialiasing(true, true, 1080u, 32u) ||
+        !testDrawCoverage() || !testDrawCoverage(true) || !testQueuedDrawCoverage() ||
         !testTicks() || !testCapturedDraw() || !testMipSampler() || !testLines() || !testLighting() ||
         !testReflectionStage2() || !testReflectionStage2(true) ||
         !testReflectionAddress(false) || !testReflectionAddress(true) || !testReflectionAddress(true, true) ||
