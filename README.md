@@ -65,7 +65,7 @@ Story staff roll.
 ## Status
 
 > [!WARNING]
-> **0.1 Alpha is bring-up software.** Story, Watch and the attract demo play
+> **0.1.1 Alpha is bring-up software.** Story, Watch and the attract demo play
 > in development runs on every stage, but many modes and characters have not
 > been tried. A draw the port cannot render yet stops the game with a message
 > in the log.
@@ -179,7 +179,7 @@ ending that uses separate probe saves.
 To package a release ZIP from a clean checkout:
 
 ```powershell
-python tools/package_test.py 0.1-Alpha
+python tools/package_test.py 0.1.1-Alpha
 ```
 
 It zips committed HEAD, the pinned lifter, extract-xiso and its license, and
