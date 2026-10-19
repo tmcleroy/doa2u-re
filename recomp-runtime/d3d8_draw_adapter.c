@@ -1442,10 +1442,15 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
     const uint16_t *indices;
     uint16_t *sequential = NULL;
     uint32_t largest = count - 1u;
+    uint32_t smallest = 0u;
     if (index_address != 0u) {
         indices = (const uint16_t *)(const void *)recomp_memory(index_address, count * 2u);
         largest = 0u;
-        for (uint32_t i = 0u; i < count; ++i) if (indices[i] > largest) largest = indices[i];
+        smallest = 0xffffu;
+        for (uint32_t i = 0u; i < count; ++i) {
+            if (indices[i] > largest) largest = indices[i];
+            if (indices[i] < smallest) smallest = indices[i];
+        }
     } else {
         sequential = malloc(count * sizeof *sequential);
         if (sequential == NULL) recomp_stop(2, "d3d8:draw-index-allocation");
@@ -1479,6 +1484,19 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
         indices = pairs;
         primitive = 2u;
         count = triangles * 2u;
+    }
+    /* Stage meshes index a few hundred vertices deep inside shared buffers;
+       send only the indexed range (about 10 of 12 MB per frame otherwise). */
+    if (smallest != 0u) {
+        if (sequential == NULL) {
+            sequential = malloc(count * sizeof *sequential);
+            if (sequential == NULL) recomp_stop(2, "d3d8:draw-index-allocation");
+            memcpy(sequential, indices, count * sizeof *sequential);
+            indices = sequential;
+        }
+        for (uint32_t i = 0u; i < count; ++i) sequential[i] = (uint16_t)(sequential[i] - smallest);
+        vertices += smallest * stride;
+        largest -= smallest;
     }
     draw->vertex_count = largest + 1u;
     const uint32_t bytes = recomp_d3d_draw_vertex_bytes(stride, largest);

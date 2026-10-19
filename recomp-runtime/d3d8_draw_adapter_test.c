@@ -274,6 +274,13 @@ static int draw_tests(void)
     CHECK(recomp_runtime.registers.esp == STACK + 16u && submits == 4u);
     CHECK(submitted.data.draw.vertex_count == 5u && captured_indices[0] == 4u);
     CHECK(submitted.data.draw.vertex_bytes == ram + VERTICES + 56u);
+    const uint16_t deep[3] = {6u, 4u, 5u};
+    recomp_guest_store(INDICES, deep, sizeof deep);
+    invoke(0x348450u, 5u, 3u, INDICES, 0u);
+    CHECK(submitted.data.draw.vertex_count == 3u && captured_indices[0] == 2u &&
+        captured_indices[1] == 0u && captured_indices[2] == 1u);
+    CHECK(submitted.data.draw.vertex_bytes == ram + VERTICES + 56u + 4u * submitted.data.draw.vertex_stride);
+    CHECK(memcmp(ram + INDICES, deep, sizeof deep) == 0);
     *recomp_memory_u32(DEVICE + 0x798u) = 2u;
     const float translate = 3.5f;
     recomp_guest_store(DEVICE + 0xde0u + 48u, &translate, sizeof translate);
