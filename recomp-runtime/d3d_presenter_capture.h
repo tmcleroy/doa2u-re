@@ -11,7 +11,7 @@
 
 class D3dCapturePacket {
 public:
-    enum Kind : uint32_t { COMMAND, RELEASE, REPORT };
+    enum Kind : uint32_t { COMMAND, RELEASE, REPORT, INVALIDATE };
     struct Record { Kind kind; uint32_t base; uint32_t size; };
 
     D3dCapturePacket() = default;
@@ -22,6 +22,7 @@ public:
 
     RecompD3dPresenterError add(const RecompD3dPresenterCommand &command);
     RecompD3dPresenterError addRelease(uint32_t base, uint32_t size);
+    RecompD3dPresenterError addInvalidate(uint32_t base, uint32_t size);
     RecompD3dPresenterError addReport();
     void seal();
     size_t count() const;

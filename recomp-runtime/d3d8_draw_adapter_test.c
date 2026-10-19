@@ -837,7 +837,7 @@ static int lighting_tests(void)
     for (uint32_t weights = 2u; weights <= 3u; ++weights) {
         recomp_guest_store(DEVICE + 0xde0u + weights * 64u, reflection_world1, sizeof reflection_world1);
         *recomp_memory_u32(DEVICE + 0x798u) = 0x114u + weights * 2u;
-        *recomp_memory_u32(0x355484u) = weights;
+        *recomp_memory_u32(0x355484u) = weights * 2u - 1u;
         invoke(0x348240u, 5u, 3u, VERTICES, 32u + weights * 4u);
         CHECK(submitted.data.draw.blend_weight_count == weights &&
             submitted.data.draw.reflection_blend_world_view[weights - 1u][12] == 9.0f);
@@ -939,6 +939,14 @@ static int lighting_tests(void)
     CHECK(submitted.data.draw.texgen_reflection && !submitted.data.draw.has_reflection &&
         submitted.data.draw.reflection_transform[12] == 9.0f &&
         submitted.data.draw.reflection_world_view[12] == 5.0f);
+    /* COUNT2 never uploads column 2, so a stale all-ones _43 is unused. */
+    *recomp_memory_u32(DEVICE + 0xce0u + 14u * 4u) = 0xffffffffu;
+    invoke(0x348240u, 5u, 3u, VERTICES, 24u);
+    CHECK(submitted.data.draw.texgen_reflection && submitted.data.draw.reflection_transform[12] == 9.0f);
+    *recomp_memory_u32(DEVICE + 0xce0u + 13u * 4u) = 0xffffffffu;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 24u); return 1; }
+    CHECK(strstr(stop_reason, "d3d8:reflection-transform:fvf=142:matrix=ce0:field=13:") != NULL);
+    recomp_guest_store(DEVICE + 0xce0u, texture0, sizeof texture0);
     *recomp_memory_u32(STAGES + 21u * 4u) = 3u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 24u); return 1; }
     CHECK(strncmp(stop_reason, "d3d8:draw-texture-coordinates:", 29u) == 0 &&
@@ -1093,6 +1101,32 @@ static int bright_tests(void)
     CHECK(recomp_d3d8_state_set_simple(0x40ac4u, 0x4d200001u));
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 24u); return 1; }
     CHECK(submits == 2u && strcmp(stop_reason, "d3d8:draw-pixel-shader-unsupported") == 0);
+    /* 0xa74f0's screen tint, with 0xa75d0's SetPixelShaderConstant(1) reaching stage-1 C0. */
+    initialize();
+    memset(ram + INPUT, 0, 0xf0u);
+    static const uint32_t tint[][2] = {
+        {0x04u, 0xd1cd1010u}, {0x28u, 0x004c961du}, {0x6cu, 0xc0u}, {0x88u, 0xc8c10000u},
+        {0x8cu, 0xc1cd0000u}, {0xb4u, 0x820d0u}, {0xb8u, 0xc0u}, {0xd4u, 0x11102u}, {0xd8u, 1u},
+        {0xe4u, 0xffffff10u}, {0xe8u, 0xffffffffu}, {0xecu, 0x1ffu},
+    };
+    for (uint32_t i = 0u; i < sizeof tint / sizeof tint[0]; ++i)
+        *recomp_memory_u32(INPUT + tint[i][0]) = tint[i][1];
+    invoke(0x349490u, INPUT, OUTPUT, 0u, 0u);
+    invoke(0x349520u, *recomp_memory_u32(OUTPUT), 0u, 0u, 0u);
+    const float sepia[4] = {1.0f, 0.5f, 0.0f, 1.0f};
+    recomp_guest_store(INPUT + 0x100u, sepia, sizeof sepia);
+    invoke(0x349720u, 1u, INPUT + 0x100u, 1u, 0u);
+    *recomp_memory_u32(DEVICE + 0xf88u) = 0x7000u;
+    *recomp_memory_u32(DEVICE + 0x798u) = 0x104u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 24u);
+    CHECK(submits == 1u && submitted.data.draw.luminance_tint && !submitted.data.draw.bright_pass &&
+        submitted.data.draw.luminance_tint_factors[0] == 0x004c961du &&
+        submitted.data.draw.luminance_tint_factors[1] == 0xffff8000u);
+    /* Fog replaces the default final combiner. */
+    *recomp_memory_u32(0x3553d0u) = 1u;
+    if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 24u); return 1; }
+    CHECK(submits == 1u && strcmp(stop_reason, "d3d8:draw-pixel-shader-unsupported") == 0);
+    *recomp_memory_u32(0x3553d0u) = 0u;
     /* Bloom composite: MODULATE2X(TEXTURE, TFACTOR) with stage-0 alpha disabled. */
     initialize();
     *recomp_memory_u32(DEVICE + 0xf88u) = 0x7000u;
@@ -1101,20 +1135,25 @@ static int bright_tests(void)
     *recomp_memory_u32(STAGES + 60u) = 3u;
     *recomp_memory_u32(STAGES + 64u) = 1u;
     invoke(0x348240u, 5u, 3u, VERTICES, 24u);
-    CHECK(submits == 1u && submitted.data.draw.texture_factor_modulate2x &&
+    CHECK(submits == 1u && submitted.data.draw.texture_factor_color_scale == 2u &&
         submitted.data.draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE &&
+        submitted.data.draw.material_alpha == 1.0f);
+    *recomp_memory_u32(STAGES + 48u) = 6u;
+    if (setjmp(stopped) != 0) { fprintf(stderr, "Unexpected 4x composite stop: %s\n", stop_reason); return 1; }
+    invoke(0x348240u, 9u, 4u, VERTICES, 24u);
+    CHECK(submits == 2u && submitted.data.draw.texture_factor_color_scale == 4u &&
         submitted.data.draw.material_alpha == 1.0f);
     /* Trail strips (setup 0x23a42d): 1x MODULATE(TEXTURE, TFACTOR), alpha DISABLE. */
     *recomp_memory_u32(STAGES + 48u) = 4u;
     *recomp_memory_u32(DEVICE + 0x798u) = 0x102u;
     invoke(0x348240u, 5u, 3u, VERTICES, 20u);
-    CHECK(submits == 2u && submitted.data.draw.texture_factor_modulate &&
-        !submitted.data.draw.texture_factor_modulate2x &&
+    CHECK(submits == 3u && submitted.data.draw.texture_factor_modulate &&
+        !submitted.data.draw.texture_factor_color_scale &&
         submitted.data.draw.material_alpha_mode == RECOMP_D3D_MATERIAL_ALPHA_SELECT_DIFFUSE);
     *recomp_memory_u32(STAGES + 48u) = 5u;
     *recomp_memory_u32(DEVICE + 0x798u) = 0x144u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 28u); return 1; }
-    CHECK(submits == 2u && strncmp(stop_reason, "d3d8:draw-texture-combine:", 26) == 0);
+    CHECK(submits == 3u && strncmp(stop_reason, "d3d8:draw-texture-combine:", 26) == 0);
     return 0;
 }
 
@@ -1395,6 +1434,35 @@ static int position_texgen_tests(void)
     invoke(0x348240u, 5u, 3u, VERTICES, 32u);
     CHECK(submitted.data.draw.texgen_projected &&
         memcmp(submitted.data.draw.reflection_transform, matrix, sizeof matrix) == 0);
+    /* 0x1df200's 1/0 projector: a non-finite translation sends every clamped
+       sample to the edge, here one transparent white texel. */
+    texture.format_byte = 0x0fu;
+    texture.bits_per_pixel = 8u;
+    texture.width = texture.height = 8u;
+    /* Synthetic blocks: alpha endpoint 0 everywhere, color endpoint 1 white. */
+    memset(ram + 0x8000u, 0, 64u);
+    for (uint32_t block = 0u; block < 4u; ++block) {
+        uint8_t *bytes = ram + 0x8000u + block * 16u;
+        bytes[1] = 1u;
+        bytes[10] = bytes[11] = 0xffu;
+        memset(bytes + 12u, 0x55, 4u);
+    }
+    float infinite[16];
+    for (uint32_t i = 0u; i < 16u; ++i) infinite[i] = NAN;
+    infinite[12] = -INFINITY; infinite[13] = INFINITY; infinite[15] = 1.0f;
+    recomp_guest_store(DEVICE + 0xce0u, infinite, sizeof infinite);
+    set_stage(0u, 0u, 3u); set_stage(0u, 1u, 3u); set_stage(0u, 21u, 2u);
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    const float *edge = submitted.data.draw.reflection_transform;
+    CHECK(submits == 6u && edge[0] == 0.0f && edge[5] == 0.0f &&
+        edge[12] == -1.0f && edge[13] == -1.0f && edge[14] == 1.0f);
+    /* A wrapped axis, or an edge texel that differs, leaves the sample unknown. */
+    for (uint32_t variant = 0u; variant < 2u; ++variant) {
+        if (variant == 0u) set_stage(0u, 1u, 1u);
+        else { set_stage(0u, 1u, 3u); ram[0x8000u + 3u * 16u + 15u] = 0x15u; }
+        if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
+        CHECK(strncmp(stop_reason, "d3d8:reflection-transform:", 26u) == 0 && submits == 6u);
+    }
     return 0;
 }
 
@@ -1679,10 +1747,15 @@ static int reflection_coverage_tests(void)
         for (uint32_t st = 0u; st < 3u; ++st)
             for (uint32_t f = 0u; f < 6u; ++f) set_stage(st, fields[f], reflection[st][f]);
         set_stage(stage, 21u, 2u); set_stage(stage, 28u, 0x30000u);
+        /* Every vertex on one line: no triangle has area, so no query runs. */
+        covered = true;
+        invoke(0x348240u, 6u, 3u, VERTICES, 32u);
+        CHECK(submits == 0u && coverage_queries == 0u && recomp_runtime.registers.esp == STACK + 20u);
+        /* A flattened plane keeps area; only raster coverage proves it unused. */
+        *recomp_memory_u32(DEVICE + 0xde0u + 40u) = 0x3f800000u;
         covered = false;
         invoke(0x348240u, 6u, 3u, VERTICES, 32u);
         CHECK(submits == 0u && coverage_queries == 1u && recomp_runtime.registers.esp == STACK + 20u);
-        /* Matrix rank alone cannot prove no coverage after raster snapping. */
         covered = true;
         if (setjmp(stopped) == 0) { invoke(0x348240u, 6u, 3u, VERTICES, 32u); return 1; }
         CHECK(strncmp(stop_reason, "d3d8:reflection-normal:", 22u) == 0 && submits == 0u && coverage_queries == 2u);

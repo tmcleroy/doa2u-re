@@ -340,6 +340,40 @@ static bool bright_pass(uint32_t device, RecompD3dPresenterDrawCommand *draw)
     return true;
 }
 
+/* Screen tint (definition 0xa74f0, drawn by 0xa75d0 over the back buffer):
+   stage 0 writes r1 = dot(t0, c0) to RGB and, by AB_BLUE_TO_ALPHA, alpha;
+   stage 1 writes r0 = C0 * r1 (alpha from r1.b). The final words are zero, so
+   with fog off 0x34f5f0 outputs r0 + (SpecularEnable ? v1 : 0) and r0.a. */
+static bool luminance_tint(uint32_t device, RecompD3dPresenterDrawCommand *draw)
+{
+    static const uint32_t simple[][2] = {
+        {0x40260u, 0u}, {0x40264u, 0xd1cd1010u}, {0x40aa0u, 0u}, {0x40aa4u, 0xc0u},
+        {0x40ac0u, 0xc8c10000u}, {0x40ac4u, 0xc1cd0000u}, {0x41e40u, 0x820d0u}, {0x41e44u, 0xc0u},
+        {0x41e60u, 0x11102u}, {0x417f8u, 0u}, {0x41e74u, 0u}, {0x41e78u, 0u},
+    };
+    /* Linear min/mag, no mips, UV0, no color key, kill or transform. */
+    static const uint32_t sampler[][2] = {
+        {3u, 2u}, {4u, 2u}, {5u, 0u}, {9u, 0u}, {10u, 0u}, {11u, 0u}, {21u, 0u}, {28u, 0u},
+    };
+    /* An absent specular attribute reads zero (0x3493de), as for the distortion pass. */
+    if (!draw->has_texture || ((draw->fvf >> 8u) & 15u) != 1u ||
+        *recomp_memory_u32(device + 0x788u) != 0u || *recomp_memory_u32(device + 0x790u) != 1u ||
+        *recomp_memory_u32(0x3553d0u) != 0u ||
+        ((draw->fvf & 0x80u) != 0u && *recomp_memory_u32(0x3553fcu) != 0u)) return false;
+    for (uint32_t i = 0u; i < sizeof sampler / sizeof sampler[0]; ++i)
+        if (*recomp_memory_u32(STAGES + sampler[i][0] * 4u) != sampler[i][1]) return false;
+    const RecompD3dRenderStateModel *state = recomp_d3d8_state_model();
+    uint32_t value;
+    for (uint32_t i = 0u; i < sizeof simple / sizeof simple[0]; ++i)
+        if (!recomp_d3d_get_simple_render_state(state, simple[i][0], &value) || value != simple[i][1])
+            return false;
+    if (!recomp_d3d_get_simple_render_state(state, 0x40a60u, &draw->luminance_tint_factors[0]) ||
+        !recomp_d3d_get_simple_render_state(state, 0x40a64u, &draw->luminance_tint_factors[1]))
+        return false;
+    draw->luminance_tint = true;
+    return true;
+}
+
 /* Stage distortion pass (FUN_0027b070, definition 0x7af5d8): t0 PROJECT2D,
    t1 DOTPRODUCT and t2 DOT_ST with MINUS1_TO_1_D3D dot mapping, one combiner
    r0 = t2 and zero final-combiner words. With fog off, 0x34f5f0 outputs
@@ -680,8 +714,73 @@ static void attach_lighting(uint32_t device, const RecompD3dVertexLayout *layout
 
 /* Camera-space reflection inputs: world-view, its normal matrix and the
    texture matrix of the generating stage (TEXTURE0 0xce0, TEXTURE1 0xd20). */
-static bool reflection_inputs(uint32_t device, uint32_t texture_matrix, bool needs_normal,
-    RecompD3dPresenterDrawCommand *draw)
+/* World 3x3 rank of at most one: every row pair has a zero cross product.
+   Float products are exact in double, so the test is exact. */
+static bool world_collapses_to_line(const float world[16])
+{
+    for (uint32_t a = 0u; a < 2u; ++a)
+        for (uint32_t b = a + 1u; b < 3u; ++b)
+            for (uint32_t c = 0u; c < 3u; ++c) {
+                const uint32_t x = (c + 1u) % 3u, y = (c + 2u) % 3u;
+                if ((double)world[a * 4u + x] * world[b * 4u + y] !=
+                    (double)world[a * 4u + y] * world[b * 4u + x]) return false;
+            }
+    return true;
+}
+
+/* Every edge texel of a single-level DXT5 texture holds one value. Only
+   endpoint indices count, whose decoded value no decoder rounding can change. */
+static bool dxt5_uniform_edge(const uint8_t *bytes, uint32_t width, uint32_t height)
+{
+    int64_t first = -1;
+    for (uint32_t y = 0u; y < height; ++y)
+        for (uint32_t x = 0u; x < width; x += (y == 0u || y == height - 1u || x == width - 1u) ? 1u : width - 1u) {
+            const uint8_t *block = bytes + ((y / 4u) * (width / 4u) + x / 4u) * 16u;
+            const uint32_t texel = (y % 4u) * 4u + x % 4u;
+            uint64_t alpha_bits = 0u;
+            memcpy(&alpha_bits, block + 2u, 6u);
+            const uint32_t a = (uint32_t)(alpha_bits >> (3u * texel)) & 7u;
+            const uint32_t c = (block[12u + y % 4u] >> (2u * (x % 4u))) & 3u;
+            int64_t alpha;
+            if (a < 2u) alpha = block[a];
+            else if (block[0] <= block[1] && a >= 6u) alpha = a == 6u ? 0 : 255;
+            else return false;
+            if (c > 1u) return false;
+            const int64_t value = alpha << 16 | block[8u + 2u * c] | block[9u + 2u * c] << 8;
+            if (first >= 0 && value != first) return false;
+            first = value;
+        }
+    return first >= 0;
+}
+
+/* 0x1df200's projector divides by (size - 50)^2, so TEXTURE0 holds infinities
+   and NaNs for one frame. Camera-space position has w = 1, so a non-finite
+   translation makes S and T non-finite at every vertex under any NaN or
+   zero-times-infinity rule. CLAMP sends such a coordinate to an edge, whether
+   the texture unit reads NaN as zero or a saturated end, so a uniform edge
+   makes the sample exact: the corner at (-1, -1). */
+static bool clamped_edge_transform(RecompD3dPresenterDrawCommand *draw)
+{
+    const uint32_t *stage = recomp_memory_u32(STAGES);
+    const float *m = draw->reflection_transform;
+    if (stage[28] != 0x20000u || (stage[21] != 2u && stage[21] != 3u) ||
+        isfinite(m[12]) || isfinite(m[13]) ||
+        stage[0] != 3u || stage[1] != 3u ||
+        !draw->has_texture || draw->texture.volume_depth != 0u || draw->texture.mip_levels != 1u ||
+        draw->texture.format_byte != RECOMP_D3D_TEXTURE_FORMAT_DXT5 ||
+        draw->texture.width % 4u != 0u || draw->texture.height % 4u != 0u ||
+        !dxt5_uniform_edge(draw->texture_bytes, draw->texture.width, draw->texture.height))
+        return false;
+    memset(draw->reflection_transform, 0, sizeof draw->reflection_transform);
+    draw->reflection_transform[12] = draw->reflection_transform[13] = -1.0f;
+    draw->reflection_transform[15] = 1.0f;
+    return true;
+}
+
+/* columns: how many texture-matrix columns the SDK upload (0x34f7d0) sends for
+   the stage's TEXTURETRANSFORMFLAGS count; the rest never reach the GPU. */
+static bool reflection_inputs(uint32_t device, uint32_t texture_matrix, uint32_t columns,
+    bool needs_normal, RecompD3dPresenterDrawCommand *draw)
 {
     float world[16], view[16];
     recomp_guest_load(view, device + 0xc60u, sizeof view);
@@ -695,9 +794,13 @@ static bool reflection_inputs(uint32_t device, uint32_t texture_matrix, bool nee
         /* Position texgen and the no-normal reflection shader never read an inverse. */
         if (!needs_normal) continue;
         if (!recomp_d3d_normal_transform(wv, normal)) {
-            /* Only exact raster coverage can prove the undefined normal is unused. */
+            /* A lone world of rank one or less (0xea6e0's squash with a zero
+               animation scale) puts every vertex on one eye-space line, so no
+               triangle has area; host snapping slivers are rounding. Otherwise
+               only exact raster coverage can prove the undefined normal unused. */
             if (draw->primitive_type >= 5u && draw->primitive_type <= 7u &&
-                !recomp_d3d8_draw_has_coverage(draw)) return false;
+                ((draw->blend_weight_count == 0u && world_collapses_to_line(world)) ||
+                 !recomp_d3d8_draw_has_coverage(draw))) return false;
             recomp_stop(2, "d3d8:reflection-normal:fvf=%x:matrix=%x:influence=%u/%u:normalize=%u:ret=%08x",
                 draw->fvf, texture_matrix, i, draw->blend_weight_count, draw->reflection_normalize,
                 *recomp_memory_u32(recomp_runtime.registers.esp));
@@ -717,8 +820,9 @@ static bool reflection_inputs(uint32_t device, uint32_t texture_matrix, bool nee
         }
     }
     recomp_guest_load(draw->reflection_transform, device + texture_matrix, sizeof draw->reflection_transform);
+    if (texture_matrix == 0xce0u && clamped_edge_transform(draw)) return true;
     for (uint32_t i = 0u; i < 16u; ++i)
-        if (!isfinite(draw->reflection_transform[i]))
+        if (i % 4u < columns && !isfinite(draw->reflection_transform[i]))
             recomp_stop(2, "d3d8:reflection-transform:fvf=%x:matrix=%x:field=%u:bits=%08x:tci=%x,%x:ret=%08x",
                 draw->fvf, texture_matrix, i, *recomp_memory_u32(device + texture_matrix + i * 4u),
                 *recomp_memory_u32(STAGES + 28u * 4u), *recomp_memory_u32(STAGES + 128u + 28u * 4u),
@@ -759,7 +863,7 @@ static bool attach_reflection(uint32_t device, const RecompD3dVertexLayout *layo
     draw->reflection_address_v = texture.address_v;
     draw->reflection_bytes = texture.texture_bytes;
     draw->reflection_byte_count = texture.texture_byte_count;
-    if (!reflection_inputs(device, 0xd20u,
+    if (!reflection_inputs(device, 0xd20u, 4u,
         layout->normal_offset != RECOMP_D3D_FVF_ABSENT && stages[1][28] == 0x30000u, draw)) return false;
     recomp_guest_load(draw->reflection_diffuse, device + 0xf00u, sizeof draw->reflection_diffuse);
     for (uint32_t i = 0u; i < 4u; ++i)
@@ -868,9 +972,10 @@ static bool fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
                 : RECOMP_D3D_MATERIAL_ALPHA_SELECT_VERTEX_DIFFUSE;
             draw->material_alpha = 1.0f;
         }
-        /* MODULATE2X(TEXTURE, TFACTOR) reads no diffuse, so admit it only for white vertices. */
-        draw->texture_factor_modulate2x = white && stage[0][12] == 5u &&
-            stage[0][14] == 2u && stage[0][15] == 3u;
+        /* Scaled texture-times-factor reads no diffuse; this path requires white vertices. */
+        if (white && (stage[0][12] == 5u || stage[0][12] == 6u) &&
+            stage[0][14] == 2u && stage[0][15] == 3u)
+            draw->texture_factor_color_scale = stage[0][12] == 5u ? 2u : 4u;
         /* The trail strips (setup 0x23a42d, draw 0x23ca7e) use 1x MODULATE. */
         draw->texture_factor_modulate = !draw->directional.enabled && white && stage[0][12] == 4u &&
             ((stage[0][14] == 2u && stage[0][15] == 3u) || (stage[0][14] == 3u && stage[0][15] == 2u));
@@ -898,7 +1003,7 @@ static bool fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
             draw->material_alpha_mode = RECOMP_D3D_MATERIAL_ALPHA_NONE;
         } else alpha_tfactor = false;
         if (!draw->directional.enabled && !draw->has_reflection && !unlit_select &&
-            (!(color_modulate || draw->texture_factor_modulate2x || draw->texture_factor_modulate ||
+            (!(color_modulate || draw->texture_factor_color_scale || draw->texture_factor_modulate ||
                (white && stage[0][12] == 2u && stage[0][14] == 2u)) ||
              !(alpha_modulate || white_alpha || texture_alpha || vertex_alpha || diffuse_alpha)))
             recomp_stop(2, "d3d8:draw-texture-combine:%u,%u,%u/%u,%u,%u:fvf=%x:ret=%08x",
@@ -930,7 +1035,8 @@ static bool fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
             if (draw->has_reflection && !draw->reflection_mesh_uv)
                 memcpy(draw->reflection_stage1_transform, draw->reflection_transform,
                     sizeof draw->reflection_stage1_transform);
-            if (!reflection_inputs(device, 0xce0u,
+            /* COUNT2 (case 0x320) uploads columns 0-1 and zeros; COUNT3 adds column 2. */
+            if (!reflection_inputs(device, 0xce0u, stage[0][21] & 0xffu,
                 texgen && layout->normal_offset != RECOMP_D3D_FVF_ABSENT, draw)) return false;
             draw->texgen_reflection = texgen;
             draw->texgen_projected = camera_position;
@@ -969,7 +1075,7 @@ static bool fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
         draw->modulate_texture_factor_alpha = alpha_tfactor;
         /* The presenter applies one texture-factor mode per draw. */
         if ((alpha_tfactor && (draw->modulate_texture_factor || draw->texture_factor_modulate ||
-                draw->texture_factor_modulate2x)) ||
+                draw->texture_factor_color_scale)) ||
             (draw->modulate_texture_factor && draw->texture_factor_modulate))
             recomp_stop(2, "d3d8:texture-factor-twice");
         if (stage[1][12] != 1u && !draw->modulate_texture_factor && !draw->has_reflection && !stage1_alpha)
@@ -1404,7 +1510,8 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
         multiply(world, vp, draw->transform);
         draw->has_transform = true;
         draw->blend_weight_count = layout.blend_weight_count;
-        if (layout.blend_weight_count != 0u && *recomp_memory_u32(0x355484u) != layout.blend_weight_count)
+        if (layout.blend_weight_count != 0u &&
+            *recomp_memory_u32(0x355484u) != layout.blend_weight_count * 2u - 1u)
             recomp_stop(2, "d3d8:draw-vertex-blend");
         for (uint32_t i = 0u; i < layout.blend_weight_count; ++i) {
             recomp_guest_load(world, device + 0xe20u + i * 64u, sizeof world);
@@ -1467,7 +1574,7 @@ static void submit_draw(uint32_t primitive, uint32_t count, uint32_t vertices,
         program_stages(device, draw);
     } else if (*recomp_memory_u32(device + PIXEL_HANDLE) != 0u) {
         if (distorted) expanded = distortion(device, stride, draw);
-        else if (!four_tap(device, draw) && !bright_pass(device, draw))
+        else if (!four_tap(device, draw) && !bright_pass(device, draw) && !luminance_tint(device, draw))
             recomp_stop(2, "d3d8:draw-pixel-shader-unsupported");
     } else {
         if (!attach_reflection(device, &layout, draw) || !fixed_stages(device, &layout, draw)) {

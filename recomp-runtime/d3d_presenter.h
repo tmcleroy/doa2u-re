@@ -148,8 +148,8 @@ typedef struct RecompD3dPresenterDrawCommand {
     bool use_texture_factor;
     /* Stage 1 multiplies the sampled result by this factor. */
     bool modulate_texture_factor;
-    /* Stage 0 color is saturate(2 * texture * factor); alpha keeps its own selection. */
-    bool texture_factor_modulate2x;
+    /* Stage 0 color is saturate(scale * texture * factor), scale 2 or 4; zero disables. */
+    uint32_t texture_factor_color_scale;
     uint32_t texture_factor;
     /* Measured stage-0 selection or modulation of material alpha. */
     RecompD3dMaterialAlphaMode material_alpha_mode;
@@ -168,6 +168,10 @@ typedef struct RecompD3dPresenterDrawCommand {
        The threshold is stage-0 C0 in packed ARGB; UV0 is the only coordinate. */
     bool bright_pass;
     uint32_t bright_pass_threshold;
+    /* Two-stage tint: l = dot(t0.rgb, c0.rgb), output saturate(c1 * l) for RGB
+       and alpha. Factors are stage-0 C0 and stage-1 C0 in packed ARGB. */
+    bool luminance_tint;
+    uint32_t luminance_tint_factors[2];
     /* Stage 0 texture for this draw. `texture_bytes` is a host-readable view
        of guest pixel memory, valid only for the duration of the submit. */
     RecompD3dTextureDesc texture;
@@ -335,6 +339,11 @@ RecompD3dPresenterError recomp_d3d_presenter_visibility_result(
 /* Retire pixels only when their backing allocation is released, not when a
    nonowning surface wrapper is destroyed. Accepts guest RAM aliases. */
 RecompD3dPresenterError recomp_d3d_presenter_release_memory(
+    RecompD3dPresenter *presenter, uint32_t base, uint32_t size);
+
+/* Drop cached CPU texture uploads in a range but keep rendered color and depth
+   targets: re-registering a header over rendered memory leaves its pixels. */
+RecompD3dPresenterError recomp_d3d_presenter_invalidate_textures(
     RecompD3dPresenter *presenter, uint32_t base, uint32_t size);
 
 /* Process-wide host pacing toggle. When enabled, presents use

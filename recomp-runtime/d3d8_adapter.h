@@ -19,6 +19,7 @@ void recomp_d3d8_target(RecompD3dPresenterTarget *target);
 void recomp_d3d8_submit(const RecompD3dPresenterCommand *command);
 bool recomp_d3d8_draw_has_coverage(const RecompD3dPresenterDrawCommand *draw);
 void recomp_d3d8_release_memory(uint32_t base, uint32_t size);
+void recomp_d3d8_invalidate_textures(uint32_t base, uint32_t size);
 void recomp_d3d8_shutdown(void);
 /* Clears the main target, draws a BGRA card at level (0 black..255 full)
    and presents it. Call from recomp_d3d_present_hook, between guest frames. */

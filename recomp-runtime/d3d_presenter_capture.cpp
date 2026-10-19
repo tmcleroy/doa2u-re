@@ -138,6 +138,11 @@ RecompD3dPresenterError D3dCapturePacket::addRelease(uint32_t base, uint32_t siz
     return addRecord(RELEASE, base, size);
 }
 
+RecompD3dPresenterError D3dCapturePacket::addInvalidate(uint32_t base, uint32_t size)
+{
+    return addRecord(INVALIDATE, base, size);
+}
+
 RecompD3dPresenterError D3dCapturePacket::addReport()
 {
     return addRecord(REPORT, 0u, 0u);

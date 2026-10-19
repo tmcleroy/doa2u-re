@@ -494,7 +494,9 @@ static void vertex_blend(void)
 {
     recomp_d3d8_require_device();
     uint32_t value = kernel_arg(1u);
-    if (value > 3u) recomp_stop(2, "d3d8:unsupported-vertex-blend:%08x", value);
+    /* Xbox implicit-remainder modes encode one, two, three weights as 1, 3, 5. */
+    if (value > 5u || (value != 0u && (value & 1u) == 0u))
+        recomp_stop(2, "d3d8:unsupported-vertex-blend:%08x", value);
     *recomp_memory_u32(0x355484u) = value;
     *recomp_memory_u32(D3D_DIRTY) |= 0x200u;
     kernel_return(1u, 0u);

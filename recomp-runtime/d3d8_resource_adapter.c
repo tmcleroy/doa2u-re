@@ -245,10 +245,12 @@ static void resource_register(void)
             depth = depth > 1u ? depth >> 1u : 1u;
         }
         if (bytes > 0x04000000u - desc.data) recomp_stop(2, "d3d8:resource-size");
-        recomp_d3d8_release_memory(desc.data, (uint32_t)bytes);
+        recomp_d3d8_invalidate_textures(desc.data, (uint32_t)bytes);
     } else if ((value & TYPE_MASK) == 0x40000u || (value & TYPE_MASK) == 0x50000u) {
+        /* The game re-registers render-target textures between rendering and
+           sampling them (0x2813f9), so Register must keep rendered pixels. */
         LevelView view = level_view(resource, 0u);
-        recomp_d3d8_release_memory(view.desc.data, view.bytes);
+        recomp_d3d8_invalidate_textures(view.desc.data, view.bytes);
     }
     recomp_runtime.registers.esp += 12u;
 }

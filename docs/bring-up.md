@@ -148,6 +148,10 @@ dirty bits. Program handles load their CreateVertexShader upload blocks into
 the device program shadow and select the object as LoadVertexShader and
 SelectVertexShader do; SetVertexShaderConstant1/4 keep the 192-entry constant
 shadow. Declaration-only handles and declaration constants stop explicitly.
+VertexBlend preserves the Xbox mode encoding: 0 disables blending; 1, 3 and
+5 select one, two and three explicit weights plus the remaining weight.
+Draw submission checks that encoded mode against the FVF and passes a weight
+count to the presenter. Other mode encodings remain guarded.
 SetMaterial retains its 17-word device shadow. Spot lights, nondefault raster
 modes and runtime multisampling remain explicit limits.
 
@@ -156,11 +160,13 @@ buffers and surface views. Binding references retain storage independently
 of visible references. Native-created vertex buffers and mip surface wrappers
 have owned lifetimes; final destruction of external headers is guarded until
 their allocator is verified. Locks validate mip/rectangle spans. Write locks
-and texture registration invalidate native texture caches. Queued draws own
+retire native textures and rendered targets in their span. Registration drops
+only cached texture uploads: the attract demo re-registers a render-target
+texture between rendering and sampling it. Queued draws own
 all submitted vertex, index, palette and texture bytes, including non-linear
 formats. Cube/volume views and displaced swizzled locks remain unsupported.
 The XPR loader (FUN_00289f80) registers volume textures (a 64x64x8 A8R8G8B8
-map appears after a Story fight), so Register releases a swizzled,
+map appears after a Story fight), so Register invalidates a swizzled,
 uncompressed volume's full span: width x height x depth per level, each
 axis halving to 1. Stage-0 fixed-function FVF 0x142 draws can sample a
 single-level A8R8G8B8 volume through a native D3D11 Texture3D. The upload
@@ -184,8 +190,15 @@ presenter's four-tap filter in its doubled and identity-scale variants, with
 live C0/C1 factors, and the post-process bright pass. The bright pass matches
 its exact combiner words and Gaussian-cubic stage-0 filtering, then computes
 saturate(2 * (gauss3x3(t0) - c0) - 1) with the 1-2-1 kernel at level 0. The
-bloom composite binds stage-0 MODULATE2X of texture and texture factor over
-white vertices; quad strips draw as triangle strips. Quad lists (type 8,
+bloom composite binds stage-0 MODULATE2X or MODULATE4X of texture and texture
+factor over white vertices. The native color result clamps after scaling;
+alpha retains its independent stage operation. Adapter and GPU pixel checks
+cover both scales, clamping and alpha preservation. The screen tint
+(definition 0xa74f0, drawn over the back buffer by 0xa75d0) matches its
+pushed combiner words and computes saturate(c1 * dot(t0.rgb, c0.rgb)) for RGB
+and alpha, with stage-0 C0 holding the luminance weights and stage-1 C0 the
+tint; fog must be off so 0x34f5f0's default final combiner outputs r0.
+Quad strips draw as triangle strips. Quad lists (type 8,
 including FUN_0023d2a0's four-vertex draws) expand each group of four indices
 to two triangles, preserving vertex order and ignoring an incomplete final
 quad. UP, stream and indexed draws share the conversion. The split uses
@@ -509,6 +522,17 @@ as translation and q is 1, so UV0 becomes (u, v, 1, 0) times TEXTURE0.
 Projected and other counts stop. When a lit world matrix is
 singular, the SDK inverse (0x34b530) fails and uploads an unset matrix. The
 adapter then uses zero normals, so only ambient and emissive light remain.
+A reflection draw cannot use such a matrix. It is skipped only when its single
+world has 3x3 rank at most one, so every triangle has zero area, or when
+native raster coverage is empty; otherwise it stops.
+A stage projector (0x1df200) divides by the square of its size minus 50, so
+for one frame TEXTURE0 holds infinities and NaNs. With camera-space position
+(w = 1) a non-finite translation makes every S and T non-finite, and CLAMP
+sends them to the texture edge. When every edge texel of a single-level DXT5
+texture has one exact value, the adapter samples that corner; other
+non-finite texture matrices stop. Only columns the SDK upload (0x34f7d0)
+sends for the stage's COUNT are checked: COUNT2 sends columns 0-1, so a
+non-finite _43 under camera-space reflection texgen is never read.
 MultiSampleMode and MultiSampleRenderTargetMode (0x3477a0/0x3477d0) store
 their guest shadow only. The game's 4X stencil pass on a one-sample back
 buffer shades fewer pixels, but it covers every sample, as the host's
@@ -585,6 +609,10 @@ The runner and bounded probe also accept `--input-analog-pulse-at <poll>
 <index>` for one full-strength sample of A, B, X, Y, Black, White, left trigger
 or right trigger (indices 0 through 7). Polls must be positive uint64 values;
 up to 1024 analog edges may be scheduled, with one analog button per poll.
+The runner also accepts up to eight `--input-analog-pulse-every <first>
+<period> <last> <index>` rules, each pressing one button at poll first and
+every period polls after it through poll last, so long automated fights fit on
+the command line and can stop before an ending scene.
 `--isolated` keeps probe storage separate and disables physical input and rumble.
 
 ## Audio API contract

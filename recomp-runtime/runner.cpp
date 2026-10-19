@@ -207,6 +207,27 @@ int main(int argc, char **argv)
             }
             continue;
         }
+        if (argument == "--input-analog-pulse-every" && i + 4 < argc) {
+            const std::string firstValue = argv[++i], periodValue = argv[++i], lastValue = argv[++i],
+                indexValue = argv[++i];
+            std::uint64_t first = 0u, period = 0u, last = 0u;
+            std::uint32_t index = 0u;
+            const auto parsedFirst = std::from_chars(firstValue.data(), firstValue.data() + firstValue.size(), first);
+            const auto parsedPeriod = std::from_chars(periodValue.data(), periodValue.data() + periodValue.size(), period);
+            const auto parsedLast = std::from_chars(lastValue.data(), lastValue.data() + lastValue.size(), last);
+            const auto parsedIndex = std::from_chars(indexValue.data(), indexValue.data() + indexValue.size(), index);
+            if (parsedFirst.ec != std::errc() || parsedFirst.ptr != firstValue.data() + firstValue.size() ||
+                parsedPeriod.ec != std::errc() || parsedPeriod.ptr != periodValue.data() + periodValue.size() ||
+                parsedLast.ec != std::errc() || parsedLast.ptr != lastValue.data() + lastValue.size() ||
+                parsedIndex.ec != std::errc() || parsedIndex.ptr != indexValue.data() + indexValue.size() ||
+                index >= RECOMP_INPUT_ANALOG_BUTTON_COUNT ||
+                !recomp_input_pulse_source_add_analog_repeat(&inputPulses, first, period, last,
+                    static_cast<std::uint8_t>(index))) {
+                std::cerr << "recomp runner: invalid analog repeat or too many rules\n";
+                return 64;
+            }
+            continue;
+        }
         if ((argument != "--xbe" && argument != "--disc-root" &&
              argument != "--expect-stop" && argument != "--milestone-log") || i + 1 >= argc) {
             std::cerr << "usage: recomp_program_runner --xbe <path> [--disc-root <path>]"
@@ -214,6 +235,7 @@ int main(int argc, char **argv)
                 " [--input-start-pulse-at <poll>] [--input-a-pulse-at <poll>]"
                 " [--input-buttons-pulse-at <poll> <decimal-mask>]"
                 " [--input-analog-pulse-at <poll> <button-index>]"
+                " [--input-analog-pulse-every <first-poll> <period> <last-poll> <button-index>]"
                 " [--input-script-only]\n";
             return 64;
         }

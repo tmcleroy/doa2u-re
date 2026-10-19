@@ -18,6 +18,7 @@ uint8_t *recomp_fast_ram;
 static uint8_t ram[0x400000u];
 static uint32_t allocated = 0x380004u, free_count;
 static uint32_t invalidations, invalidated_base, invalidated_size;
+static uint32_t releases, released_base, released_size;
 static bool fail_allocation;
 static jmp_buf stopped;
 static char reason[128];
@@ -54,6 +55,12 @@ void recomp_kernel_free_pool(uint32_t address)
 }
 uint32_t recomp_d3d8_require_device(void) { return DEVICE; }
 void recomp_d3d8_release_memory(uint32_t base, uint32_t size)
+{
+    ++releases;
+    released_base = base;
+    released_size = size;
+}
+void recomp_d3d8_invalidate_textures(uint32_t base, uint32_t size)
 {
     ++invalidations;
     invalidated_base = base;
@@ -95,7 +102,8 @@ int main(void)
     CHECK(invoke(0x347ec0u, TEXTURE, 0u, 0u, 0u, 0u) == 1u);
     CHECK(invoke(0x347fa0u, TEXTURE, 0x80000000u, 0u, 0u, 0u) == 0xaabbccddu);
     CHECK(word(TEXTURE + 4u) == DATA && recomp_runtime.registers.esp == STACK + 12u);
-    CHECK(invalidations == 1u && invalidated_base == DATA && invalidated_size == 512u);
+    /* Register keeps rendered targets; only cached texture uploads are dropped. */
+    CHECK(invalidations == 1u && invalidated_base == DATA && invalidated_size == 512u && releases == 0u);
     RecompD3dTextureDesc desc;
     CHECK(recomp_d3d8_resource_describe(TEXTURE, &desc));
     CHECK(desc.width == 8u && desc.height == 16u && desc.mip_levels == 3u && desc.bits_per_pixel == 32u);
@@ -123,9 +131,9 @@ int main(void)
     CHECK(invoke(0x3480b0u, TEXTURE, 1u, OUTPUT, 0u, 0u) == 0xaabbccddu);
     CHECK(word(OUTPUT) == 16u && word(OUTPUT + 4u) == DATA + 512u);
     CHECK(recomp_runtime.registers.esp == STACK + 24u);
-    CHECK(invalidations == 2u && invalidated_base == DATA + 512u && invalidated_size == 128u);
+    CHECK(releases == 1u && released_base == DATA + 512u && released_size == 128u);
     invoke(0x3480b0u, TEXTURE, 1u, OUTPUT, 0u, 0x80u);
-    CHECK(invalidations == 2u);
+    CHECK(releases == 1u && invalidations == 1u);
 
     uint32_t surface = invoke(0x348060u, TEXTURE, 1u, 0u, 0u, 0u);
     CHECK(surface != 0u && recomp_runtime.registers.esp == STACK + 12u);

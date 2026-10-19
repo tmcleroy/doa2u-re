@@ -349,6 +349,19 @@ int recomp_input_pulse_source_test(void)
         passed &= recomp_input_pulse_source_sample(&source, &pad) ? 1 : 0;
         passed &= expect_pad_zero("scheduled analog release", &pad);
     }
+
+    /* A repeat rule presses on its first poll and each period through last. */
+    recomp_input_pulse_source_init(&source, NULL, 0u);
+    passed &= recomp_input_pulse_source_add_analog_repeat(&source, 0u, 4u, 9u, 3u) ? 0 : 1;
+    passed &= recomp_input_pulse_source_add_analog_repeat(&source, 3u, 0u, 9u, 3u) ? 0 : 1;
+    passed &= recomp_input_pulse_source_add_analog_repeat(&source, 3u, 4u, 2u, 3u) ? 0 : 1;
+    passed &= recomp_input_pulse_source_add_analog_repeat(&source, 3u, 4u, 9u, 8u) ? 0 : 1;
+    passed &= recomp_input_pulse_source_add_analog_repeat(&source, 3u, 4u, 9u, 3u) ? 1 : 0;
+    for (uint64_t poll = 1u; poll <= 12u; ++poll) {
+        passed &= recomp_input_pulse_source_sample(&source, &pad) ? 1 : 0;
+        passed &= expect_u64("repeated analog", pad.analog_buttons[3],
+            poll == 3u || poll == 7u ? RECOMP_INPUT_ANALOG_PRESSED : 0u);
+    }
     return passed;
 }
 
