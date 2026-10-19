@@ -102,7 +102,12 @@ reports no file times outside save profiles). Otherwise `hdd_install_thread`
 (`0xf70c0`) streams it 32 KB at a time behind `g_hdd_install_gate`
 (`0x8a9920`: 0 runs, 1 asks to pause, -1 is paused, 2 stops), and ADX init
 holds the boot on a black screen until `voice.afs` is in; measured on this
-runtime that alone took six minutes. `run_game.py` therefore copies the three
+runtime that alone took six minutes. ADX init busy-waits on the load while the
+CRI file server (`cri_file_server_thread`, `0x2fc240`) runs at base priority
+-2 (`cri_set_server_priorities`, `0x2fc4a0`), so it gets only the moment after
+each vblank. The legal screen (`0xd92c0`, shown only while an install is
+pending) waits a frame at a time and let it run; skipping that screen since
+`2d474b5` took the copy from 0.9 MB/s to 60 KB/s. `run_game.py` therefore copies the three
 archives into `private/play-disc/.recomp-storage/partition5` before launch,
 replacing any of the wrong size. They are copies, not hardlinks: the installer
 reopens a stale archive with `CREATE_ALWAYS`.
