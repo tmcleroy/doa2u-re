@@ -49,14 +49,20 @@ RecompHrtfFilter recomp_hrtf_lookup(const uint8_t *bank, const uint8_t *map,
    unknown. ponytail: xemu's per-ear L1 normalization (hw/xbox/mcpx/apu/vp/
    hrtf.h, 478b4f4) caps each ear at its input peak but shrinks interaural
    level differences; swap in a hardware-measured scale if one appears. */
-static float tap(const RecompHrtfVoice *voice, const int8_t *ear, int delay)
+static float ear_l1(const int8_t *ear)
 {
-    float sum = 0.0f, l1 = 0.0f;
+    float l1 = 0.0f;
+    if (ear != NULL)
+        for (int k = 0; k < RECOMP_HRTF_TAPS; ++k) l1 += fabsf((float)ear[k]);
+    return l1;
+}
+
+static float tap(const RecompHrtfVoice *voice, const int8_t *ear, float l1, int delay)
+{
+    float sum = 0.0f;
     if (ear == NULL) return 0.0f;
-    for (int k = 0; k < RECOMP_HRTF_TAPS; ++k) {
+    for (int k = 0; k < RECOMP_HRTF_TAPS; ++k)
         sum += ear[k] * voice->history[(voice->head - (uint32_t)(k + delay)) % RECOMP_HRTF_HISTORY];
-        l1 += fabsf((float)ear[k]);
-    }
     return l1 > 0.0f ? sum / l1 : 0.0f;
 }
 
@@ -66,6 +72,9 @@ uint32_t recomp_hrtf_render(RecompHrtfVoice *voice, const int16_t *input,
     const double step = (double)source_rate / RECOMP_HRTF_RATE;
     const RecompHrtfFilter from = voice->rendered, to = voice->filter;
     const int fade = from.left != to.left || from.right != to.right || from.delay != to.delay;
+    // Per-filter normalization, hoisted out of the per-sample taps.
+    const float to_l1[2] = {ear_l1(to.left), ear_l1(to.right)};
+    const float from_l1[2] = {ear_l1(from.left), ear_l1(from.right)};
     const double span = (input_frames - voice->phase) / step;
     const uint32_t total = (uint32_t)(span > 0.0 ? span : 0.0) + 1u;
     uint32_t written = 0u, consumed = 0u;
@@ -82,12 +91,12 @@ uint32_t recomp_hrtf_render(RecompHrtfVoice *voice, const int16_t *input,
         voice->history[voice->head] = voice->previous + (float)voice->phase * (next - voice->previous);
         voice->phase += step;
 
-        float left = tap(voice, to.left, to.delay > 0 ? to.delay : 0);
-        float right = tap(voice, to.right, to.delay < 0 ? -to.delay : 0);
+        float left = tap(voice, to.left, to_l1[0], to.delay > 0 ? to.delay : 0);
+        float right = tap(voice, to.right, to_l1[1], to.delay < 0 ? -to.delay : 0);
         if (fade) {
             float mix = (float)(written + 1u) / (float)(total > written ? total : written + 1u);
-            left = left * mix + tap(voice, from.left, from.delay > 0 ? from.delay : 0) * (1.0f - mix);
-            right = right * mix + tap(voice, from.right, from.delay < 0 ? -from.delay : 0) * (1.0f - mix);
+            left = left * mix + tap(voice, from.left, from_l1[0], from.delay > 0 ? from.delay : 0) * (1.0f - mix);
+            right = right * mix + tap(voice, from.right, from_l1[1], from.delay < 0 ? -from.delay : 0) * (1.0f - mix);
         }
         out[2u * written] = left / 32768.0f;
         out[2u * written + 1u] = right / 32768.0f;
