@@ -269,8 +269,9 @@ typedef struct RecompD3dPresenterDrawCommand {
     float reflection_stage1_transform[16];
     float reflection_diffuse[4];
     /* Second BLENDTEXTUREALPHA at stage 2, before stage-3 diffuse modulation.
-       Coordinates use the shared reflection vector and TEXTURE2. */
+       Coordinates use the shared reflection vector and TEXTURE2, or mesh UV0. */
     bool reflection_stage2;
+    bool reflection_stage2_mesh_uv;
     RecompD3dTextureDesc reflection_stage2_texture;
     const void *reflection_stage2_bytes;
     uint32_t reflection_stage2_byte_count;

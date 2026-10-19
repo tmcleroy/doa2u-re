@@ -812,6 +812,17 @@ static int lighting_tests(void)
         submitted.data.draw.reflection_stage2_address_u == 3u && submitted.data.draw.reflection_stage2_address_v == 3u &&
         submitted.data.draw.reflection_stage2_point_mip_filter && submitted.data.draw.reflection_stage2_mip_lod_bias == -511.0f / 256.0f &&
         submitted.data.draw.reflection_stage2_transform[12] == 11.0f);
+    CHECK(!submitted.data.draw.reflection_stage2_mesh_uv);
+    /* Coordinate mode 0 on both blends reads mesh UV0 and never TEXTURE2. */
+    for (uint32_t stage = 1u; stage <= 2u; ++stage)
+        *recomp_memory_u32(STAGES + stage * 128u + 21u * 4u) =
+            *recomp_memory_u32(STAGES + stage * 128u + 28u * 4u) = 0u;
+    *recomp_memory_u32(DEVICE + 0xd60u) = 0x7fc00000u;
+    invoke(0x348240u, 5u, 3u, VERTICES, 32u);
+    CHECK(submitted.data.draw.reflection_stage2 && submitted.data.draw.reflection_stage2_mesh_uv &&
+        submitted.data.draw.reflection_mesh_uv);
+    recomp_guest_store(STAGES, third_stages, sizeof third_stages);
+    recomp_guest_store(DEVICE + 0xd60u, texture2, sizeof texture2);
     *recomp_memory_u32(STAGES + 256u + 7u * 4u) = 1u;
     if (setjmp(stopped) == 0) { invoke(0x348240u, 5u, 3u, VERTICES, 32u); return 1; }
     CHECK(strcmp(stop_reason, "d3d8:reflection-stage2-sampler") == 0);

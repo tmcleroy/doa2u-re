@@ -538,16 +538,15 @@ bool recomp_d3d_reflection_material(const uint32_t stages[4][32])
             stages[stage][9] != 0u || stages[stage][10] != 0u ||
             (stages[stage][11] != 0u && (stage == 2u || stages[stage][11] != 4u))) return false;
     }
-    /* Either stage, or both, may take camera-space reflection coordinates
-       (COUNT2, byte +0xf mode 1 of table 0x7b018c); a non-generating stage reads mesh UV0. */
-    bool generated[2], mesh[2];
-    for (uint32_t stage = 0u; stage < 2u; ++stage) {
+    /* Any blend stage may take camera-space reflection coordinates (COUNT2,
+       byte +0xf mode 1 of table 0x7b018c); mode 0 reads mesh UV0 instead. */
+    bool generated[3], mesh[3];
+    for (uint32_t stage = 0u; stage < 3u; ++stage) {
         generated[stage] = stages[stage][21] == 2u && stages[stage][28] == 0x30000u;
         mesh[stage] = stages[stage][21] == 0u && stages[stage][28] == 0u;
     }
     return (mesh[0] || generated[0]) && (mesh[1] || generated[1]) &&
-        (!third || (generated[1] && stages[2][21] == 2u && stages[2][28] == 0x30000u &&
-            stages[3][21] == 0u));
+        (!third || ((mesh[2] || generated[2]) && stages[3][21] == 0u));
 }
 
 bool recomp_d3d_diffuse_rgb_is_zero(

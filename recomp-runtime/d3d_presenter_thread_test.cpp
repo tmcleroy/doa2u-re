@@ -562,7 +562,8 @@ static bool testLighting()
     return passed;
 }
 
-static bool testReflectionStage2(bool alpha_kill = false)
+// mesh_uv: both blends read UV0 (coordinate mode 0), so stage 2 samples its red texel 0.
+static bool testReflectionStage2(bool alpha_kill = false, bool mesh_uv = false)
 {
     char folder[MAX_PATH], path[MAX_PATH];
     if (!GetTempPathA(MAX_PATH, folder) || !GetTempFileNameA(folder, "en3", 0, path)) return false;
@@ -600,6 +601,7 @@ static bool testReflectionStage2(bool alpha_kill = false)
             draw.blend.dst_factor = RECOMP_D3D_BLEND_INV_SRC_ALPHA;
             draw.has_texture = draw.has_reflection = true;
             draw.reflection_stage2 = !alpha_kill;
+            draw.reflection_mesh_uv = draw.reflection_stage2_mesh_uv = mesh_uv;
             draw.alpha_kill = draw.reflection_alpha_kill = alpha_kill;
             draw.texture.data = 0x1000u;
             draw.texture.format_byte = RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8;
@@ -639,12 +641,13 @@ static bool testReflectionStage2(bool alpha_kill = false)
         if (FILE *file = std::fopen(path, "rb")) {
             const int expected[3][3] = {{8,0,16}, {4,24,8}, {0,96,0}};
             const int killed[3][3] = {{0,0,0}, {0,0,0}, {0,0,128}};
+            const int mesh[3] = {0, 0, 64};
             for (unsigned i = 0; i < 3; ++i) {
                 unsigned char bgr[3]{};
                 std::fseek(file, 54 + (239 - 120) * 960 + (53 + 107 * i) * 3, SEEK_SET);
                 passed &= std::fread(bgr, 1, 3, file) == 3;
                 for (unsigned c = 0; c < 3; ++c) {
-                    const int value = alpha_kill ? killed[i][c] : expected[i][c];
+                    const int value = alpha_kill ? killed[i][c] : mesh_uv ? mesh[c] : expected[i][c];
                     const bool ok = std::abs(int(bgr[c]) - value) <= 1;
                     if (!ok) std::fprintf(stderr, "FAIL third reflection pixel %u channel=%u actual=%u expected=%d\n",
                         i, c, bgr[c], value);
@@ -2735,7 +2738,7 @@ int main()
         !testWidescreenAntialiasing(false, false, 1080u) || !testWidescreenAntialiasing(true, true, 1080u, 32u) ||
         !testDrawCoverage() || !testDrawCoverage(true) || !testQueuedDrawCoverage() ||
         !testTicks() || !testCapturedDraw() || !testMipSampler() || !testLines() || !testLighting() ||
-        !testReflectionStage2() || !testReflectionStage2(true) ||
+        !testReflectionStage2() || !testReflectionStage2(true) || !testReflectionStage2(false, true) ||
         !testReflectionAddress(false) || !testReflectionAddress(true) || !testReflectionAddress(true, true) ||
         !testReflectionAddress(false, false, true) || !testReflectionAddress(true, false, false, true) ||
         !testReflectionAddress(false, false, false, false, 0.0f) ||

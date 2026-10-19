@@ -315,6 +315,7 @@ int buildDrawShaderSource(
             ? (has_normal
                 /* Mesh-UV reflections (x == 2) may pair with stage-0 texgen. */
                 ? "    if (reflection_flags.x > 1.5f) output.reflection_coord = input.texcoord;\n"
+                  "    if (reflection_stage2_flags.w > 0.5f) output.reflection_coord2 = input.texcoord;\n"
                   "    if (abs(filter_texel.z - 2.0f) < 0.5f) {\n"
                   "        float3 uv = mul(float4(input.texcoord, 1, 0), reflection_transform).xyz;\n"
                   "        output.texcoord = uv.xy; output.volume_coord = uv.z;\n"
@@ -325,13 +326,15 @@ int buildDrawShaderSource(
                   "        output.volume_coord = g.z;\n"
                   "        output.projected_q = reflection_stage2_flags.z > 0.5f ? 1.0f : g.z;\n"
                   "    }\n"
-                  "    if (abs(reflection_flags.x - 1.0f) < 0.5f || abs(filter_texel.z - 1.0f) < 0.5f) {\n"
+                  "    if (abs(reflection_flags.x - 1.0f) < 0.5f || abs(filter_texel.z - 1.0f) < 0.5f ||\n"
+                  "        (reflection_stage2_flags.x > 0.5f && reflection_stage2_flags.w < 0.5f)) {\n"
                   "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
                   "        float3 n = mul(float4(input.normal, 0), reflection_normal).xyz;\n"
                   "        if (reflection_flags.y > 0.5f) n = normalize(n);\n"
                   "        float3 r = reflect(normalize(eye), n);\n"
                   "        float2 generated = mul(float4(r, 1), reflection_transform).xy;\n"
-                  "        if (reflection_stage2_flags.x > 0.5f) output.reflection_coord2 = mul(float4(r, 1), reflection_transform2).xy;\n"
+                  "        if (reflection_stage2_flags.x > 0.5f && reflection_stage2_flags.w < 0.5f)\n"
+                  "            output.reflection_coord2 = mul(float4(r, 1), reflection_transform2).xy;\n"
                   "        if (filter_texel.z > 0.5f) output.texcoord = generated;\n"
                   "        if (abs(reflection_flags.x - 1.0f) < 0.5f) output.reflection_coord = filter_texel.z > 0.5f\n"
                   "            ? mul(float4(r, 1), reflection_transform1).xy : generated;\n"
@@ -339,6 +342,7 @@ int buildDrawShaderSource(
                 /* shortcut: without a normal stream NV2A reads a zero inline normal, so
                    r is the eye direction; check the inline register if env maps look wrong. */
                 : "    if (reflection_flags.x > 1.5f) output.reflection_coord = input.texcoord;\n"
+                  "    if (reflection_stage2_flags.w > 0.5f) output.reflection_coord2 = input.texcoord;\n"
                   "    if (abs(filter_texel.z - 2.0f) < 0.5f) {\n"
                   "        float3 uv = mul(float4(input.texcoord, 1, 0), reflection_transform).xyz;\n"
                   "        output.texcoord = uv.xy; output.volume_coord = uv.z;\n"
@@ -349,11 +353,13 @@ int buildDrawShaderSource(
                   "        output.volume_coord = g.z;\n"
                   "        output.projected_q = reflection_stage2_flags.z > 0.5f ? 1.0f : g.z;\n"
                   "    }\n"
-                  "    if (abs(reflection_flags.x - 1.0f) < 0.5f || abs(filter_texel.z - 1.0f) < 0.5f) {\n"
+                  "    if (abs(reflection_flags.x - 1.0f) < 0.5f || abs(filter_texel.z - 1.0f) < 0.5f ||\n"
+                  "        (reflection_stage2_flags.x > 0.5f && reflection_stage2_flags.w < 0.5f)) {\n"
                   "        float3 eye = mul(float4(input.position, 1), reflection_world_view).xyz;\n"
                   "        float3 r = normalize(eye);\n"
                   "        float2 generated = mul(float4(r, 1), reflection_transform).xy;\n"
-                  "        if (reflection_stage2_flags.x > 0.5f) output.reflection_coord2 = mul(float4(r, 1), reflection_transform2).xy;\n"
+                  "        if (reflection_stage2_flags.x > 0.5f && reflection_stage2_flags.w < 0.5f)\n"
+                  "            output.reflection_coord2 = mul(float4(r, 1), reflection_transform2).xy;\n"
                   "        if (filter_texel.z > 0.5f) output.texcoord = generated;\n"
                   "        if (abs(reflection_flags.x - 1.0f) < 0.5f) output.reflection_coord = filter_texel.z > 0.5f\n"
                   "            ? mul(float4(r, 1), reflection_transform1).xy : generated;\n"
@@ -2947,7 +2953,7 @@ RecompD3dPresenterError submitDraw(
     ID3D11ShaderResourceView *bump_view = nullptr;
     if (draw.reflection_stage2) {
         if (!draw.has_reflection || draw.program_count || draw.bump_env || draw.distortion ||
-            draw.reflection_premultiplied || draw.reflection_skip_diffuse || draw.reflection_mesh_uv)
+            draw.reflection_premultiplied || draw.reflection_skip_diffuse)
             return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
         if (mask_view != nullptr) mask_view->AddRef();
         retained_mask.reset(mask_view);
@@ -3178,6 +3184,7 @@ RecompD3dPresenterError submitDraw(
     if (draw.reflection_stage2) {
         std::memcpy(draw_constants + 140 + 192 * 4 + 492, draw.reflection_stage2_transform, 64u);
         draw_constants[140 + 192 * 4 + 508] = 1.0f;
+        draw_constants[140 + 192 * 4 + 511] = draw.reflection_stage2_mesh_uv ? 1.0f : 0.0f;
     }
     if (draw.stage1_alpha_mask)
         draw_constants[138] = draw.stage1_kill_only ? 3.0f : draw.stage1_alpha_kill ? 2.0f : 1.0f;

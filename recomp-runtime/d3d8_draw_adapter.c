@@ -861,7 +861,9 @@ static bool attach_reflection(uint32_t device, const RecompD3dVertexLayout *layo
     draw->reflection_bytes = texture.texture_bytes;
     draw->reflection_byte_count = texture.texture_byte_count;
     if (!reflection_inputs(device, 0xd20u, 4u,
-        layout->normal_offset != RECOMP_D3D_FVF_ABSENT && stages[1][28] == 0x30000u, draw)) return false;
+        layout->normal_offset != RECOMP_D3D_FVF_ABSENT &&
+        (stages[1][28] == 0x30000u || (stages[2][12] == 14u && stages[2][28] == 0x30000u)), draw))
+        return false;
     recomp_guest_load(draw->reflection_diffuse, device + 0xf00u, sizeof draw->reflection_diffuse);
     for (uint32_t i = 0u; i < 4u; ++i)
         if (!isfinite(draw->reflection_diffuse[i])) recomp_stop(2, "d3d8:reflection-material");
@@ -885,10 +887,15 @@ static bool attach_reflection(uint32_t device, const RecompD3dVertexLayout *layo
         draw->reflection_stage2_address_v = third.address_v;
         draw->reflection_stage2_point_mip_filter = stages[2][5] == 1u;
         draw->reflection_stage2_mip_lod_bias = lod_bias(stages[2][6]);
-        recomp_guest_load(draw->reflection_stage2_transform, device + 0xd60u,
-            sizeof draw->reflection_stage2_transform);
-        for (uint32_t i = 0u; i < 16u; ++i)
-            if (!isfinite(draw->reflection_stage2_transform[i])) recomp_stop(2, "d3d8:reflection-stage2-transform");
+        /* Mesh-UV stage 2 (coordinate mode 0) never reads TEXTURE2. */
+        draw->reflection_stage2_mesh_uv = stages[2][28] == 0u;
+        if (!draw->reflection_stage2_mesh_uv) {
+            recomp_guest_load(draw->reflection_stage2_transform, device + 0xd60u,
+                sizeof draw->reflection_stage2_transform);
+            for (uint32_t i = 0u; i < 16u; ++i)
+                if (!isfinite(draw->reflection_stage2_transform[i]))
+                    recomp_stop(2, "d3d8:reflection-stage2-transform");
+        }
     }
     /* shortcut: stage-2 texture MODULATE stays guarded; bind it when a run reaches it. */
     draw->reflection_skip_diffuse = !draw->reflection_stage2 && stages[2][14] == 2u;
@@ -1077,13 +1084,13 @@ static bool fixed_stages(uint32_t device, const RecompD3dVertexLayout *layout,
             recomp_stop(2, "d3d8:texture-factor-twice");
         if (stage[1][12] != 1u && !draw->modulate_texture_factor && !draw->has_reflection && !stage1_alpha)
             recomp_stop(2, "d3d8:draw-texture-stages:%u,%u,%u/%u,%u,%u:%u,%u,%u/%u,%u,%u:%u,%u:"
-                "s2=%u,%u/%u,%u:s3=%u:t2=%u:addr=%u,%u,%u,%u:kill=%u,%u:tc=%x,%x,%x,%x",
+                "s2=%u,%u/%u,%u:s3=%u:t2=%u:addr=%u,%u,%u,%u:kill=%u,%u:tc=%x,%x,%x,%x:tc2=%x,%x,%x",
                 stage[0][12], stage[0][14], stage[0][15], stage[0][16], stage[0][18], stage[0][19],
                 stage[1][12], stage[1][14], stage[1][15], stage[1][16], stage[1][18], stage[1][19],
                 stage[2][12], stage[2][16], stage[2][14], stage[2][15], stage[2][18], stage[2][19],
                 stage[3][12], *recomp_memory_u32(device + 0xf90u) != 0u, stage[0][0], stage[0][1],
                 stage[1][0], stage[1][1], stage[0][11], stage[1][11], stage[0][21], stage[0][28],
-                stage[1][21], stage[1][28]);
+                stage[1][21], stage[1][28], stage[2][21], stage[2][28], stage[3][21]);
     }
     return true;
 }
