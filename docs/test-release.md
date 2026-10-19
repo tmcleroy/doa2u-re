@@ -1,9 +1,9 @@
-Dead or Alive 2 Ultimate native PC port - test build
-====================================================
+Dead or Alive 2 Ultimate native PC port - 0.1 Alpha (experimental)
+=================================================================
 
-This is an early test build. It contains no game files. You build the
-game yourself from your own copy of Dead or Alive Ultimate (Xbox, USA),
-Disc 2. Other regions, versions and Disc 1 are refused.
+This is an early, experimental build. It contains no game files. You
+build the game yourself from your own copy of Dead or Alive Ultimate
+(Xbox, USA), Disc 2. Other regions, versions and Disc 1 are refused.
 
 What you need (Windows 10 or 11, 64-bit):
 
@@ -13,8 +13,8 @@ What you need (Windows 10 or 11, 64-bit):
 - Visual Studio 2022 or newer, or its Build Tools, with the
   "Desktop development with C++" workload:
   https://visualstudio.microsoft.com/downloads/
-- An internet connection for the first build (it downloads SDL3 for
-  controller support and the Capstone Python package).
+- An internet connection for the first build (it downloads SDL3, SMAA
+  and the Capstone and Pillow Python packages).
 - Your Disc 2 as an Xbox ISO, and about 5 GB of free space on the drive
   holding this folder.
 
@@ -25,9 +25,15 @@ Build (once, about 45 minutes; most of it is disassembly):
 3. Wait for "Build complete". The build is checked against the exact
    program the developers tested; any difference stops the build.
 
-Play: double-click play.cmd. The first boot copies the game's archives
-into its cache and shows a black window for about 12 minutes; later boots
-start normally. Saves and the cache live in private\play-disc.
+Play: double-click play.cmd, pick resolution, MSAA, SMAA and widescreen,
+and press Play; it remembers your choices. Widescreen uses the game's own
+16:9 camera and menus. The first boot copies the game's archives into its
+cache and shows a black window for about 12 minutes; later boots start
+normally. Saves and the cache live in private\play-disc.
+
+Every character and costume is unlocked, and the game saves the unlocks
+to your profile. Before the Story staff roll, a 10-second card honors the
+memory of Tomonobu Itagaki.
 
 Controls: the first connected controller (Xbox, PlayStation and other
 controllers SDL3 supports). The keyboard drives player 1:
@@ -36,12 +42,14 @@ controllers SDL3 supports). The keyboard drives player 1:
     A = X    S = Y    Z = A    X = B
     Q = White    W = Black    E = Left trigger    R = Right trigger
 
-Known limits: this is bring-up software. Many modes, stages and
-characters reach graphics the port does not draw yet; the game then
-stops and the log says why. The picture is 4:3, as on the Xbox.
+Known limits: this is bring-up software. Story mode and the attract demo
+play in development runs, but many modes, stages and characters have not
+been tried. A draw the port cannot render yet stops the game, and the log
+says why.
 
-Reporting problems: say what you did and what happened. Copy the
-"recomp stop" or crash lines from the end of the newest log in
-private\play-logs, or the error from the newest private\build-logs
-folder if the build failed. Remove your user name and other private
-paths, and do not send whole logs or any game files.
+Reporting problems: open an issue at
+https://github.com/NoRain211/doa2u-re/issues and say what you did and what
+happened. Copy the "recomp stop" or crash lines from the end of the newest
+log in private\play-logs, or the error from the newest private\build-logs
+folder if the build failed. Remove your user name and other private paths,
+and do not upload whole logs or any game files.

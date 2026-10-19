@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Package a tester ZIP (e.g. 0.0.1-test): source, the pinned lifter and setup tools, no game data."""
+"""Package a release ZIP (e.g. 0.1-Alpha): source, the pinned lifter and setup tools, no game data."""
 # Adapted from committed DOA3 tools/package_test.py at 5747204.
 import argparse
 import io
@@ -12,7 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SUBMODULE = "tools/xboxrecomp"
 # Agent notes and dev-only submodule metadata stay out of the tester package.
 EXCLUDE = {"AGENTS.md", ".gitmodules", SUBMODULE}
-# extract-xiso.exe and its LICENSE.TXT, copied from the DOA3 test package.
+# extract-xiso.exe and its LICENSE.TXT, copied from the DOA3 test package, and
+# dedication-photo.jpg, which run_game.py turns into the staff-roll card.
 ARTIFACTS = ROOT / "private" / "release-assets"
 
 
@@ -42,7 +43,7 @@ def main():
     out = ROOT / "private" / "release" / f"{name}.zip"
     if out.exists():
         raise SystemExit(f"{out} already exists")
-    artifacts = ("extract-xiso.exe", "LICENSE.TXT")
+    artifacts = ("extract-xiso.exe", "LICENSE.TXT", "dedication-photo.jpg")
     missing = [a for a in artifacts if not (ARTIFACTS / a).is_file()]
     if missing:
         raise SystemExit(f"Missing from {ARTIFACTS}: {', '.join(missing)}")
@@ -53,8 +54,9 @@ def main():
             package.writestr(path, data)
         for path, data in archive(ROOT / SUBMODULE, f"{name}/{SUBMODULE}/"):
             package.writestr(path, data)
-        for artifact in artifacts:
+        for artifact in artifacts[:2]:
             package.write(ARTIFACTS / artifact, f"{name}/tools/artifacts/{artifact}")
+        package.write(ARTIFACTS / artifacts[2], f"{name}/private/{artifacts[2]}")
         package.write(ROOT / "docs" / "test-release.md", f"{name}/README.txt")
     partial.rename(out)
     print(out)

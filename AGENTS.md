@@ -70,5 +70,6 @@ Read the relevant decision before changing one of those boundaries.
 Run the public checks in `README.md` before committing or pushing. Keep the
 diff scoped, preserve existing source style, and use LF for new text files.
 Use `type(scope): message` commit subjects under 72 characters.
-Publishing and merging require an explicit user request. This starter has
-no remote repository or issue tracker yet.
+Publishing and merging require an explicit user request. The public remote
+and issue tracker are `NoRain211/doa2u-re`; package releases with
+`tools/package_test.py` as described in `README.md`.

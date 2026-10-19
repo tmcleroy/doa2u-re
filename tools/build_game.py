@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LIFTER = ROOT / "tools/xboxrecomp"
 XBE_SHA256 = "30d5bd3ff363afb72ea4d5058537013e284df0930f1921d345aeaf44af288a0c"
 CAPSTONE = "5.0.7"
+PILLOW = "12.2.0"  # run_game.py builds the dedication card with it
 # The generated program the runtime was validated against. Changing the lifter
 # pin or tools/doa2u/seed_functions.json changes it; regenerate and update both.
 PROGRAM_SHA256 = "5f43bf496a7b2e22c66598ed75eda161220eb420b55e833e5f3e70ce84ad1760"
@@ -74,14 +75,20 @@ def build(build_only=False, lift_only=False, iso=None):
         import_disc(iso)
         if shutil.which("cmake") is None:
             raise ValueError("Install CMake 3.20 or newer and add it to PATH")
+        missing = []
         try:
             import capstone
-            ready = capstone.__version__ == CAPSTONE
+            if capstone.__version__ != CAPSTONE:
+                missing.append(f"capstone=={CAPSTONE}")
         except ImportError:
-            ready = False
-        if not ready:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", f"capstone=={CAPSTONE}"])
-            if "capstone" in sys.modules:
+            missing.append(f"capstone=={CAPSTONE}")
+        try:
+            import PIL  # noqa: F401
+        except ImportError:
+            missing.append(f"pillow=={PILLOW}")
+        if missing:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
+            if missing[0].startswith("capstone") and "capstone" in sys.modules:
                 raise ValueError(f"Updated Capstone to {CAPSTONE}; run the build again")
     import capstone
     xbe = selected_xbe()
