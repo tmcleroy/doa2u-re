@@ -1845,6 +1845,13 @@ void expandLine(LineVertex a, LineVertex b, const float *style, std::vector<Wide
     }
 }
 
+/* Names the check that refused a draw, so a stop says which one. */
+RecompD3dPresenterError unsupportedDraw(int line)
+{
+    std::fprintf(stderr, "recomp d3d presenter: draw unsupported (d3d_presenter_sdl_gpu.cpp:%d)\n", line);
+    return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+}
+
 RecompD3dPresenterError submitDraw(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw)
 {
     const bool screen_offset = draw.screen_space_offset[0] != 0.0f || draw.screen_space_offset[1] != 0.0f;
@@ -1865,7 +1872,7 @@ RecompD3dPresenterError submitDraw(RecompD3dPresenter *presenter, const RecompD3
         draw.mip_lod_bias < kMipLodBiasMin || draw.mip_lod_bias > kMipLodBiasMax ||
         !std::isfinite(draw.reflection_mip_lod_bias) ||
         draw.reflection_mip_lod_bias < kMipLodBiasMin || draw.reflection_mip_lod_bias > kMipLodBiasMax) {
-        return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        return unsupportedDraw(__LINE__);
     }
     const bool sub_viewport = draw.has_transform && !draw.program_count && draw.viewport[2] > 0.0f;
 
@@ -1873,12 +1880,12 @@ RecompD3dPresenterError submitDraw(RecompD3dPresenter *presenter, const RecompD3
     if (!recomp_d3d_fvf_layout(draw.fvf, &layout) || layout.stride > draw.vertex_stride ||
         (!layout.pretransformed && !draw.has_transform && !draw.program_count) ||
         (draw.blend_weight_count != 0u && layout.blend_weight_count != draw.blend_weight_count)) {
-        return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        return unsupportedDraw(__LINE__);
     }
     SDL_GPUPrimitiveType primitive;
     switch (draw.primitive_type) {
     case 2u:
-        if (draw.index_count < 2u || draw.index_count % 2u != 0u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        if (draw.index_count < 2u || draw.index_count % 2u != 0u) return unsupportedDraw(__LINE__);
         primitive = geometry_line ? SDL_GPU_PRIMITIVETYPE_TRIANGLELIST : SDL_GPU_PRIMITIVETYPE_LINELIST;
         break;
     case 6u:
@@ -1894,7 +1901,7 @@ RecompD3dPresenterError submitDraw(RecompD3dPresenter *presenter, const RecompD3
         (!draw.target.offscreen || (draw.target.color.width == presenter->config.width &&
             draw.target.color.height == presenter->config.height)) &&
         draw.slope_scaled_depth_bias != 0.0f;
-    if (draw.program_count > 136u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    if (draw.program_count > 136u) return unsupportedDraw(__LINE__);
     // Widened lines draw as the pretransformed XYZRHW|DIFFUSE triangles they expand to.
     const uint32_t shader_fvf = geometry_line ? 0x44u : draw.fvf;
     const bool general = draw.pixel_program.kind != RECOMP_D3D_PIXEL_NONE;
@@ -1902,7 +1909,7 @@ RecompD3dPresenterError submitDraw(RecompD3dPresenter *presenter, const RecompD3
         draw.program_count ? draw.program : nullptr, false, scaled_bias,
         scaled_bias && presenter->msaa_count > 1u, general ? &draw.pixel_program : nullptr};
     const ShaderPair shaders = lookupShaders(presenter, shader_key, false);
-    if (shaders.vertex == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    if (shaders.vertex == nullptr) return unsupportedDraw(__LINE__);
 
     BoundTarget bound;
     const RecompD3dPresenterError target_error = bindTarget(presenter, draw.target, bound);
@@ -1911,11 +1918,11 @@ RecompD3dPresenterError submitDraw(RecompD3dPresenter *presenter, const RecompD3
     if (draw.has_scissor) {
         if (draw.scissor[0] < 0 || draw.scissor[1] < 0 ||
             draw.scissor[2] < draw.scissor[0] || draw.scissor[3] < draw.scissor[1])
-            return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+            return unsupportedDraw(__LINE__);
         double edges[4];
         for (unsigned i = 0u; i < 4u; ++i) {
             edges[i] = draw.scissor[i] * static_cast<double>(i % 2u == 0u ? bound.scale_x : bound.scale_y);
-            if (!std::isfinite(edges[i]) || edges[i] > 32767.0) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+            if (!std::isfinite(edges[i]) || edges[i] > 32767.0) return unsupportedDraw(__LINE__);
             edges[i] = std::floor(edges[i] + 0.5);
         }
         // Metal requires the scissor inside the target.
@@ -1930,7 +1937,7 @@ RecompD3dPresenterError submitDraw(RecompD3dPresenter *presenter, const RecompD3
         if (sampled != nullptr && sampled->render == bound.color) {
             std::fprintf(stderr, "recomp d3d presenter: cannot sample active render target data=0x%08X\n",
                 draw.texture.data);
-            return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+            return unsupportedDraw(__LINE__);
         }
     }
     useTarget(presenter, bound.color, bound.depth);
@@ -1944,6 +1951,7 @@ RecompD3dPresenterError submitDraw(RecompD3dPresenter *presenter, const RecompD3
             if ((draw.pixel_program.kind == RECOMP_D3D_PIXEL_FIXED_FUNCTION && i >= draw.pixel_program.stage_count) ||
                 !draw.pixel_program.stages[i].sampled) continue;
             const auto &stage = draw.stage_textures[i];
+            if (stage.white) continue;
             RecompD3dPresenterDrawCommand lookup{};
             lookup.texture = stage.desc;
             lookup.texture_bytes = stage.bytes;
@@ -1951,14 +1959,19 @@ RecompD3dPresenterError submitDraw(RecompD3dPresenter *presenter, const RecompD3
             lookup.palette_bytes = stage.palette;
             lookup.palette_byte_count = stage.palette_byte_count;
             const RenderTargetEntry *sampled = findRenderTarget(presenter, stage.desc);
-            if (sampled != nullptr && sampled->render == bound.color) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+            if (sampled != nullptr && sampled->render == bound.color) return unsupportedDraw(__LINE__);
             stage_texture[i] = lookupTexture(presenter, lookup);
-            if (stage_texture[i] == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+            if (stage_texture[i] == nullptr) {
+                std::fprintf(stderr, "recomp d3d presenter: stage %u texture data=0x%08X fmt=0x%02X size=%ux%u"
+                    " linear=%d pitch=%u bytes=%u\n", i, stage.desc.data, stage.desc.format_byte,
+                    stage.desc.width, stage.desc.height, stage.desc.linear ? 1 : 0, stage.desc.pitch, stage.byte_count);
+                return unsupportedDraw(__LINE__);
+            }
         }
     }
     SDL_GPUTexture *mask = nullptr, *bump = nullptr;
     if (draw.has_alpha_mask) {
-        if (layout.texcoord_count != 2u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        if (layout.texcoord_count != 2u) return unsupportedDraw(__LINE__);
         RecompD3dPresenterDrawCommand lookup{};
         lookup.texture = draw.alpha_mask;
         lookup.texture_bytes = draw.alpha_mask_bytes;
@@ -1966,7 +1979,7 @@ RecompD3dPresenterError submitDraw(RecompD3dPresenter *presenter, const RecompD3
         lookup.palette_bytes = draw.alpha_mask_palette;
         lookup.palette_byte_count = draw.alpha_mask_palette_byte_count;
         mask = lookupTexture(presenter, lookup);
-        if (mask == nullptr || texture == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        if (mask == nullptr || texture == nullptr) return unsupportedDraw(__LINE__);
     }
     const auto reflectionLookup = [&](const RecompD3dTextureDesc &desc, const void *bytes, uint32_t count,
                                       bool bump_env = false) {
@@ -1981,51 +1994,51 @@ RecompD3dPresenterError submitDraw(RecompD3dPresenter *presenter, const RecompD3
         if (draw.has_alpha_mask || draw.four_tap_filter || layout.pretransformed ||
             (draw.has_reflection && draw.program_alpha_mask) ||
             (draw.program_alpha_mask && layout.normal_offset == RECOMP_D3D_FVF_ABSENT) ||
-            layout.texcoord_count == 0u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+            layout.texcoord_count == 0u) return unsupportedDraw(__LINE__);
         mask = reflectionLookup(draw.reflection_texture, draw.reflection_bytes, draw.reflection_byte_count);
-        if (mask == nullptr || texture == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        if (mask == nullptr || texture == nullptr) return unsupportedDraw(__LINE__);
     }
     if (draw.distortion) {
         if (draw.has_alpha_mask || draw.has_reflection || draw.program_alpha_mask ||
-            draw.four_tap_filter || layout.texcoord_count != 4u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+            draw.four_tap_filter || layout.texcoord_count != 4u) return unsupportedDraw(__LINE__);
         mask = reflectionLookup(draw.reflection_texture, draw.reflection_bytes, draw.reflection_byte_count);
-        if (mask == nullptr || texture == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        if (mask == nullptr || texture == nullptr) return unsupportedDraw(__LINE__);
     }
     if (draw.stage1_alpha_mask) {
         if (draw.has_alpha_mask || draw.has_reflection || draw.program_count || draw.distortion ||
             draw.four_tap_filter || (draw.stage1_kill_only ? layout.texcoord_count == 0u
-                : layout.texcoord_count != 2u)) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+                : layout.texcoord_count != 2u)) return unsupportedDraw(__LINE__);
         mask = reflectionLookup(draw.reflection_texture, draw.reflection_bytes, draw.reflection_byte_count);
-        if (mask == nullptr || texture == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        if (mask == nullptr || texture == nullptr) return unsupportedDraw(__LINE__);
     }
     if (draw.reflection_stage2) {
         if (!draw.has_reflection || draw.program_count || draw.bump_env || draw.distortion ||
             draw.reflection_premultiplied || draw.reflection_skip_diffuse)
-            return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+            return unsupportedDraw(__LINE__);
         bump = reflectionLookup(draw.reflection_stage2_texture, draw.reflection_stage2_bytes,
             draw.reflection_stage2_byte_count);
-        if (bump == nullptr || mask == nullptr || texture == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        if (bump == nullptr || mask == nullptr || texture == nullptr) return unsupportedDraw(__LINE__);
     }
     if (draw.bump_env) {
         if (!draw.program_count || draw.has_alpha_mask || draw.has_reflection || draw.program_alpha_mask ||
             draw.distortion || draw.stage1_alpha_mask || draw.four_tap_filter || draw.bright_pass)
-            return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+            return unsupportedDraw(__LINE__);
         mask = reflectionLookup(draw.reflection_texture, draw.reflection_bytes, draw.reflection_byte_count);
         bump = reflectionLookup(draw.alpha_mask, draw.alpha_mask_bytes, draw.alpha_mask_byte_count, true);
-        if (bump == nullptr || mask == nullptr || texture == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        if (bump == nullptr || mask == nullptr || texture == nullptr) return unsupportedDraw(__LINE__);
     }
     if (draw.four_tap_filter && (texture == nullptr ||
             !std::isfinite(draw.four_tap_scale) || !std::isfinite(draw.four_tap_sum_scale))) {
-        return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        return unsupportedDraw(__LINE__);
     }
     if (draw.bright_pass && (texture == nullptr || draw.four_tap_filter ||
             draw.has_alpha_mask || draw.has_reflection || draw.program_count ||
             layout.texcoord_count != 1u || draw.texture.width == 0u || draw.texture.height == 0u)) {
-        return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        return unsupportedDraw(__LINE__);
     }
     if (draw.luminance_tint && (texture == nullptr || draw.four_tap_filter || draw.bright_pass ||
             draw.has_alpha_mask || draw.has_reflection || draw.program_count || layout.texcoord_count != 1u)) {
-        return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        return unsupportedDraw(__LINE__);
     }
     countDrawTexture(draw, texture != nullptr);
 
@@ -2037,7 +2050,7 @@ RecompD3dPresenterError submitDraw(RecompD3dPresenter *presenter, const RecompD3
     target_state.scale_y = bound.scale_y;
     float constants[kRecompD3dDrawConstantFloats];
     if (!recomp_d3d_draw_constants(draw, layout, target_state, texture != nullptr, scaled_bias, constants)) {
-        return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        return unsupportedDraw(__LINE__);
     }
 
     const auto *source_indices = static_cast<const uint16_t *>(draw.index_bytes);
@@ -2049,7 +2062,7 @@ RecompD3dPresenterError submitDraw(RecompD3dPresenter *presenter, const RecompD3
     const void *indices = draw.index_bytes;
     uint32_t index_count = draw.index_count;
     if (draw.primitive_type == 7u) {
-        if (draw.triangle_count > 4096u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        if (draw.triangle_count > 4096u) return unsupportedDraw(__LINE__);
         expanded_indices.resize(draw.triangle_count * 3u);
         for (uint32_t i = 0u; i < draw.triangle_count; ++i) {
             expanded_indices[i * 3u + 0u] = source_indices[0];
@@ -2082,7 +2095,7 @@ RecompD3dPresenterError submitDraw(RecompD3dPresenter *presenter, const RecompD3
         for (uint32_t i = 0u; i + 1u < draw.index_count; i += 2u) {
             LineVertex a{}, b{};
             if (!fetch(source_indices[i], a) || !fetch(source_indices[i + 1u], b)) {
-                return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+                return unsupportedDraw(__LINE__);
             }
             expandLine(a, b, style, wide);
         }
@@ -2112,7 +2125,7 @@ RecompD3dPresenterError submitDraw(RecompD3dPresenter *presenter, const RecompD3
     state.samples = bound.samples;
     state.slope_bias = scaled_bias ? 0.0f : draw.slope_scaled_depth_bias;
     SDL_GPUGraphicsPipeline *pipeline = lookupPipeline(presenter, state);
-    if (pipeline == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    if (pipeline == nullptr) return unsupportedDraw(__LINE__);
 
     const bool volume = draw.texture.volume_depth != 0u;
     DrawBindings bindings{};

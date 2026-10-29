@@ -297,6 +297,9 @@ typedef struct RecompD3dPresenterDrawCommand {
         uint32_t address_u, address_v;
         bool point_mip_filter;
         float mip_lod_bias;
+        /* The stage reads memory the host keeps no colour copy of (a depth
+           buffer through a colour alias): it samples white. shortcut. */
+        bool white;
     } stage_textures[RECOMP_D3D_PIXEL_STAGES];
     RecompD3dPresenterTarget target;
 } RecompD3dPresenterDrawCommand;
