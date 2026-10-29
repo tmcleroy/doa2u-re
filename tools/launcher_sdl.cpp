@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Linux launcher: pick resolution, anti-aliasing, widescreen, the intro skip
-// and 5.1 surround, remember them in private/launcher.json, then exit 0 so run_game.py
-// starts the game. Mirrors tools/launcher.cs, with MSAA up to SDL_GPU's 8x. Adapted from the DOA3 launcher
+// Linux launcher: pick resolution, anti-aliasing, widescreen, the intro skip,
+// 5.1 surround and the free camera, remember them in private/launcher.json, then
+// exit 0 so run_game.py starts the game. Mirrors tools/launcher.cs, with MSAA up to SDL_GPU's 8x. Adapted from the DOA3 launcher
 // (NoRain211/doa3-re tools/launcher_sdl.cpp). Gamepad,
 // keyboard, mouse and touch all work, so it runs from Steam Game Mode.
 // Exits 1 when closed without Play.
@@ -19,13 +19,13 @@ namespace {
 // Everything is laid out on a 640x400 canvas and scaled by whole numbers,
 // so SDL's 8x8 debug font stays sharp: 2x on the Steam Deck's 1280x800.
 constexpr int kWidth = 640, kHeight = 400;
-constexpr float kRowX = 120, kRowW = 400, kRowH = 26, kFirstRowY = 108, kRowGap = 32;
-constexpr float kButtonY = kFirstRowY + 6 * kRowGap + 10, kButtonW = 194, kButtonH = 30;
+constexpr float kRowX = 120, kRowW = 400, kRowH = 26, kFirstRowY = 108, kRowGap = 30;
+constexpr float kButtonY = kFirstRowY + 7 * kRowGap + 10, kButtonW = 194, kButtonH = 30;
 
 const int kHeights[] = {480, 720, 1080, 1440, 2160};
 const int kSamples[] = {1, 2, 4, 8};
 
-enum Item { RESOLUTION, MSAA, SMAA, WIDESCREEN, SKIP_INTRO, SURROUND, PLAY, QUIT, ITEM_COUNT };
+enum Item { RESOLUTION, MSAA, SMAA, WIDESCREEN, SKIP_INTRO, SURROUND, FREE_CAMERA, PLAY, QUIT, ITEM_COUNT };
 
 // launcher.cs's defaults: the screen height, the most MSAA, widescreen on.
 struct Settings {
@@ -35,6 +35,7 @@ struct Settings {
     bool widescreen = true;
     bool skip_intro = false;
     bool surround = false;
+    bool free_camera = false;  // F1, ` or the right stick's click takes the camera
 };
 
 struct Color { Uint8 r, g, b; };
@@ -67,6 +68,7 @@ Settings loadSettings(const std::string &path)
     if (jsonValue(text, "widescreen", value)) settings.widescreen = value == "true";
     if (jsonValue(text, "skipIntro", value)) settings.skip_intro = value == "true";
     if (jsonValue(text, "surround", value)) settings.surround = value == "true";
+    if (jsonValue(text, "freeCamera", value)) settings.free_camera = value == "true";
     return settings;
 }
 
@@ -77,7 +79,8 @@ bool saveSettings(const std::string &path, const Settings &settings)
          << ",\n  \"smaa\": " << (settings.smaa ? "true" : "false")
          << ",\n  \"widescreen\": " << (settings.widescreen ? "true" : "false")
          << ",\n  \"skipIntro\": " << (settings.skip_intro ? "true" : "false")
-         << ",\n  \"surround\": " << (settings.surround ? "true" : "false") << "\n}\n";
+         << ",\n  \"surround\": " << (settings.surround ? "true" : "false")
+         << ",\n  \"freeCamera\": " << (settings.free_camera ? "true" : "false") << "\n}\n";
     return static_cast<bool>(file);
 }
 
@@ -115,7 +118,7 @@ struct Launcher {
     void change(int item, int step)
     {
         static const int counts[] = {static_cast<int>(std::size(kHeights)),
-            static_cast<int>(std::size(kSamples)), 2, 2, 2, 2};
+            static_cast<int>(std::size(kSamples)), 2, 2, 2, 2, 2};
         if (item < PLAY) choice[item] = (choice[item] + counts[item] + step) % counts[item];
     }
 
@@ -162,7 +165,7 @@ struct Launcher {
         centered(82, "Native port settings", kMuted);
 
         static const char *labels[] = {"Resolution", "MSAA", "SMAA Ultra", "Widescreen (16:9)",
-            "Skip intro movies", "Surround 5.1"};
+            "Skip intro movies", "Surround 5.1", "Free camera"};
         for (int item = RESOLUTION; item < PLAY; ++item) {
             const SDL_FRect row = itemRect(item);
             const bool active = item == selected;
@@ -256,6 +259,7 @@ int main(int argc, char **argv)
     launcher.choice[WIDESCREEN] = settings.widescreen ? 1 : 0;
     launcher.choice[SKIP_INTRO] = settings.skip_intro ? 1 : 0;
     launcher.choice[SURROUND] = settings.surround ? 1 : 0;
+    launcher.choice[FREE_CAMERA] = settings.free_camera ? 1 : 0;
 
     int result = -1;
     int held_dx = 0, held_dy = 0;
@@ -344,6 +348,7 @@ int main(int argc, char **argv)
         settings.widescreen = launcher.choice[WIDESCREEN] != 0;
         settings.skip_intro = launcher.choice[SKIP_INTRO] != 0;
         settings.surround = launcher.choice[SURROUND] != 0;
+        settings.free_camera = launcher.choice[FREE_CAMERA] != 0;
         if (!saveSettings(settings_path, settings)) {
             std::fprintf(stderr, "launcher: cannot write %s\n", settings_path.c_str());
             result = 1;

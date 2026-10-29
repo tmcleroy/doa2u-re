@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// macOS launcher: pick resolution, anti-aliasing, widescreen, the intro skip
-// and 5.1 surround, remember them in private/launcher.json, then exit 0 so launcher.sh
-// starts the game. Mirrors tools/launcher.cs, with MSAA up to SDL_GPU's 8x.
+// macOS launcher: pick resolution, anti-aliasing, widescreen, the intro skip,
+// 5.1 surround and the free camera, remember them in private/launcher.json,
+// then exit 0 so launcher.sh starts the game. Mirrors tools/launcher.cs, with MSAA up to SDL_GPU's 8x.
 // Exits 1 if the window is closed.
 // Adapted from the DOA3 launcher (NoRain211/doa3-re tools/launcher_macos.swift).
 import AppKit
@@ -38,6 +38,7 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let widescreen = NSButton(checkboxWithTitle: "Widescreen (16:9)", target: nil, action: nil)
     let skipIntro = NSButton(checkboxWithTitle: "Skip intro movies", target: nil, action: nil)
     let surround = NSButton(checkboxWithTitle: "Surround 5.1", target: nil, action: nil)
+    let freeCamera = NSButton(checkboxWithTitle: "Free camera", target: nil, action: nil)
     var launched = false
 
     func addRow(_ title: String, _ popup: NSPopUpButton, _ items: [String], _ index: Int, _ y: CGFloat) {
@@ -75,10 +76,14 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
         note.textColor = .secondaryLabelColor
         note.frame = NSRect(x: 16, y: 44, width: 256, height: 16)
 
+        freeCamera.frame = NSRect(x: 16, y: 13, width: 150, height: 20)
+        freeCamera.state = boolSetting("freeCamera", false) ? .on : .off
+        freeCamera.toolTip = "F1, ` or clicking the right stick takes the camera: fly it with the sticks or WASD and the arrow keys; P, or Start while flying, freezes the game."
+
         let play = NSButton(title: "Play", target: self, action: #selector(play))
         play.frame = NSRect(x: 180, y: 8, width: 88, height: 30)
         play.keyEquivalent = "\r"
-        for view in [smaa, widescreen, skipIntro, surround, note, play] { window.contentView!.addSubview(view) }
+        for view in [smaa, widescreen, skipIntro, surround, freeCamera, note, play] { window.contentView!.addSubview(view) }
 
         window.center()
         window.makeKeyAndOrderFront(nil)
@@ -93,6 +98,7 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
             "widescreen": widescreen.state == .on,
             "skipIntro": skipIntro.state == .on,
             "surround": surround.state == .on,
+            "freeCamera": freeCamera.state == .on,
         ]
         do {
             try FileManager.default.createDirectory(
