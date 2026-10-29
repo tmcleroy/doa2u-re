@@ -408,6 +408,8 @@ endif()
     set_tests_properties(recomp-runtime-kernel-scheduler PROPERTIES TIMEOUT 10)
 
 set(RECOMP_PROGRAM_DIR "" CACHE PATH "Authenticated complete generated-source snapshot")
+# A game's own runner sources beside the shared ones, relative to this directory.
+set(RECOMP_GAME_SOURCES "" CACHE STRING "Extra runner sources a game adds")
 set(RECOMP_PROGRAM_MANIFEST_SHA256 "" CACHE STRING "SHA-256 of the generated-source manifest")
 set(RECOMP_XBE_SHA256 "" CACHE STRING "SHA-256 of the executable used to generate this program")
 set(RECOMP_PROGRAM_EBP_EXPECTED 0 CACHE STRING "Expected uninitialized generated EBP prologue count")
@@ -511,7 +513,7 @@ if(RECOMP_PROGRAM_DIR)
         xbox_adpcm.c
         input_model.c input_adapter.c input_host_win32.c input_pulse_source.c
         free_camera.c free_camera_adapter.c scene_freeze.c scene_freeze_adapter.c
-        host_diagnostics.cpp "${_missing_source}" ${_program_sources})
+        host_diagnostics.cpp ${RECOMP_GAME_SOURCES} "${_missing_source}" ${_program_sources})
     target_compile_definitions(recomp_program_runner PRIVATE RECOMP_XBE_SHA256="${_xbe_sha256}")
     if(MSVC)
         # /MP compiles the large generated chunks side by side inside this one project.
