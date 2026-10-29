@@ -729,6 +729,11 @@ static inline int32_t MMX_CVT_F2I(float v, int truncate)
 }
 #endif
 
+/* SQRTPS is exact; RSQRTPS takes the same approximation as RSQRTSS per lane.
+   Both read only the source operand. */
+RECOMP_XMM_LANEWISE(XMM_SQRT, (void)a; r.f[i] = sqrtf(b.f[i]))
+RECOMP_XMM_LANEWISE(XMM_RSQRT, (void)a; r.f[i] = recomp_rsqrtss(b.f[i]))
+
 /* ── MMX ────────────────────────────────────────────────────────────────
    The register file lives in runtime.h. Use SSE2's low 64 bits so packed
    operations stay packed without putting the host FPU into MMX mode. */
