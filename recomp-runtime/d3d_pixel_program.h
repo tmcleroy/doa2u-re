@@ -10,6 +10,11 @@
    D3D8 defines them. The Xbox SDK compiles these to register combiners; the
    shader evaluates the same operations directly.
 
+   Register combiners: the NV2A pixel registers a D3DPIXELSHADERDEF holds
+   (and the SDK writes as Kelvin methods): per stage the RGB and alpha input
+   and output control words, the combiner count and flags, the final
+   combiner's two words, and the texture stage modes.
+
    The structure (ops, arguments, which stages sample) selects a shader;
    the constants do not and travel in the draw's constant buffer. */
 
@@ -23,14 +28,20 @@ extern "C" {
 enum {
     RECOMP_D3D_PIXEL_NONE = 0u,
     RECOMP_D3D_PIXEL_FIXED_FUNCTION = 1u,
+    RECOMP_D3D_PIXEL_COMBINERS = 2u,
     RECOMP_D3D_PIXEL_STAGES = 4u,
     /* Float4 constants the shader reads (pixel_constants in the draw buffer). */
     RECOMP_D3D_PIXEL_CONSTANTS = 24u,
     /* pixel_constants slots. */
     /* 4, one per stage: xy the texel scale of a linear texture (1 when
-       swizzled), z 1 for an A8 texture (white RGB on NV2A). */
+       swizzled), z 1 for an A8 texture (white RGB on NV2A), w 1 for an X8
+       format (alpha reads one). */
     RECOMP_D3D_PIXEL_CONSTANT_STAGE_SCALE = 0u,
     RECOMP_D3D_PIXEL_CONSTANT_TFACTOR = 4u,      /* D3DRS_TEXTUREFACTOR as RGBA */
+    RECOMP_D3D_PIXEL_CONSTANT_FACTOR0 = 5u,      /* 8: combiner C0 per stage, RGBA */
+    RECOMP_D3D_PIXEL_CONSTANT_FACTOR1 = 13u,     /* 8: combiner C1 per stage */
+    RECOMP_D3D_PIXEL_CONSTANT_FINAL0 = 21u,      /* final combiner C0, C1 */
+    RECOMP_D3D_PIXEL_CONSTANT_FINAL1 = 22u,
 };
 
 /* D3DTOP (Xbox numbering, which follows D3D8). */
@@ -64,16 +75,28 @@ typedef struct RecompD3dPixelStage {
     bool alpha_kill;                   /* discard where the texel's alpha is zero */
 } RecompD3dPixelStage;
 
+/* NV2A register combiner state, as the Kelvin methods carry it. */
+typedef struct RecompD3dCombiners {
+    uint32_t control;                  /* 0x1e60: count, mux select, unique C0/C1 */
+    uint32_t color_input[8], color_output[8];
+    uint32_t alpha_input[8], alpha_output[8];
+    uint32_t final0, final1;           /* 0x288, 0x28c */
+    uint32_t texture_modes;            /* 5 bits per stage */
+    uint32_t input_texture, dot_mapping, compare_mode;
+} RecompD3dCombiners;
+
 typedef struct RecompD3dPixelProgram {
     uint32_t kind;
     uint32_t stage_count;              /* stages before the first COLOROP DISABLE */
     RecompD3dPixelStage stages[RECOMP_D3D_PIXEL_STAGES];
+    RecompD3dCombiners combiners;      /* kind COMBINERS; stages[].sampled and
+                                          .texcoord say which textures it reads */
     /* Not part of the shader's identity: */
     float constants[RECOMP_D3D_PIXEL_CONSTANTS][4];
 } RecompD3dPixelProgram;
 
-/* Checks a fixed-function program the generator can express; false names
-   the first unsupported part in `reason` (static text). */
+/* Checks a program the generator can express; false names the first
+   unsupported part in `reason` (static text). */
 bool recomp_d3d_pixel_program_supported(const RecompD3dPixelProgram *program, const char **reason);
 
 /* A hash of the program's structure, for shader caches; constants excluded. */
@@ -84,10 +107,10 @@ uint64_t recomp_d3d_pixel_program_hash(const RecompD3dPixelProgram *program);
 
 #include <string>
 
-/* HLSL statements that compute `float4 shaded` from `input.color` (diffuse),
-   `input.t0` to `input.t3` (float4 texture coordinates), the stage textures
-   (guest_texture, alpha_mask and bump_map with their samplers) and
-   pixel_constants. */
+/* HLSL statements that compute `float4 shaded` from `input.color` (diffuse;
+   specular reads zero for now), `input.t0` to `input.t3` (float4 texture coordinates),
+   the stage textures (guest_texture, alpha_mask and bump_map with their
+   samplers) and pixel_constants. */
 bool recomp_d3d_pixel_program_source(const RecompD3dPixelProgram &program, std::string &source);
 #endif
 

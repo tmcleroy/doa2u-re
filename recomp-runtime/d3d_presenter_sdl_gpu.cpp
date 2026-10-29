@@ -573,7 +573,10 @@ RecompD3dPresenterError bindTarget(RecompD3dPresenter *presenter,
         const RecompD3dTextureDesc &desc = target.color;
         if (desc.depth || desc.data == 0u || desc.width == 0u || desc.height == 0u ||
             desc.width > kMaxTextureSize || desc.height > kMaxTextureSize ||
-            (desc.format_byte != RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8 && desc.format_byte != 0x12u)) {
+            (desc.format_byte != RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8 && desc.format_byte != 0x12u &&
+             /* X8R8G8B8, swizzled and linear, stored as BGRA8; general pixel
+                programs read their alpha as one (pixel_constants .w). */
+             desc.format_byte != 0x07u && desc.format_byte != 0x1eu)) {
             std::fprintf(stderr,
                 "recomp d3d presenter: unsupported target data=0x%08X fmt=0x%02X size=%ux%u no_depth=%d\n",
                 desc.data, desc.format_byte, desc.width, desc.height, target.no_depth ? 1 : 0);
@@ -779,6 +782,59 @@ RecompD3dPresenterError submitCopyMainColor(RecompD3dPresenter *presenter, const
     copyGuestBuffer(presenter, bound.entry->resolve, false);
     /* shortcut: with MSAA only the resolved view holds the copy, so a later draw
        into this target would resolve over it; copy the samples if a game does. */
+    bound.entry->resolved = true;
+    return RECOMP_D3D_PRESENTER_OK;
+}
+
+/* A guest rectangle of the main color target, or of the last presented frame,
+   blitted into an offscreen target with each side's host scale. */
+RecompD3dPresenterError submitCopyRect(RecompD3dPresenter *presenter, const RecompD3dPresenterCopyRectCommand &copy)
+{
+    const int32_t *r = copy.source;
+    if (r[0] < 0 || r[1] < 0 || r[2] <= r[0] || r[3] <= r[1] ||
+        r[2] > static_cast<int32_t>(presenter->config.width) || r[3] > static_cast<int32_t>(presenter->config.height) ||
+        copy.point[0] < 0 || copy.point[1] < 0 ||
+        copy.point[0] + (r[2] - r[0]) > static_cast<int32_t>(copy.destination.width) ||
+        copy.point[1] + (r[3] - r[1]) > static_cast<int32_t>(copy.destination.height))
+        return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    RecompD3dPresenterTarget target{};
+    target.offscreen = true;
+    target.no_depth = true;
+    target.color = copy.destination;
+    BoundTarget bound;
+    const RecompD3dPresenterError error = bindTarget(presenter, target, bound);
+    if (error != RECOMP_D3D_PRESENTER_OK) return error;
+    flushSegment(presenter);
+    resolveMain(presenter);
+    SDL_GPUTexture *source = presenter->main_resolve;
+    if (copy.from_previous_frame) {
+        /* Until the first Present after this, the frame in progress stands in. */
+        if (presenter->previous_frame == nullptr) {
+            presenter->previous_frame = createTexture(presenter, SDL_GPU_TEXTURETYPE_2D,
+                SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, SDL_GPU_TEXTUREUSAGE_SAMPLER,
+                mainWidth(presenter), mainHeight(presenter));
+            if (presenter->previous_frame == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+            copyGuestBuffer(presenter, presenter->previous_frame, false);
+        }
+        source = presenter->previous_frame;
+    }
+    const float sx = static_cast<float>(mainWidth(presenter)) / presenter->config.width;
+    const float sy = static_cast<float>(mainHeight(presenter)) / presenter->config.height;
+    SDL_GPUBlitInfo blit{};
+    blit.source.texture = source;
+    blit.source.x = static_cast<uint32_t>(r[0] * sx);
+    blit.source.y = static_cast<uint32_t>(r[1] * sy);
+    blit.source.w = static_cast<uint32_t>((r[2] - r[0]) * sx);
+    blit.source.h = static_cast<uint32_t>((r[3] - r[1]) * sy);
+    blit.destination.texture = bound.entry->resolve;
+    blit.destination.x = static_cast<uint32_t>(copy.point[0] * bound.scale_x);
+    blit.destination.y = static_cast<uint32_t>(copy.point[1] * bound.scale_y);
+    blit.destination.w = static_cast<uint32_t>((r[2] - r[0]) * bound.scale_x);
+    blit.destination.h = static_cast<uint32_t>((r[3] - r[1]) * bound.scale_y);
+    blit.load_op = SDL_GPU_LOADOP_LOAD;
+    blit.filter = SDL_GPU_FILTER_LINEAR;
+    SDL_BlitGPUTexture(commandBuffer(presenter), &blit);
+    /* shortcut: as for the whole-target copy, with MSAA only the resolved view holds it. */
     bound.entry->resolved = true;
     return RECOMP_D3D_PRESENTER_OK;
 }
@@ -3129,6 +3185,8 @@ RecompD3dPresenterError d3d_backend_submit(RecompD3dPresenter *presenter, const 
     }
     case RECOMP_D3D_PRESENTER_COMMAND_COPY_MAIN_COLOR:
         return submitCopyMainColor(presenter, command->data.copy_destination);
+    case RECOMP_D3D_PRESENTER_COMMAND_COPY_RECT:
+        return submitCopyRect(presenter, command->data.copy_rect);
     default:
         return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     }

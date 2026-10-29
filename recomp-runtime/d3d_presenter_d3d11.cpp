@@ -982,7 +982,9 @@ RecompD3dPresenterError bindTarget(
             desc.width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
             desc.height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
             (desc.format_byte != RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8 &&
-             desc.format_byte != 0x12u)) {
+             desc.format_byte != 0x12u &&
+             /* X8R8G8B8, swizzled and linear, stored as BGRA8. */
+             desc.format_byte != 0x07u && desc.format_byte != 0x1eu)) {
             std::fprintf(stderr,
                 "recomp d3d presenter: unsupported target data=0x%08X "
                 "fmt=0x%02X size=%ux%u no_depth=%d\n",

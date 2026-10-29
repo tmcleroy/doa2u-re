@@ -42,6 +42,7 @@ typedef enum RecompD3dPresenterCommandType {
     /* Copies the main color target into a main-sized offscreen target, so
        later draws sampling that texture see the frame (a CopyRects snapshot). */
     RECOMP_D3D_PRESENTER_COMMAND_COPY_MAIN_COLOR,
+    RECOMP_D3D_PRESENTER_COMMAND_COPY_RECT,
 } RecompD3dPresenterCommandType;
 
 /* Resolved by the adapter. Surface wrappers sharing pixel storage have the
@@ -300,6 +301,17 @@ typedef struct RecompD3dPresenterDrawCommand {
     RecompD3dPresenterTarget target;
 } RecompD3dPresenterDrawCommand;
 
+/* CopyRects from the main color target, or from the frame Present last showed
+   (the front buffer), into an offscreen render target: a source rectangle in
+   guest pixels (left, top, right, bottom) to a guest point, scaled to each
+   side's host resolution. */
+typedef struct RecompD3dPresenterCopyRectCommand {
+    RecompD3dTextureDesc destination;
+    bool from_previous_frame;
+    int32_t source[4];
+    int32_t point[2];
+} RecompD3dPresenterCopyRectCommand;
+
 typedef struct RecompD3dPresenterCommand {
     RecompD3dPresenterCommandType type;
     union {
@@ -310,6 +322,7 @@ typedef struct RecompD3dPresenterCommand {
         uint8_t gamma[3][256];
         uint32_t visibility_index;
         RecompD3dTextureDesc copy_destination;
+        RecompD3dPresenterCopyRectCommand copy_rect;
     } data;
 } RecompD3dPresenterCommand;
 
