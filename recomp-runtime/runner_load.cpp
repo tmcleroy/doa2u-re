@@ -4,6 +4,7 @@
 #include "xbox_memory_layout.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 namespace {
@@ -35,7 +36,7 @@ std::uint32_t kernelDataAddress(std::uint32_t ordinal)
 } // namespace
 
 bool recomp_load_xbe(const doaxbv::XbeParseResult& parsed,
-    std::vector<std::uint8_t>& memory, std::string& error)
+    std::vector<std::uint8_t>& memory, std::string& error, bool fileAuthenticated)
 {
     const auto& metadata = parsed.metadata;
     const auto& header = metadata.header;
@@ -85,9 +86,14 @@ bool recomp_load_xbe(const doaxbv::XbeParseResult& parsed,
         const std::uint64_t rawEnd = static_cast<std::uint64_t>(section.rawAddress) +
             section.rawSize;
         if (section.virtualAddress < header.baseAddress || virtualEnd > imageEnd ||
-            rawEnd > parsed.fileBytes.size() || !section.digestMatches) {
+            rawEnd > parsed.fileBytes.size() ||
+            (!section.digestMatches && !fileAuthenticated)) {
             error = "XBE section leaves its range or has a digest mismatch";
             return false;
+        }
+        if (!section.digestMatches) {
+            std::fprintf(stderr, "recomp runner: section at 0x%08x has a stale digest in the "
+                "authenticated XBE\n", static_cast<unsigned>(section.virtualAddress));
         }
     }
     for (const auto& thunk : metadata.kernelThunks) {
