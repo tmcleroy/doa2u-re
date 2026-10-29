@@ -301,9 +301,11 @@ typedef struct RecompD3dPresenterDrawCommand {
     /* A general pixel program's fog: [0] enabled, table mode (0 none: the
        coordinate is the factor; 1 exp; 2 exp2; 3 linear), start, end; [1] the
        object-to-eye matrix's z column, whose dot product with the position is
-       the fixed-function fog coordinate (vertex programs write oFog); [2] x
-       the density. The color is pixel constant FOG. */
-    float general_fog[3][4];
+       the fixed-function fog coordinate (vertex programs write oFog); [2] the
+       density, and 1 for range fog, whose coordinate is the eye distance
+       ([3] and [4], the x and y columns, with [1]). The color is pixel
+       constant FOG. */
+    float general_fog[5][4];
     struct RecompD3dStageTexture {
         RecompD3dTextureDesc desc;
         const void *bytes;

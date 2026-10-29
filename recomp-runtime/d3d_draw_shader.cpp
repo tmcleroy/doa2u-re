@@ -70,7 +70,7 @@ constexpr char kDrawShaderPrologue[] =
     "    float4 reflection_stage2_flags;\n"
     "    float4 raster_bias;\n"
     "    float4 pixel_constants[24];\n"
-    "    float4 general_light[8];\n"
+    "    float4 general_light[9];\n"
     "}\n"
     "Texture2D guest_texture : register(t0);\n"
     "Texture3D guest_volume : register(t3);\n"
@@ -421,7 +421,12 @@ bool buildGeneralShaderSource(const RecompD3dDrawShaderKey &key, const RecompD3d
     /* With lighting off the fixed-function default diffuse is white. */
     out += has_diffuse ? "    output.color = input.diffuse;\n" : "    output.color = float4(1, 1, 1, 1);\n";
     if (!layout.pretransformed)
-        out += "    output.fog_coord = dot(float4(input.position, 1), general_light[5]);\n";
+        out += "    {\n"
+            "        float4 p = float4(input.position, 1);\n"
+            "        output.fog_coord = general_light[6].y > 0.5f\n"
+            "            ? length(float3(dot(p, general_light[7]), dot(p, general_light[8]), dot(p, general_light[5])))\n"
+            "            : dot(p, general_light[5]);\n"
+            "    }\n";
     if (has_normal && !layout.pretransformed && layout.blend_weight_count == 0u) {
         /* D3D fixed-function lighting, in the space of the lights (the adapter's
            directional_normals[0] and light_world[0]). Material diffuse, ambient
