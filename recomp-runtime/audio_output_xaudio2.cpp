@@ -233,6 +233,13 @@ extern "C" uint32_t recomp_audio_output_speakers(void)
     return surround && std::strcmp(surround, "0") != 0 ? 6u : 2u;
 }
 
+/* ponytail: the player's pause and mute switches are not done for XAudio2;
+   muted is only remembered. */
+static int xaudio2_player_muted;
+extern "C" void recomp_audio_output_set_paused(int) {}
+extern "C" void recomp_audio_output_set_muted(int value) { xaudio2_player_muted = value != 0; }
+extern "C" int recomp_audio_output_muted(void) { return xaudio2_player_muted; }
+
 extern "C" int recomp_audio_output_on_owner_thread(void)
 {
     const DWORD owner = owner_thread.load(std::memory_order_relaxed);

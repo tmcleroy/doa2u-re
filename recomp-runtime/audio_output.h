@@ -27,6 +27,14 @@ int recomp_audio_output_ready(void);
 /* Atomic owner check; does not inspect device state. */
 int recomp_audio_output_on_owner_thread(void);
 
+/* A port's switches for the player, from any thread: pausing stops the device
+   (the voices keep what is queued, an in-game menu, say); muting sets the
+   device's gain to zero and back, and set before the device opens it starts
+   muted (unlike RECOMP_AUDIO_GAIN=0, which opens no device). */
+void recomp_audio_output_set_paused(int paused);
+void recomp_audio_output_set_muted(int muted);
+int recomp_audio_output_muted(void);
+
 /* I3DL2 listener parameters, in hundredths of dB, seconds and percent.
    Native reverb is a semantic replacement; Xbox DSP bit parity is unproven. */
 typedef struct RecompAudioReverb {

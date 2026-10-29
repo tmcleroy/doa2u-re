@@ -117,6 +117,24 @@ RecompD3dPresenterError recomp_d3d_presenter_invalidate_textures(
     return d3d_backend_release_memory(active->backend, base, size, false);
 }
 
+RecompD3dPresenterError recomp_d3d_presenter_read_frame(RecompD3dPresenter *presenter,
+    uint32_t *pixels, uint32_t capacity, uint32_t *width, uint32_t *height)
+{
+    const auto error = validate(presenter);
+    if (error != RECOMP_D3D_PRESENTER_OK) return error;
+    if (width == nullptr || height == nullptr) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
+    return d3d_backend_read_frame(active->backend, pixels, capacity, width, height);
+}
+
+RecompD3dPresenterError recomp_d3d_presenter_show_image(RecompD3dPresenter *presenter,
+    const uint32_t *pixels, uint32_t width, uint32_t height)
+{
+    const auto error = validate(presenter);
+    if (error != RECOMP_D3D_PRESENTER_OK) return error;
+    if (pixels == nullptr || width == 0u || height == 0u) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
+    return d3d_backend_show_image(active->backend, pixels, width, height);
+}
+
 /* Commands have already reached the backend; nothing is held here to publish. */
 RecompD3dPresenterError recomp_d3d_presenter_flush(RecompD3dPresenter *presenter, bool wait)
 {

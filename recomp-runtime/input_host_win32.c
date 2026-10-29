@@ -255,6 +255,26 @@ bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad)
     return present;
 }
 
+uint64_t recomp_input_host_pad_buttons(void)
+{
+    update_pads();
+    uint64_t held = 0u;
+    for (uint32_t port = 0u; port < RECOMP_INPUT_PORT_COUNT; ++port) {
+        SDL_Gamepad *host = pads[port];
+        if (host == NULL) continue;
+        for (int button = 0; button < SDL_GAMEPAD_BUTTON_COUNT && button < 64; ++button) {
+            if (SDL_GetGamepadButton(host, (SDL_GamepadButton)button)) held |= 1ull << button;
+        }
+        const int16_t x = SDL_GetGamepadAxis(host, SDL_GAMEPAD_AXIS_LEFTX);
+        const int16_t y = SDL_GetGamepadAxis(host, SDL_GAMEPAD_AXIS_LEFTY);
+        if (x < -16384) held |= 1ull << SDL_GAMEPAD_BUTTON_DPAD_LEFT;
+        if (x > 16384) held |= 1ull << SDL_GAMEPAD_BUTTON_DPAD_RIGHT;
+        if (y < -16384) held |= 1ull << SDL_GAMEPAD_BUTTON_DPAD_UP;
+        if (y > 16384) held |= 1ull << SDL_GAMEPAD_BUTTON_DPAD_DOWN;
+    }
+    return held;
+}
+
 void recomp_input_host_set_layout(const RecompInputHostLayout *chosen)
 {
     layout_set = chosen != NULL;

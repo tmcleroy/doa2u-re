@@ -22,6 +22,11 @@ RecompD3dPresenterError d3d_backend_release_memory(
 RecompD3dPresenterError d3d_backend_destroy(RecompD3dPresenter **presenter);
 void d3d_backend_set_immediate_present(bool enabled);
 void d3d_backend_report_draw_textures();
+/* recomp_d3d_presenter_read_frame and _show_image (d3d_presenter.h). */
+RecompD3dPresenterError d3d_backend_read_frame(RecompD3dPresenter *presenter,
+    uint32_t *pixels, uint32_t capacity, uint32_t *width, uint32_t *height);
+RecompD3dPresenterError d3d_backend_show_image(RecompD3dPresenter *presenter,
+    const uint32_t *pixels, uint32_t width, uint32_t height);
 
 enum D3dBackendVisibilityPoll {
     D3D_BACKEND_VISIBILITY_IDLE,

@@ -21,6 +21,8 @@ void recomp_input_keyboard_sample(uint8_t keys[RECOMP_INPUT_KEY_COUNT]);
 enum { RECOMP_INPUT_SCANCODE_COUNT = 512u };
 void recomp_input_scancode_event(uint32_t scancode, bool down);
 void recomp_input_scancode_sample(uint8_t keys[RECOMP_INPUT_SCANCODE_COUNT]);
+/* Held now, or pressed since the last sample; leaves the presses for it. */
+bool recomp_input_scancode_held(uint32_t scancode);
 
 #ifdef __cplusplus
 }

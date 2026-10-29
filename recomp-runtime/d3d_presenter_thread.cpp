@@ -422,6 +422,22 @@ RecompD3dPresenterError recomp_d3d_presenter_draw_coverage(
     return RECOMP_D3D_PRESENTER_OK;
 }
 
+/* ponytail: the worker's backend (D3D11) has no frame readback or image
+   present yet; a port's in-game menu is unavailable there. */
+RecompD3dPresenterError recomp_d3d_presenter_read_frame(RecompD3dPresenter *presenter,
+    uint32_t *, uint32_t, uint32_t *, uint32_t *)
+{
+    const auto error = validate(presenter);
+    return error != RECOMP_D3D_PRESENTER_OK ? error : RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+}
+
+RecompD3dPresenterError recomp_d3d_presenter_show_image(RecompD3dPresenter *presenter,
+    const uint32_t *, uint32_t, uint32_t)
+{
+    const auto error = validate(presenter);
+    return error != RECOMP_D3D_PRESENTER_OK ? error : RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+}
+
 RecompD3dPresenterError recomp_d3d_presenter_visibility_result(
     RecompD3dPresenter *presenter, uint32_t index, bool *complete, uint32_t *pixels)
 {

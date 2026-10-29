@@ -64,3 +64,12 @@ void recomp_input_scancode_sample(uint8_t keys[RECOMP_INPUT_SCANCODE_COUNT])
     }
     ReleaseSRWLockExclusive(&lock);
 }
+
+bool recomp_input_scancode_held(uint32_t scancode)
+{
+    if (scancode >= RECOMP_INPUT_SCANCODE_COUNT) return false;
+    AcquireSRWLockExclusive(&lock);
+    const bool held_now = scancode_held[scancode] || scancode_pending[scancode];
+    ReleaseSRWLockExclusive(&lock);
+    return held_now;
+}

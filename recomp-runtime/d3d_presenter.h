@@ -409,6 +409,17 @@ RecompD3dPresenterError recomp_d3d_presenter_invalidate_textures(
    (vsync) remains for windowed tests. */
 void recomp_d3d_presenter_set_immediate_present(bool enabled);
 
+/* For a port's own screen over a paused game (an in-game menu): the frame
+   the window shows, as 32-bit pixels with red in the low byte at the main
+   target's size (pixels may be null to ask the size; capacity counts pixels),
+   and a picture of the same kind shown on the window in the game's place,
+   scaled as its frames are. Backends without them answer UNSUPPORTED_COMMAND
+   (the threaded D3D11 presenter, for now). */
+RecompD3dPresenterError recomp_d3d_presenter_read_frame(RecompD3dPresenter *presenter,
+    uint32_t *pixels, uint32_t capacity, uint32_t *width, uint32_t *height);
+RecompD3dPresenterError recomp_d3d_presenter_show_image(RecompD3dPresenter *presenter,
+    const uint32_t *pixels, uint32_t width, uint32_t height);
+
 /* Observation only: reports which guest texture formats draws actually
    sampled, and which ones a draw asked for but the presenter could not
    upload. Bind counts alone cannot answer that. */

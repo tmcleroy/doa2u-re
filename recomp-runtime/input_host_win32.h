@@ -87,6 +87,11 @@ typedef struct RecompInputHostLayout {
 /* Copies the layout. */
 void recomp_input_host_set_layout(const RecompInputHostLayout *layout);
 
+/* A port's own use of the gamepads (an in-game menu): the buttons held on
+   every connected gamepad, a bit for each SDL_GamepadButton, and the left
+   stick held past half way as the d-pad's bits. Updates the gamepads. */
+uint64_t recomp_input_host_pad_buttons(void);
+
 void recomp_input_host_set_vibration(
     uint32_t port,
     uint16_t left_motor,

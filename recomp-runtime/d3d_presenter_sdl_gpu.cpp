@@ -325,6 +325,9 @@ struct RecompD3dPresenter {
     SDL_GPUTexture *smaa_textures[5]{};  // edges, area, search, weights, output
     SDL_GPUGraphicsPipeline *gamma_pipeline = nullptr;
     SDL_GPUTexture *gamma_target = nullptr;
+    /* show_image's picture, and its size */
+    SDL_GPUTexture *image_texture = nullptr;
+    uint32_t image_width = 0u, image_height = 0u;
 
     // The target of the last clear or draw: a visibility test's scale.
     BoundTarget last_bound;
@@ -2994,7 +2997,7 @@ void releasePresenter(RecompD3dPresenter *presenter)
     for (SDL_GPUTexture *texture : presenter->smaa_textures) {
         if (texture != nullptr) SDL_ReleaseGPUTexture(presenter->device, texture);
     }
-    for (SDL_GPUTexture *texture : {presenter->gamma_target, presenter->back_buffer_copy, presenter->previous_frame,
+    for (SDL_GPUTexture *texture : {presenter->gamma_target, presenter->image_texture, presenter->back_buffer_copy, presenter->previous_frame,
             presenter->white_texture, presenter->white_volume, presenter->main_depth}) {
         if (texture != nullptr) SDL_ReleaseGPUTexture(presenter->device, texture);
     }
@@ -3466,6 +3469,117 @@ D3dBackendVisibilityPoll d3d_backend_poll_visibility(RecompD3dPresenter *present
     releaseQuery(presenter, front);
     presenter->visibility_pending.erase(presenter->visibility_pending.begin());
     return D3D_BACKEND_VISIBILITY_READY;
+}
+
+RecompD3dPresenterError d3d_backend_read_frame(RecompD3dPresenter *presenter,
+    uint32_t *pixels, uint32_t capacity, uint32_t *width, uint32_t *height)
+{
+    const RecompD3dPresenterError owner = checkOwner(presenter);
+    if (owner != RECOMP_D3D_PRESENTER_OK) return owner;
+    const uint32_t w = mainWidth(presenter), h = mainHeight(presenter);
+    *width = w;
+    *height = h;
+    if (pixels == nullptr) return RECOMP_D3D_PRESENTER_OK;
+    if (capacity < w * h) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
+    // The frame the window shows: after gamma when the game set a ramp.
+    SDL_GPUTexture *frame = presenter->gamma_enabled ? presenter->gamma_target : presenter->main_resolve;
+    SDL_GPUTransferBufferCreateInfo info{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, w * h * 4u, 0};
+    SDL_GPUTransferBuffer *download = SDL_CreateGPUTransferBuffer(presenter->device, &info);
+    if (download == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+    flushSegment(presenter);
+    SDL_GPUCommandBuffer *commands = commandBuffer(presenter);
+    if (SDL_GPUCopyPass *pass = SDL_BeginGPUCopyPass(commands)) {
+        SDL_GPUTextureRegion region{frame, 0u, 0u, 0u, 0u, 0u, w, h, 1u};
+        SDL_GPUTextureTransferInfo destination{download, 0u, 0u, 0u};
+        SDL_DownloadFromGPUTexture(pass, &region, &destination);
+        SDL_EndGPUCopyPass(pass);
+    }
+    SDL_GPUFence *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(commands);
+    presenter->command_buffer = nullptr;
+    bool read = false;
+    if (fence != nullptr) {
+        SDL_WaitForGPUFences(presenter->device, true, &fence, 1u);
+        SDL_ReleaseGPUFence(presenter->device, fence);
+        if (const auto *bgra = static_cast<const uint32_t *>(SDL_MapGPUTransferBuffer(presenter->device, download, false))) {
+            // BGRA in memory to red in the low byte
+            for (uint32_t i = 0u; i < w * h; ++i) {
+                const uint32_t p = bgra[i];
+                pixels[i] = (p & 0xff00ff00u) | (p >> 16 & 0xffu) | (p & 0xffu) << 16;
+            }
+            SDL_UnmapGPUTransferBuffer(presenter->device, download);
+            read = true;
+        }
+    }
+    SDL_ReleaseGPUTransferBuffer(presenter->device, download);
+    return read ? RECOMP_D3D_PRESENTER_OK : RECOMP_D3D_PRESENTER_HOST_FAILURE;
+}
+
+RecompD3dPresenterError d3d_backend_show_image(RecompD3dPresenter *presenter,
+    const uint32_t *pixels, uint32_t width, uint32_t height)
+{
+    const RecompD3dPresenterError owner = checkOwner(presenter);
+    if (owner != RECOMP_D3D_PRESENTER_OK) return owner;
+    pumpEvents(presenter);
+    if (presenter->close_requested) return RECOMP_D3D_PRESENTER_CLOSED;
+    if (presenter->image_texture == nullptr || presenter->image_width != width || presenter->image_height != height) {
+        if (presenter->image_texture != nullptr) SDL_ReleaseGPUTexture(presenter->device, presenter->image_texture);
+        presenter->image_texture = createTexture(presenter, SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+            SDL_GPU_TEXTUREUSAGE_SAMPLER, width, height, 1u, 1u, SDL_GPU_SAMPLECOUNT_1);
+        presenter->image_width = width;
+        presenter->image_height = height;
+        if (presenter->image_texture == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+    }
+    SDL_GPUTransferBufferCreateInfo info{SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, width * height * 4u, 0};
+    SDL_GPUTransferBuffer *upload = SDL_CreateGPUTransferBuffer(presenter->device, &info);
+    if (upload == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+    if (void *mapped = SDL_MapGPUTransferBuffer(presenter->device, upload, false)) {
+        std::memcpy(mapped, pixels, width * height * 4u);
+        SDL_UnmapGPUTransferBuffer(presenter->device, upload);
+    }
+    flushSegment(presenter);
+    SDL_GPUCommandBuffer *commands = commandBuffer(presenter);
+    if (commands == nullptr) {
+        SDL_ReleaseGPUTransferBuffer(presenter->device, upload);
+        return RECOMP_D3D_PRESENTER_HOST_FAILURE;
+    }
+    if (SDL_GPUCopyPass *pass = SDL_BeginGPUCopyPass(commands)) {
+        SDL_GPUTextureTransferInfo source{upload, 0u, 0u, 0u};
+        SDL_GPUTextureRegion region{presenter->image_texture, 0u, 0u, 0u, 0u, 0u, width, height, 1u};
+        SDL_UploadToGPUTexture(pass, &source, &region, false);
+        SDL_EndGPUCopyPass(pass);
+    }
+    SDL_GPUTexture *swapchain = nullptr;
+    Uint32 swap_width = 0u, swap_height = 0u;
+    if (SDL_WaitAndAcquireGPUSwapchainTexture(commands, presenter->window, &swapchain, &swap_width, &swap_height) &&
+        swapchain != nullptr && swap_width != 0u && swap_height != 0u) {
+        // As submitPresent places the game's frames: the guest aspect, black around it.
+        const float source_aspect = static_cast<float>(presentClientWidth(presenter, mainHeight(presenter))) /
+            mainHeight(presenter);
+        int x = 0, y = 0, w = static_cast<int>(swap_width), h = static_cast<int>(swap_height);
+        if (static_cast<float>(swap_width) / swap_height > source_aspect) {
+            w = static_cast<int>(swap_height * source_aspect + 0.5f);
+            x = (static_cast<int>(swap_width) - w) / 2;
+        } else {
+            h = static_cast<int>(swap_width / source_aspect + 0.5f);
+            y = (static_cast<int>(swap_height) - h) / 2;
+        }
+        SDL_GPUBlitInfo blit{};
+        blit.source.texture = presenter->image_texture;
+        blit.source.w = width;
+        blit.source.h = height;
+        blit.destination.texture = swapchain;
+        blit.destination.x = static_cast<Uint32>(x);
+        blit.destination.y = static_cast<Uint32>(y);
+        blit.destination.w = static_cast<Uint32>(w);
+        blit.destination.h = static_cast<Uint32>(h);
+        blit.load_op = SDL_GPU_LOADOP_CLEAR;
+        blit.clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
+        blit.filter = SDL_GPU_FILTER_LINEAR;
+        SDL_BlitGPUTexture(commands, &blit);
+    }
+    submitCommands(presenter);
+    SDL_ReleaseGPUTransferBuffer(presenter->device, upload);
+    return RECOMP_D3D_PRESENTER_OK;
 }
 
 void d3d_backend_report_draw_textures()

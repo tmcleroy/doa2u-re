@@ -61,6 +61,8 @@ SdlVoice voices[kVoiceCount];
 VoiceRouting routing[kVoiceCount];
 bool reported_nonzero[kVoiceCount];
 bool attempted, summary_printed, muted, reverb_ready;
+std::atomic<bool> player_muted{false};
+float master_gain = 1.0f;
 std::atomic<std::thread::id> owner_thread{};
 std::vector<uint8_t> silence_buffer, wet_silence_buffer;
 std::vector<float> dry_frames, wet_frames;
@@ -202,6 +204,7 @@ bool openReverbDevice()
         std::fprintf(stderr, "[audio-output] reverb device failed: %s\n", SDL_GetError());
         return false;
     }
+    if (player_muted) SDL_SetAudioDeviceGain(reverb_device, 0.0f);
     SDL_AudioSpec spec{};
     SDL_GetAudioDeviceFormat(reverb_device, &spec, nullptr);
     {
@@ -226,6 +229,30 @@ extern "C" uint32_t recomp_audio_output_speakers(void)
 {
     const char *surround = std::getenv("RECOMP_AUDIO_SURROUND");
     return surround && std::strcmp(surround, "0") != 0 ? 6u : 2u;
+}
+
+extern "C" void recomp_audio_output_set_paused(int paused)
+{
+    std::lock_guard<std::mutex> lock(audio_mutex);
+    for (const SDL_AudioDeviceID device : {audio_device, reverb_device}) {
+        if (device == 0) continue;
+        if (paused) SDL_PauseAudioDevice(device);
+        else SDL_ResumeAudioDevice(device);
+    }
+}
+
+extern "C" void recomp_audio_output_set_muted(int value)
+{
+    std::lock_guard<std::mutex> lock(audio_mutex);
+    player_muted = value != 0;
+    /* (the reverb device has no master gain of its own) */
+    if (audio_device != 0) SDL_SetAudioDeviceGain(audio_device, player_muted ? 0.0f : master_gain);
+    if (reverb_device != 0) SDL_SetAudioDeviceGain(reverb_device, player_muted ? 0.0f : 1.0f);
+}
+
+extern "C" int recomp_audio_output_muted(void)
+{
+    return player_muted ? 1 : 0;
 }
 
 extern "C" int recomp_audio_output_on_owner_thread(void)
@@ -283,7 +310,8 @@ extern "C" void recomp_audio_output_initialize(void)
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
         return;
     }
-    SDL_SetAudioDeviceGain(audio_device, static_cast<float>(gain));
+    master_gain = static_cast<float>(gain);
+    SDL_SetAudioDeviceGain(audio_device, player_muted ? 0.0f : master_gain);
 
     SDL_AudioSpec spec{};
     int frames = 0;
