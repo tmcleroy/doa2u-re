@@ -212,7 +212,7 @@ bool combinerSource(const RecompD3dPixelProgram &program, std::string &out)
     const uint32_t count = c.control & 0xffu;
     char line[512];
     out =
-        "    float4 zero4 = float4(0, 0, 0, 0), fog = float4(0, 0, 0, 0);\n"
+        "    float4 zero4 = float4(0, 0, 0, 0), fog = pixel_constants[23];\n"
         "    float4 v0 = input.color, v1 = float4(0, 0, 0, 0);\n"
         "    float4 coords[4] = {input.t0, input.t1, input.t2, input.t3};\n"
         "    float4 t0 = zero4, t1 = zero4, t2 = zero4, t3 = zero4;\n";

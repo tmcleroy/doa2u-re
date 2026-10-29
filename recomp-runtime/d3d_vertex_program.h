@@ -13,4 +13,9 @@
 bool recomp_d3d_vertex_program_source(
     const uint32_t (*tokens)[4], uint32_t count, uint32_t fvf, std::string &body);
 
+/* The same program for a general pixel program's vertex stage
+   (d3d_pixel_program.h): oD0 to output.color and oT0-oT3 to output.t0-t3. */
+bool recomp_d3d_vertex_program_source_general(
+    const uint32_t (*tokens)[4], uint32_t count, uint32_t fvf, std::string &body);
+
 #endif

@@ -42,6 +42,9 @@ enum {
     RECOMP_D3D_PIXEL_CONSTANT_FACTOR1 = 13u,     /* 8: combiner C1 per stage */
     RECOMP_D3D_PIXEL_CONSTANT_FINAL0 = 21u,      /* final combiner C0, C1 */
     RECOMP_D3D_PIXEL_CONSTANT_FINAL1 = 22u,
+    /* The combiners' fog register: fog color, and in alpha the fog factor
+       (one with fog off, so the final combiner's FOG.a keeps R0). */
+    RECOMP_D3D_PIXEL_CONSTANT_FOG = 23u,
 };
 
 /* D3DTOP (Xbox numbering, which follows D3D8). */

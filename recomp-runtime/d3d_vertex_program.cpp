@@ -35,8 +35,8 @@ bool write(std::string &s, const std::string &dest, uint32_t bits, const char *v
 }
 }
 
-bool recomp_d3d_vertex_program_source(
-    const uint32_t (*tokens)[4], uint32_t count, uint32_t fvf, std::string &body)
+namespace {
+bool programSource(const uint32_t (*tokens)[4], uint32_t count, uint32_t fvf, std::string &body, bool general)
 {
     body.clear();
     if (!tokens || !count || count > 136) return false;
@@ -104,9 +104,25 @@ bool recomp_d3d_vertex_program_source(
         }
         s += "}\n";
     }
-    s += "output.position=mul(float4(r12.xyz,1),wvp[0])*r12.w;\n"
-         "output.color=o3; output.texcoord=o9.xy; output.reflection_coord=o10.xy; output.program_q=float2(o9.w,o10.w);\n"
-         "output.program_fog=o5.x; output.program_t23=float4(o11.xy,o12.xy); output.program_d1=o4;\n";
+    s += general
+        ? "output.position=mul(float4(r12.xyz,1),wvp[0])*r12.w;\n"
+          "output.color=o3; output.t0=o9; output.t1=o10; output.t2=o11; output.t3=o12;\n"
+        : "output.position=mul(float4(r12.xyz,1),wvp[0])*r12.w;\n"
+          "output.color=o3; output.texcoord=o9.xy; output.reflection_coord=o10.xy; output.program_q=float2(o9.w,o10.w);\n"
+          "output.program_fog=o5.x; output.program_t23=float4(o11.xy,o12.xy); output.program_d1=o4;\n";
     body=std::move(s);
     return true;
+}
+}
+
+bool recomp_d3d_vertex_program_source(
+    const uint32_t (*tokens)[4], uint32_t count, uint32_t fvf, std::string &body)
+{
+    return programSource(tokens, count, fvf, body, false);
+}
+
+bool recomp_d3d_vertex_program_source_general(
+    const uint32_t (*tokens)[4], uint32_t count, uint32_t fvf, std::string &body)
+{
+    return programSource(tokens, count, fvf, body, true);
 }

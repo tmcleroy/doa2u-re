@@ -1940,7 +1940,9 @@ RecompD3dPresenterError submitDraw(RecompD3dPresenter *presenter, const RecompD3
     SDL_GPUTexture *stage_texture[3]{};
     if (general) {
         for (uint32_t i = 0u; i < 3u; ++i) {
-            if (i >= draw.pixel_program.stage_count || !draw.pixel_program.stages[i].sampled) continue;
+            /* Combiners name their sampled stages by texture mode, not by a stage count. */
+            if ((draw.pixel_program.kind == RECOMP_D3D_PIXEL_FIXED_FUNCTION && i >= draw.pixel_program.stage_count) ||
+                !draw.pixel_program.stages[i].sampled) continue;
             const auto &stage = draw.stage_textures[i];
             RecompD3dPresenterDrawCommand lookup{};
             lookup.texture = stage.desc;
@@ -2915,7 +2917,7 @@ void logDraw(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand 
     std::fprintf(stderr,
         "recomp draw: present=%u n=%u us=%.1f err=%d prim=%u idx=%u tri=%u vtx=%u stride=%u "
         "fvf=%08x prog=%u tex=%s mask=%s refl=%s refl2=%s target=%s blend=%d:%d/%d/%d "
-        "depth=%d%d:%d atest=%d:%d:%u cull=%d vp=%g,%g,%g,%g flags=%s\n",
+        "depth=%d%d:%d atest=%d:%d:%u cull=%d vp=%g,%g,%g,%g mask=%x stencil=%d pixel=%u flags=%s\n",
         presenter->present_count + 1u, presenter->draw_log_index, us, static_cast<int>(result),
         d.primitive_type, d.index_count, d.triangle_count, d.vertex_count, d.vertex_stride,
         d.fvf, d.program_count, tex, mask, refl, refl2, target,
@@ -2924,7 +2926,8 @@ void logDraw(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand 
         d.depth.depth_test_enable ? 1 : 0, d.depth.depth_write_enable ? 1 : 0,
         static_cast<int>(d.depth.depth_func), d.depth.alpha_test_enable ? 1 : 0,
         static_cast<int>(d.depth.alpha_func), d.depth.alpha_ref, static_cast<int>(d.cull_mode),
-        d.viewport[0], d.viewport[1], d.viewport[2], d.viewport[3], flags[0] ? flags : "-");
+        d.viewport[0], d.viewport[1], d.viewport[2], d.viewport[3], d.blend.color_write_mask,
+        d.depth.stencil_enable ? 1 : 0, d.pixel_program.kind, flags[0] ? flags : "-");
     ++presenter->draw_log_index;
 }
 

@@ -376,11 +376,13 @@ int buildDrawShaderSource(
    inputs as buildDrawShaderSource declares them, so the pipeline's attribute
    numbering holds, untransformed diffuse and texture coordinates passed to
    the pixel stage, and the program's stages there. */
-bool buildGeneralShaderSource(const RecompD3dVertexLayout &layout, const RecompD3dPixelProgram &pixel,
-    std::string &out)
+bool buildGeneralShaderSource(const RecompD3dDrawShaderKey &key, const RecompD3dVertexLayout &layout,
+    const RecompD3dPixelProgram &pixel, std::string &out)
 {
-    std::string stages;
+    std::string stages, program;
     if (!recomp_d3d_pixel_program_source(pixel, stages)) return false;
+    if (key.program_count && !recomp_d3d_vertex_program_source_general(key.program, key.program_count,
+            key.fvf, program)) return false;
     const bool has_normal = layout.normal_offset != RECOMP_D3D_FVF_ABSENT;
     const bool has_diffuse = layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT;
     const uint32_t coords = layout.texcoord_count == 4u ? 4u : layout.texcoord_count == 2u ? 2u
@@ -405,6 +407,11 @@ bool buildGeneralShaderSource(const RecompD3dVertexLayout &layout, const RecompD
         "};\n"
         "VSOut vs_main(VSIn input) {\n"
         "    VSOut output = (VSOut)0;\n";
+    if (key.program_count) {
+        /* A vertex program writes screen-space oPos; wvp[0] maps it to clip. */
+        out += program;
+        out += "    return output;\n}\n";
+    } else {
     char position[768];
     positionSource(layout, position, sizeof position);
     out += position;
@@ -414,8 +421,9 @@ bool buildGeneralShaderSource(const RecompD3dVertexLayout &layout, const RecompD
         out += "    output.t" + std::to_string(i) + " = float4(input.texcoord" +
             (i ? std::to_string(i) : std::string()) + ", 0, 1);\n";
     }
-    out += "    return output;\n}\n"
-        "float4 ps_main(VSOut input) : SV_TARGET {\n";
+    out += "    return output;\n}\n";
+    }
+    out += "float4 ps_main(VSOut input) : SV_TARGET {\n";
     out += stages;
     /* NV2A compares rounded 8-bit alpha, as the recognised paths do. */
     out += "    if (draw_flags.y > 0.5f) {\n"
@@ -478,8 +486,8 @@ bool recomp_d3d_draw_shader_source(
     }
     const bool general = pipeline.pixel != nullptr && pipeline.pixel->kind != RECOMP_D3D_PIXEL_NONE;
     if (general) {
-        if (pipeline.program_count || pipeline.coverage_only ||
-            !buildGeneralShaderSource(layout, *pipeline.pixel, compiled_source)) return false;
+        if (pipeline.coverage_only ||
+            !buildGeneralShaderSource(pipeline, layout, *pipeline.pixel, compiled_source)) return false;
         return appendDepthBias(pipeline, compiled_source);
     }
 
