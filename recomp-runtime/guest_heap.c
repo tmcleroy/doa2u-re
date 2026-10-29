@@ -44,6 +44,22 @@ void xbox_HeapFree(uint32_t guest_address)
     (void)guest_address;
 }
 
+bool xbox_ArenaRelease(uint32_t base, uint32_t size)
+{
+    const uint32_t physical = base & ~XBOX_CACHED_ALIAS;
+    if (heap_base == 0u || size == 0u) return false;
+    if (physical == contiguous_cursor &&
+        (uint64_t)physical + size <= XBOX_GUEST_ALLOC_LIMIT) {
+        contiguous_cursor = physical + size;
+        return true;
+    }
+    if (physical >= heap_base && (uint64_t)physical + size == heap_cursor) {
+        heap_cursor = physical;
+        return true;
+    }
+    return false;
+}
+
 uint32_t xbox_HeapCheckpoint(void)
 {
     return heap_cursor;

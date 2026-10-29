@@ -24,6 +24,12 @@ extern "C" {
 bool xbox_HeapSetImageEnd(uint32_t image_end);
 uint32_t xbox_HeapAlloc(uint32_t size, uint32_t alignment);
 void xbox_HeapFree(uint32_t guest_address);
+/* Gives a freed range back to the shared arena when it sits at a frontier:
+   at the contiguous cursor (top-down allocations) or ending at the heap
+   cursor (bottom-up ones). Guest RAM is one pool, as on the console, so space
+   a title freed on one side serves the other. False leaves the range a free
+   block for reuse. */
+bool xbox_ArenaRelease(uint32_t base, uint32_t size);
 uint32_t xbox_HeapCheckpoint(void);
 bool xbox_HeapRestore(uint32_t checkpoint);
 typedef struct XboxHeapSnapshot {

@@ -218,6 +218,24 @@ static void coalesce_free_allocation(Allocation *allocation)
     }
 }
 
+/* Free blocks at either arena frontier go back to the arena, repeatedly, so a
+   large block a title probed and freed (SC2 probes 49 MB of contiguous memory)
+   serves later allocations of either kind. */
+static void release_frontier_blocks(void)
+{
+    for (bool released = true; released;) {
+        released = false;
+        for (size_t i = 0; i < MAX_ALLOCATIONS; ++i) {
+            Allocation *block = &allocations[i];
+            if (!block->active && block->capacity != 0u &&
+                xbox_ArenaRelease(block->base, block->capacity)) {
+                *block = (Allocation){0};
+                released = true;
+            }
+        }
+    }
+}
+
 static void free_guest(uint32_t base)
 {
     Allocation *allocation = find_allocation(base);
@@ -237,6 +255,7 @@ static void free_guest(uint32_t base)
         allocation->active = 0;
         if (allocation->capacity != 0u) {
             coalesce_free_allocation(allocation);
+            release_frontier_blocks();
         } else {
             /* Fixed-address virtual mappings do not own backing arena memory. */
             *allocation = (Allocation){0};
