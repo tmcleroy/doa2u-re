@@ -70,7 +70,7 @@ constexpr char kDrawShaderPrologue[] =
     "    float4 reflection_stage2_flags;\n"
     "    float4 raster_bias;\n"
     "    float4 pixel_constants[24];\n"
-    "    float4 general_light[4];\n"
+    "    float4 general_light[8];\n"
     "}\n"
     "Texture2D guest_texture : register(t0);\n"
     "Texture3D guest_volume : register(t3);\n"
@@ -406,6 +406,7 @@ bool buildGeneralShaderSource(const RecompD3dDrawShaderKey &key, const RecompD3d
         "    float4 t2 : TEXCOORD2;\n"
         "    float4 t3 : TEXCOORD3;\n"
         "    float4 specular : COLOR1;\n"
+        "    float fog_coord : TEXCOORD4;\n"
         "};\n"
         "VSOut vs_main(VSIn input) {\n"
         "    VSOut output = (VSOut)0;\n";
@@ -419,6 +420,8 @@ bool buildGeneralShaderSource(const RecompD3dDrawShaderKey &key, const RecompD3d
     out += position;
     /* With lighting off the fixed-function default diffuse is white. */
     out += has_diffuse ? "    output.color = input.diffuse;\n" : "    output.color = float4(1, 1, 1, 1);\n";
+    if (!layout.pretransformed)
+        out += "    output.fog_coord = dot(float4(input.position, 1), general_light[5]);\n";
     if (has_normal && !layout.pretransformed && layout.blend_weight_count == 0u) {
         /* D3D fixed-function lighting, in the space of the lights (the adapter's
            directional_normals[0] and light_world[0]). Material diffuse, ambient
@@ -462,6 +465,22 @@ bool buildGeneralShaderSource(const RecompD3dDrawShaderKey &key, const RecompD3d
     }
     out += "    return output;\n}\n";
     }
+    /* D3D table fog over the interpolated coordinate (general_fog); one when
+       fog is off, which keeps a final combiner's FOG.a*R0 at R0. */
+    out += "float fogFactor(float d) {\n"
+        "    if (general_light[4].x < 0.5f) return 1;\n"
+        "    float mode = general_light[4].y, f = d;\n"
+        "    if (mode > 2.5f) {\n"
+        "        float range = general_light[4].w - general_light[4].z;\n"
+        "        f = range != 0 ? (general_light[4].w - d) / range : (d < general_light[4].w ? 1 : 0);\n"
+        "    } else if (mode > 1.5f) {\n"
+        "        float e = general_light[6].x * d;\n"
+        "        f = exp(-e * e);\n"
+        "    } else if (mode > 0.5f) {\n"
+        "        f = exp(-general_light[6].x * d);\n"
+        "    }\n"
+        "    return saturate(f);\n"
+        "}\n";
     out += "float4 ps_main(VSOut input) : SV_TARGET {\n";
     out += stages;
     /* NV2A compares rounded 8-bit alpha, as the recognised paths do. */
@@ -706,6 +725,8 @@ bool recomp_d3d_draw_constants(
         std::memcpy(general + 8, draw.directional.material_ambient, sizeof draw.directional.material_ambient);
         std::memcpy(general + 12, draw.directional.material_emissive, sizeof draw.directional.material_emissive);
     }
+    if (draw.pixel_program.kind != RECOMP_D3D_PIXEL_NONE)
+        std::memcpy(constants_out + kRecompD3dGeneralLightingFloat + 16, draw.general_fog, sizeof draw.general_fog);
     /* Restore depth slope per guest pixel after anisotropic host scaling.
        Constant bias stays in the native D24 rasterizer, after clipping. */
     if (scaled_depth_bias) {

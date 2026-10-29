@@ -298,6 +298,12 @@ typedef struct RecompD3dPresenterDrawCommand {
        NONE the pixel shader comes from it and its stage textures below, and
        the recognised pixel paths above are not used. */
     RecompD3dPixelProgram pixel_program;
+    /* A general pixel program's fog: [0] enabled, table mode (0 none: the
+       coordinate is the factor; 1 exp; 2 exp2; 3 linear), start, end; [1] the
+       object-to-eye matrix's z column, whose dot product with the position is
+       the fixed-function fog coordinate (vertex programs write oFog); [2] x
+       the density. The color is pixel constant FOG. */
+    float general_fog[3][4];
     struct RecompD3dStageTexture {
         RecompD3dTextureDesc desc;
         const void *bytes;

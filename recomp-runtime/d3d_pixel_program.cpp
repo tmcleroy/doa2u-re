@@ -212,7 +212,7 @@ bool combinerSource(const RecompD3dPixelProgram &program, std::string &out)
     const uint32_t count = c.control & 0xffu;
     char line[512];
     out =
-        "    float4 zero4 = float4(0, 0, 0, 0), fog = pixel_constants[23];\n"
+        "    float4 zero4 = float4(0, 0, 0, 0), fog = float4(pixel_constants[23].rgb, fogFactor(input.fog_coord));\n"
         "    float4 v0 = input.color, v1 = input.specular;\n"
         "    float4 coords[4] = {input.t0, input.t1, input.t2, input.t3};\n"
         "    float4 t0 = zero4, t1 = zero4, t2 = zero4, t3 = zero4;\n";
@@ -359,5 +359,8 @@ bool recomp_d3d_pixel_program_source(const RecompD3dPixelProgram &program, std::
     /* With SPECULARENABLE the SDK's final combiner adds V1. */
     source += program.specular_add ? "    float4 shaded = float4(saturate(current.rgb + specular.rgb), current.a);\n"
                                    : "    float4 shaded = current;\n";
+    /* With FOGENABLE the SDK's final combiner blends toward the fog color. */
+    source += "    if (general_light[4].x > 0.5f)\n"
+              "        shaded.rgb = lerp(pixel_constants[23].rgb, shaded.rgb, fogFactor(input.fog_coord));\n";
     return true;
 }
