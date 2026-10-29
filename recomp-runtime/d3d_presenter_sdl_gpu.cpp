@@ -192,6 +192,7 @@ struct ShaderKey {
     uint32_t fvf;
     uint32_t program_count;
     uint64_t program_hash;
+    uint64_t pixel_hash;  // general pixel program, 0 for the recognised paths
     uint8_t coverage_only, scaled_depth_bias, sample_depth_bias, count_pass;
     uint32_t samples;
 };
@@ -1057,6 +1058,8 @@ ShaderPair lookupShaders(RecompD3dPresenter *presenter, const RecompD3dDrawShade
     key.fvf = draw_key.fvf;
     key.program_count = draw_key.program_count;
     key.program_hash = draw_key.program_count ? hashBytes(draw_key.program, draw_key.program_count * 16u) : 0u;
+    key.pixel_hash = draw_key.pixel != nullptr && draw_key.pixel->kind != RECOMP_D3D_PIXEL_NONE
+        ? recomp_d3d_pixel_program_hash(draw_key.pixel) : 0u;
     key.coverage_only = draw_key.coverage_only;
     key.scaled_depth_bias = draw_key.scaled_depth_bias;
     key.sample_depth_bias = draw_key.sample_depth_bias;
@@ -1838,9 +1841,10 @@ RecompD3dPresenterError submitDraw(RecompD3dPresenter *presenter, const RecompD3
     if (draw.program_count > 136u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     // Widened lines draw as the pretransformed XYZRHW|DIFFUSE triangles they expand to.
     const uint32_t shader_fvf = geometry_line ? 0x44u : draw.fvf;
+    const bool general = draw.pixel_program.kind != RECOMP_D3D_PIXEL_NONE;
     const RecompD3dDrawShaderKey shader_key{shader_fvf, draw.program_count,
         draw.program_count ? draw.program : nullptr, false, scaled_bias,
-        scaled_bias && presenter->msaa_count > 1u};
+        scaled_bias && presenter->msaa_count > 1u, general ? &draw.pixel_program : nullptr};
     const ShaderPair shaders = lookupShaders(presenter, shader_key, false);
     if (shaders.vertex == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
 
@@ -1876,6 +1880,24 @@ RecompD3dPresenterError submitDraw(RecompD3dPresenter *presenter, const RecompD3
     useTarget(presenter, bound.color, bound.depth);
 
     SDL_GPUTexture *texture = draw.has_texture ? lookupTexture(presenter, draw) : nullptr;
+    /* A general pixel program samples its stage textures, in slots 0 to 2. */
+    SDL_GPUTexture *stage_texture[3]{};
+    if (general) {
+        for (uint32_t i = 0u; i < 3u; ++i) {
+            if (i >= draw.pixel_program.stage_count || !draw.pixel_program.stages[i].sampled) continue;
+            const auto &stage = draw.stage_textures[i];
+            RecompD3dPresenterDrawCommand lookup{};
+            lookup.texture = stage.desc;
+            lookup.texture_bytes = stage.bytes;
+            lookup.texture_byte_count = stage.byte_count;
+            lookup.palette_bytes = stage.palette;
+            lookup.palette_byte_count = stage.palette_byte_count;
+            const RenderTargetEntry *sampled = findRenderTarget(presenter, stage.desc);
+            if (sampled != nullptr && sampled->render == bound.color) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+            stage_texture[i] = lookupTexture(presenter, lookup);
+            if (stage_texture[i] == nullptr) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+        }
+    }
     SDL_GPUTexture *mask = nullptr, *bump = nullptr;
     if (draw.has_alpha_mask) {
         if (layout.texcoord_count != 2u) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
@@ -2067,6 +2089,19 @@ RecompD3dPresenterError submitDraw(RecompD3dPresenter *presenter, const RecompD3
         ? draw.reflection_mip_lod_bias : 0.0f);
     biasOf(2u, draw.reflection_stage2 ? draw.reflection_stage2_mip_lod_bias : 0.0f);
     bindings.sampler_bias[3] = bindings.sampler_bias[0];
+    if (general) {
+        for (uint32_t i = 0u; i < 3u; ++i) {
+            const auto &stage = draw.stage_textures[i];
+            bindings.textures[i] = stage_texture[i] != nullptr ? stage_texture[i] : presenter->white_texture;
+            bindings.samplers[i] = stage_texture[i] == nullptr ? presenter->filter_sampler
+                : lookupDrawSampler(presenter, stage.address_u, stage.address_v, stage.point_mip_filter,
+                    stage.mip_lod_bias);
+            bindings.sampler_bias[i] = bindings.samplers[i] == presenter->filter_sampler ? 0.0f : stage.mip_lod_bias;
+        }
+        bindings.textures[3] = presenter->white_volume;
+        bindings.samplers[3] = presenter->filter_sampler;
+        bindings.sampler_bias[3] = 0.0f;
+    }
     for (SDL_GPUSampler *sampler : bindings.samplers) {
         if (sampler == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     }

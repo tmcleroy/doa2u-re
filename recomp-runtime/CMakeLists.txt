@@ -312,7 +312,7 @@ add_executable(recomp_d3d_capture_test d3d_presenter_capture_test.cpp d3d_presen
 add_test(NAME recomp-runtime-d3d-capture COMMAND recomp_d3d_capture_test)
 # The draw shader and constants are shared; the rest of the presenter is
 # Direct3D 11 on Windows and SDL_GPU elsewhere.
-set(RECOMP_PRESENTER_SHARED d3d_draw_shader.cpp d3d_vertex_program.cpp d3d_draw_model.c
+set(RECOMP_PRESENTER_SHARED d3d_draw_shader.cpp d3d_pixel_program.cpp d3d_vertex_program.cpp d3d_draw_model.c
     d3d_texture_model.c d3d_vblank.cpp)
 # Both presenters draw the runtime's overlay text and save screenshots.
 set(RECOMP_PRESENTER_SHARED ${RECOMP_PRESENTER_SHARED} overlay_imgui_panel.cpp overlay_text.c screenshot.c)

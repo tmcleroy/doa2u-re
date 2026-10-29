@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "d3d_pixel_program.h"
 #include "d3d_render_state_model.h"
 #include "d3d_texture_model.h"
 
@@ -282,6 +283,20 @@ typedef struct RecompD3dPresenterDrawCommand {
     bool reflection_stage2_point_mip_filter;
     float reflection_stage2_mip_lod_bias;
     float reflection_stage2_transform[16];
+    /* A general pixel program (d3d_pixel_program.h). With a kind other than
+       NONE the pixel shader comes from it and its stage textures below, and
+       the recognised pixel paths above are not used. */
+    RecompD3dPixelProgram pixel_program;
+    struct RecompD3dStageTexture {
+        RecompD3dTextureDesc desc;
+        const void *bytes;
+        uint32_t byte_count;
+        const void *palette;       /* P8: guest ARGB32 entries */
+        uint32_t palette_byte_count;
+        uint32_t address_u, address_v;
+        bool point_mip_filter;
+        float mip_lod_bias;
+    } stage_textures[RECOMP_D3D_PIXEL_STAGES];
     RecompD3dPresenterTarget target;
 } RecompD3dPresenterDrawCommand;
 

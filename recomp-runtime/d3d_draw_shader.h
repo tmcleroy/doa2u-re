@@ -2,6 +2,7 @@
 #define DOA2U_RECOMP_D3D_DRAW_SHADER_H
 
 #include "d3d_draw_model.h"
+#include "d3d_pixel_program.h"
 #include "d3d_presenter.h"
 
 #include <cstdint>
@@ -17,8 +18,10 @@
    then post-filter flags, texel size and four constants (24 floats), the
    stage-1 texture matrix (16), bump matrices, bump fog and fog color (16),
    the extra reflection world-view/normal transforms (96), and the stage-2
-   texture matrix and flags (20), then scaled receiver depth bias (4). */
-constexpr uint32_t kRecompD3dDrawConstantFloats = 140u + 192u * 4u + 512u + 4u;
+   texture matrix and flags (20), then scaled receiver depth bias (4), then
+   a general pixel program's constants (d3d_pixel_program.h, 96). */
+constexpr uint32_t kRecompD3dPixelConstantsFloat = 140u + 192u * 4u + 512u + 4u;
+constexpr uint32_t kRecompD3dDrawConstantFloats = kRecompD3dPixelConstantsFloat + 96u;
 
 /* Every FVF seen across all logged runs (14). Compiling them at boot keeps
    first use of each scene from stalling ~85 ms per shader. */
@@ -26,7 +29,9 @@ constexpr uint32_t kRecompD3dBootDrawFvfs[] = {
     0x042u, 0x104u, 0x112u, 0x116u, 0x118u, 0x11Au,
     0x142u, 0x144u, 0x212u, 0x216u, 0x21Au, 0x242u, 0x244u, 0x404u};
 
-/* What selects one draw shader: its FVF, vertex program and variant. */
+/* What selects one draw shader: its FVF, vertex program and variant, and a
+   general pixel program when the draw has one (otherwise the recognised
+   paths of the draw command select the pixel work). */
 struct RecompD3dDrawShaderKey {
     uint32_t fvf;
     uint32_t program_count;
@@ -34,6 +39,7 @@ struct RecompD3dDrawShaderKey {
     bool coverage_only;
     bool scaled_depth_bias;
     bool sample_depth_bias;
+    const RecompD3dPixelProgram *pixel = nullptr;
 };
 
 /* Builds the HLSL for one FVF, plus its vertex program when it has one.

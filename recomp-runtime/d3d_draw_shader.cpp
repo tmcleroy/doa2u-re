@@ -69,6 +69,7 @@ constexpr char kDrawShaderPrologue[] =
     "    row_major float4x4 reflection_transform2;\n"
     "    float4 reflection_stage2_flags;\n"
     "    float4 raster_bias;\n"
+    "    float4 pixel_constants[24];\n"
     "}\n"
     "Texture2D guest_texture : register(t0);\n"
     "Texture3D guest_volume : register(t3);\n"
@@ -81,6 +82,31 @@ constexpr char kDrawShaderPrologue[] =
 /* Builds the draw shader for one decoded vertex layout. Only the components
    the layout actually carries appear in VSIn, so the input layout and the
    shader signature always agree. */
+/* The clip-space position: pretransformed, blended over up to three weights,
+   or through the world-view-projection. */
+void positionSource(const RecompD3dVertexLayout &layout, char *out, size_t size)
+{
+    if (layout.pretransformed) {
+        std::snprintf(out, size,
+            "    output.position = mul(float4(input.position.xyz, 1.0f), wvp[0]) / input.position.w;\n");
+    } else if (layout.blend_weight_count != 0u) {
+        std::snprintf(out, size,
+            "    if (blend_flags.x > 0.5f) {\n"
+            "    output.position = float4(0, 0, 0, 0);\n"
+            "    float remainder = 1.0f;\n"
+            "    [unroll] for (uint i = 0; i < %u; ++i) {\n"
+            "        output.position += input.weights[i] * mul(float4(input.position, 1), wvp[i]);\n"
+            "        remainder -= input.weights[i];\n"
+            "    }\n"
+            "    output.position += remainder * mul(float4(input.position, 1), wvp[%u]);\n"
+            "    } else { output.position = mul(float4(input.position, 1), wvp[0]); }\n",
+            layout.blend_weight_count, layout.blend_weight_count);
+    } else {
+        std::snprintf(out, size,
+            "    output.position = mul(float4(input.position, 1.0f), wvp[0]);\n");
+    }
+}
+
 int buildDrawShaderSource(
     const RecompD3dVertexLayout &layout,
     char *out,
@@ -100,25 +126,7 @@ int buildDrawShaderSource(
         : layout.texcoord_count == 2u ? "    float2 texcoord1 : TEXCOORD1;\n" : "";
 
     char position[768];
-    if (layout.pretransformed) {
-        std::snprintf(position, sizeof position,
-            "    output.position = mul(float4(input.position.xyz, 1.0f), wvp[0]) / input.position.w;\n");
-    } else if (layout.blend_weight_count != 0u) {
-        std::snprintf(position, sizeof position,
-            "    if (blend_flags.x > 0.5f) {\n"
-            "    output.position = float4(0, 0, 0, 0);\n"
-            "    float remainder = 1.0f;\n"
-            "    [unroll] for (uint i = 0; i < %u; ++i) {\n"
-            "        output.position += input.weights[i] * mul(float4(input.position, 1), wvp[i]);\n"
-            "        remainder -= input.weights[i];\n"
-            "    }\n"
-            "    output.position += remainder * mul(float4(input.position, 1), wvp[%u]);\n"
-            "    } else { output.position = mul(float4(input.position, 1), wvp[0]); }\n",
-            layout.blend_weight_count, layout.blend_weight_count);
-    } else {
-        std::snprintf(position, sizeof position,
-            "    output.position = mul(float4(input.position, 1.0f), wvp[0]);\n");
-    }
+    positionSource(layout, position, sizeof position);
     if (coverage_only) {
         return std::snprintf(out, out_size,
             "%sstruct VSIn { float3 position : POSITION; %s };\n"
@@ -364,6 +372,99 @@ int buildDrawShaderSource(
         has_diffuse ? "*=" : "=");
 }
 
+/* A general pixel program over an FVF draw (d3d_pixel_program.h): the vertex
+   inputs as buildDrawShaderSource declares them, so the pipeline's attribute
+   numbering holds, untransformed diffuse and texture coordinates passed to
+   the pixel stage, and the program's stages there. */
+bool buildGeneralShaderSource(const RecompD3dVertexLayout &layout, const RecompD3dPixelProgram &pixel,
+    std::string &out)
+{
+    std::string stages;
+    if (!recomp_d3d_pixel_program_source(pixel, stages)) return false;
+    const bool has_normal = layout.normal_offset != RECOMP_D3D_FVF_ABSENT;
+    const bool has_diffuse = layout.diffuse_offset != RECOMP_D3D_FVF_ABSENT;
+    const uint32_t coords = layout.texcoord_count == 4u ? 4u : layout.texcoord_count == 2u ? 2u
+        : layout.texcoord_count != 0u ? 1u : 0u;
+    out = kDrawShaderPrologue;
+    out += "struct VSIn {\n    ";
+    out += layout.pretransformed ? "float4" : "float3";
+    out += " position : POSITION;\n";
+    if (layout.blend_weight_count) out += "    float3 weights : BLENDWEIGHT;\n";
+    if (has_normal) out += "    float3 normal : NORMAL;\n";
+    if (has_diffuse) out += "    float4 diffuse : COLOR0;\n";
+    for (uint32_t i = 0u; i < coords; ++i)
+        out += "    float2 texcoord" + (i ? std::to_string(i) : std::string()) + " : TEXCOORD" + std::to_string(i) + ";\n";
+    out += "};\n"
+        "struct VSOut {\n"
+        "    float4 position : SV_POSITION;\n"
+        "    float4 color : COLOR0;\n"
+        "    float4 t0 : TEXCOORD0;\n"
+        "    float4 t1 : TEXCOORD1;\n"
+        "    float4 t2 : TEXCOORD2;\n"
+        "    float4 t3 : TEXCOORD3;\n"
+        "};\n"
+        "VSOut vs_main(VSIn input) {\n"
+        "    VSOut output = (VSOut)0;\n";
+    char position[768];
+    positionSource(layout, position, sizeof position);
+    out += position;
+    /* With lighting off the fixed-function default diffuse is white. */
+    out += has_diffuse ? "    output.color = input.diffuse;\n" : "    output.color = float4(1, 1, 1, 1);\n";
+    for (uint32_t i = 0u; i < coords; ++i) {
+        out += "    output.t" + std::to_string(i) + " = float4(input.texcoord" +
+            (i ? std::to_string(i) : std::string()) + ", 0, 1);\n";
+    }
+    out += "    return output;\n}\n"
+        "float4 ps_main(VSOut input) : SV_TARGET {\n";
+    out += stages;
+    /* NV2A compares rounded 8-bit alpha, as the recognised paths do. */
+    out += "    if (draw_flags.y > 0.5f) {\n"
+        "        float alpha = round(saturate(shaded.a) * 255.0f);\n"
+        "        float ref = draw_flags.w;\n"
+        "        int func = (int)draw_flags.z;\n"
+        "        bool alpha_pass = func == 7 ||\n"
+        "            (func == 1 && alpha < ref) ||\n"
+        "            (func == 2 && alpha == ref) ||\n"
+        "            (func == 3 && alpha <= ref) ||\n"
+        "            (func == 4 && alpha > ref) ||\n"
+        "            (func == 5 && alpha != ref) ||\n"
+        "            (func == 6 && alpha >= ref);\n"
+        "        if (!alpha_pass) discard;\n"
+        "    }\n"
+        "    return shaded;\n"
+        "}\n";
+    return true;
+}
+
+/* Scaled receiver depth bias: ps_main becomes ps_color and a wrapper writes
+   SV_Depth with the slope restored per guest pixel. */
+bool appendDepthBias(const RecompD3dDrawShaderKey &pipeline, std::string &compiled_source)
+{
+    if (pipeline.scaled_depth_bias) {
+        const auto entry = compiled_source.find("float4 ps_main(");
+        if (entry == std::string::npos) return false;
+        compiled_source.replace(entry, 15, "float4 ps_color(");
+        compiled_source +=
+            "\nstruct DepthOutput { float4 color : SV_TARGET; float depth : SV_Depth; };\n"
+            "DepthOutput ps_main(VSOut input";
+        if (pipeline.sample_depth_bias) compiled_source += ", uint sample_index : SV_SampleIndex";
+        compiled_source +=
+            ") {\n"
+            "    DepthOutput output;\n"
+            "    float2 gradient = float2(ddx(input.position.z), ddy(input.position.z));\n"
+            "    float depth = input.position.z;\n";
+        // SV_Position already includes viewport mapping and native constant bias.
+        // Only depth moves to the sample; color/UV/discard retain pixel-center inputs.
+        if (pipeline.sample_depth_bias) compiled_source +=
+            "    depth += dot(gradient, GetRenderTargetSamplePosition(sample_index));\n";
+        compiled_source +=
+            "    float slope = max(abs(gradient.x) * raster_bias.x, abs(gradient.y) * raster_bias.y);\n"
+            "    output.depth = saturate(depth + raster_bias.z * slope);\n"
+            "    output.color = ps_color(input); return output;\n}\n";
+    }
+    return true;
+}
+
 } // namespace
 
 /* Builds the HLSL for one FVF, plus its vertex program when it has one. */
@@ -374,6 +475,12 @@ bool recomp_d3d_draw_shader_source(
     const uint32_t fvf = pipeline.fvf;
     if (!recomp_d3d_fvf_layout(fvf, &layout)) {
         return false;
+    }
+    const bool general = pipeline.pixel != nullptr && pipeline.pixel->kind != RECOMP_D3D_PIXEL_NONE;
+    if (general) {
+        if (pipeline.program_count || pipeline.coverage_only ||
+            !buildGeneralShaderSource(layout, *pipeline.pixel, compiled_source)) return false;
+        return appendDepthBias(pipeline, compiled_source);
     }
 
     const int source_size = buildDrawShaderSource(layout, nullptr, 0u, pipeline.coverage_only);
@@ -531,29 +638,7 @@ bool recomp_d3d_draw_shader_source(
             "    }\n"
             "}\n";
     }
-    if (pipeline.scaled_depth_bias) {
-        const auto entry = compiled_source.find("float4 ps_main(");
-        if (entry == std::string::npos) return false;
-        compiled_source.replace(entry, 15, "float4 ps_color(");
-        compiled_source +=
-            "\nstruct DepthOutput { float4 color : SV_TARGET; float depth : SV_Depth; };\n"
-            "DepthOutput ps_main(VSOut input";
-        if (pipeline.sample_depth_bias) compiled_source += ", uint sample_index : SV_SampleIndex";
-        compiled_source +=
-            ") {\n"
-            "    DepthOutput output;\n"
-            "    float2 gradient = float2(ddx(input.position.z), ddy(input.position.z));\n"
-            "    float depth = input.position.z;\n";
-        // SV_Position already includes viewport mapping and native constant bias.
-        // Only depth moves to the sample; color/UV/discard retain pixel-center inputs.
-        if (pipeline.sample_depth_bias) compiled_source +=
-            "    depth += dot(gradient, GetRenderTargetSamplePosition(sample_index));\n";
-        compiled_source +=
-            "    float slope = max(abs(gradient.x) * raster_bias.x, abs(gradient.y) * raster_bias.y);\n"
-            "    output.depth = saturate(depth + raster_bias.z * slope);\n"
-            "    output.color = ps_color(input); return output;\n}\n";
-    }
-    return true;
+    return appendDepthBias(pipeline, compiled_source);
 }
 
 bool recomp_d3d_draw_constants(
@@ -565,6 +650,8 @@ bool recomp_d3d_draw_constants(
     const bool geometry_line = recomp_d3d_draw_geometry_line(draw);
     const bool sub_viewport = draw.has_transform && !draw.program_count && draw.viewport[2] > 0.0f;
     std::fill(constants_out, constants_out + kRecompD3dDrawConstantFloats, 0.0f);
+    std::memcpy(constants_out + kRecompD3dPixelConstantsFloat, draw.pixel_program.constants,
+        sizeof draw.pixel_program.constants);
     /* Restore depth slope per guest pixel after anisotropic host scaling.
        Constant bias stays in the native D24 rasterizer, after clipping. */
     if (scaled_depth_bias) {

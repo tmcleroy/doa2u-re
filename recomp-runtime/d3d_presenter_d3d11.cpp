@@ -2311,6 +2311,8 @@ RecompD3dPresenterError submitDraw(
     RecompD3dPresenter *presenter,
     const RecompD3dPresenterDrawCommand &draw, bool coverage_only = false)
 {
+    // shortcut: general pixel programs (d3d_pixel_program.h) are drawn by the SDL_GPU backend only so far.
+    if (draw.pixel_program.kind != RECOMP_D3D_PIXEL_NONE) return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
     const bool screen_offset = draw.screen_space_offset[0] != 0.0f || draw.screen_space_offset[1] != 0.0f;
     const bool geometry_line = recomp_d3d_draw_geometry_line(draw);
     // shortcut: programmable offsets are unsupported, add their viewport contract when needed.
