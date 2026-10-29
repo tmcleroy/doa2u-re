@@ -4,9 +4,25 @@
 
 uint32_t recomp_kernel_ntstatus_to_dos_error(uint32_t status)
 {
+    /* The Windows NT table's entries for the statuses this kernel returns
+       from its file, memory and object calls. */
     switch (status) {
-    case 0xc000000fu: return 2u;  /* STATUS_NO_SUCH_FILE -> ERROR_FILE_NOT_FOUND */
-    case 0x80000006u: return 18u; /* STATUS_NO_MORE_FILES -> ERROR_NO_MORE_FILES */
+    case 0x00000000u: return 0u;    /* STATUS_SUCCESS */
+    case 0xc000000fu: return 2u;    /* STATUS_NO_SUCH_FILE -> ERROR_FILE_NOT_FOUND */
+    case 0xc0000034u: return 2u;    /* STATUS_OBJECT_NAME_NOT_FOUND -> ERROR_FILE_NOT_FOUND */
+    case 0xc000003au: return 3u;    /* STATUS_OBJECT_PATH_NOT_FOUND -> ERROR_PATH_NOT_FOUND */
+    case 0xc0000008u: return 6u;    /* STATUS_INVALID_HANDLE -> ERROR_INVALID_HANDLE */
+    case 0xc0000017u: return 8u;    /* STATUS_NO_MEMORY -> ERROR_NOT_ENOUGH_MEMORY */
+    case 0xc0000022u: return 5u;    /* STATUS_ACCESS_DENIED -> ERROR_ACCESS_DENIED */
+    case 0xc0000043u: return 32u;   /* STATUS_SHARING_VIOLATION -> ERROR_SHARING_VIOLATION */
+    case 0xc0000011u: return 38u;   /* STATUS_END_OF_FILE -> ERROR_HANDLE_EOF */
+    case 0xc000000du: return 87u;   /* STATUS_INVALID_PARAMETER -> ERROR_INVALID_PARAMETER */
+    case 0xc000007fu: return 112u;  /* STATUS_DISK_FULL -> ERROR_DISK_FULL */
+    case 0xc0000035u: return 183u;  /* STATUS_OBJECT_NAME_COLLISION -> ERROR_ALREADY_EXISTS */
+    case 0xc0000103u: return 267u;  /* STATUS_NOT_A_DIRECTORY -> ERROR_DIRECTORY */
+    case 0xc0000101u: return 145u;  /* STATUS_DIRECTORY_NOT_EMPTY -> ERROR_DIR_NOT_EMPTY */
+    case 0xc0000033u: return 123u;  /* STATUS_OBJECT_NAME_INVALID -> ERROR_INVALID_NAME */
+    case 0x80000006u: return 18u;   /* STATUS_NO_MORE_FILES -> ERROR_NO_MORE_FILES */
     }
     /* ponytail: retain other statuses until a caller needs their DOS mapping. */
     return status;

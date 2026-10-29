@@ -637,6 +637,27 @@ static int create_parent_directories(const char *path)
     return create_directory_tree(parent);
 }
 
+static int parent_directory_exists(const char *path)
+{
+    char parent[MAX_PATH_LEN];
+    size_t length = strlen(path);
+    if (length == 0u || length >= sizeof parent) {
+        return 0;
+    }
+    memcpy(parent, path, length + 1u);
+    char *last_separator = strrchr(parent, '\\');
+    char *last_slash = strrchr(parent, '/');
+    if (last_slash && (!last_separator || last_slash > last_separator)) {
+        last_separator = last_slash;
+    }
+    if (last_separator == NULL) {
+        return 0;
+    }
+    *last_separator = '\0';
+    DWORD attributes = GetFileAttributesA(parent);
+    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+
 /* Report why a host open or create failed; only a missing path is "not found". */
 static uint32_t host_error_status(DWORD error)
 {
@@ -645,6 +666,7 @@ static uint32_t host_error_status(DWORD error)
     case ERROR_ALREADY_EXISTS: return 0xc0000035u; /* STATUS_OBJECT_NAME_COLLISION */
     case ERROR_SHARING_VIOLATION: return 0xc0000043u;
     case ERROR_ACCESS_DENIED: return 0xc0000022u;
+    case ERROR_PATH_NOT_FOUND: return 0xc000003au; /* STATUS_OBJECT_PATH_NOT_FOUND */
     default: return RECOMP_STATUS_OBJECT_NAME_NOT_FOUND;
     }
 }
@@ -1321,7 +1343,10 @@ static void bridge_nt_create_file(void)
         /* Check guest sharing before a create can truncate or replace the file. */
         if (profile_path && profile_sharing_conflict(host_path, desired_access, share_access)) {
             create_error = ERROR_SHARING_VIOLATION;
-        } else if (create_parent_directories(host_path)) {
+        } else if (parent_directory_exists(host_path)) {
+            /* NT creates no missing directories for a file: the guest makes
+               them first (XCreateSaveGame), and a lookup under one that is
+               not there fails, as the title expects. */
             host_handle = create_host_file(
                 host_path, desired_access, share_access, create_disposition);
             if (host_handle == INVALID_HANDLE_VALUE) create_error = GetLastError();
@@ -1388,12 +1413,16 @@ static void bridge_nt_create_file(void)
 
     fprintf(
         stderr,
-        "recomp kernel: NtCreateFile path='%s' host='%s' policy='%s' handle=%u status=0x%08x\n",
+        "recomp kernel: NtCreateFile path='%s' host='%s' policy='%s' handle=%u status=0x%08x"
+        " access=0x%08x disposition=%u options=0x%08x\n",
         guest_path,
         host_path,
         policy,
         (unsigned)guest_handle,
-        (unsigned)status);
+        (unsigned)status,
+        (unsigned)desired_access,
+        (unsigned)create_disposition,
+        (unsigned)create_options);
 
     if (file_handle_ptr != 0u) {
         *recomp_memory_u32(file_handle_ptr) = guest_handle;
