@@ -27,6 +27,9 @@ enum {
 
 static SDL_Gamepad *pads[RECOMP_INPUT_PORT_COUNT];
 static uint8_t keyboard[RECOMP_INPUT_KEY_COUNT];
+static bool layout_set;
+static RecompInputHostLayout layout;
+static uint8_t scancodes[RECOMP_INPUT_SCANCODE_COUNT];
 
 #ifdef _WIN32
 static bool pressed(int key)
@@ -252,6 +255,68 @@ bool recomp_input_host_sample(uint32_t port, RecompInputGamepad *gamepad)
     return present;
 }
 
+void recomp_input_host_set_layout(const RecompInputHostLayout *chosen)
+{
+    layout_set = chosen != NULL;
+    if (chosen != NULL) layout = *chosen;
+}
+
+/* A port's layout: each control is pressed by its key, button or trigger. */
+static bool sample_layout(uint32_t port, RecompInputGamepad *gamepad)
+{
+    static const uint16_t digital[] = {
+        XBOX_DPAD_UP, XBOX_DPAD_DOWN, XBOX_DPAD_LEFT, XBOX_DPAD_RIGHT,
+        XBOX_START, XBOX_BACK, XBOX_LEFT_THUMB, XBOX_RIGHT_THUMB,
+    };
+    SDL_Gamepad *host = pads[port];
+    const bool is_focused = focused();
+    if (port == 0u) {
+        /* One sample of the keys a frame, shared by every port. */
+        if (is_focused) {
+            recomp_input_scancode_sample(scancodes);
+            recomp_input_keyboard_sample(keyboard); /* the runtime's own keys */
+        } else {
+            recomp_input_keyboard_reset();
+            memset(scancodes, 0, sizeof scancodes);
+        }
+    }
+    bool any_key = false;
+    for (uint32_t control = 0u; control < RECOMP_INPUT_CONTROL_COUNT; ++control) {
+        const RecompInputHostBinding *binding = &layout.controls[port][control];
+        uint8_t value = 0u;
+        if (binding->scancode >= 0 && binding->scancode < (int16_t)RECOMP_INPUT_SCANCODE_COUNT) {
+            any_key = true;
+            if (scancodes[binding->scancode]) value = 0xffu;
+        }
+        if (host != NULL && binding->pad_button >= 0 &&
+            SDL_GetGamepadButton(host, (SDL_GamepadButton)binding->pad_button)) value = 0xffu;
+        if (host != NULL && binding->pad_axis >= 0) {
+            const uint8_t trigger = (uint8_t)(SDL_GetGamepadAxis(host, (SDL_GamepadAxis)binding->pad_axis) >> 7);
+            /* An analog control keeps the trigger's pressure; a digital one
+               is pressed past half way. */
+            if (control >= RECOMP_INPUT_CONTROL_A) {
+                if (trigger > value) value = trigger;
+            } else if (trigger >= 0x80u) {
+                value = 0xffu;
+            }
+        }
+        if (control < RECOMP_INPUT_CONTROL_A) {
+            if (value != 0u) gamepad->buttons |= digital[control];
+        } else {
+            gamepad->analog_buttons[control - RECOMP_INPUT_CONTROL_A] = value;
+        }
+    }
+    if (host != NULL) {
+        gamepad->thumb_lx = SDL_GetGamepadAxis(host, SDL_GAMEPAD_AXIS_LEFTX);
+        gamepad->thumb_ly = up_axis(host, SDL_GAMEPAD_AXIS_LEFTY);
+        gamepad->thumb_rx = SDL_GetGamepadAxis(host, SDL_GAMEPAD_AXIS_RIGHTX);
+        gamepad->thumb_ry = up_axis(host, SDL_GAMEPAD_AXIS_RIGHTY);
+    }
+    trace_sample(gamepad, host, is_focused);
+    /* Port 0 is always there (the keyboard); another with keys of its own too. */
+    return host != NULL || port == 0u || any_key;
+}
+
 static bool sample(uint32_t port, RecompInputGamepad *gamepad)
 {
     if (gamepad == NULL || port >= RECOMP_INPUT_PORT_COUNT) {
@@ -259,6 +324,7 @@ static bool sample(uint32_t port, RecompInputGamepad *gamepad)
     }
     memset(gamepad, 0, sizeof *gamepad);
     update_pads();
+    if (layout_set) return sample_layout(port, gamepad);
     SDL_Gamepad *host = pads[port];
     if (host != NULL) {
         read_pad(host, gamepad);

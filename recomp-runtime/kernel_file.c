@@ -77,6 +77,7 @@ static void ensure_symbolic_links_initialized(void)
 
 /* Supplied by runner.cpp from the directory containing the XBE. */
 const char *recomp_disc_root_path = NULL;
+const char *recomp_storage_root_path = NULL;
 void (*recomp_kernel_read_hook)(const char *host_path, uint64_t offset);
 
 /* Private proving runs use these fail-loud checkpoints to interrupt real
@@ -455,14 +456,29 @@ static int build_host_path(const char *relative, char *host_path, size_t host_pa
     return append_relative_path(relative, host_path, host_path_size);
 }
 
+/* The storage root (recomp_storage_root_path, else <disc root>/.recomp-storage). */
+static int copy_storage_root(char *host_path, size_t host_path_size)
+{
+    if (recomp_storage_root_path != NULL) {
+        strncpy(host_path, recomp_storage_root_path, host_path_size - 1u);
+        host_path[host_path_size - 1u] = '\0';
+        size_t len = strlen(host_path);
+        if (len > 1 && (host_path[len - 1] == '\\' || host_path[len - 1] == '/')) {
+            host_path[len - 1] = '\0';
+        }
+        return 1;
+    }
+    copy_root(host_path, host_path_size);
+    return append_segment(host_path, host_path_size, ".recomp-storage");
+}
+
 static bool is_profile_path(const char *path)
 {
     char root[MAX_PATH_LEN];
     if (recomp_disc_root_path == NULL) {
         return false;
     }
-    copy_root(root, sizeof root);
-    if (!append_segment(root, sizeof root, ".recomp-storage") ||
+    if (!copy_storage_root(root, sizeof root) ||
         !append_segment(root, sizeof root, "partition1")) {
         return false;
     }
@@ -505,8 +521,7 @@ static int build_storage_path(
     }
     partition[sizeof partition - 2u] = guest_path[prefix_len - 1u];
 
-    copy_root(host_path, host_path_size);
-    if (!append_segment(host_path, host_path_size, ".recomp-storage") ||
+    if (!copy_storage_root(host_path, host_path_size) ||
         !append_segment(host_path, host_path_size, partition)) {
         return -1;
     }
@@ -553,16 +568,14 @@ static int build_raw_partition_path(
     } else {
         return 0;
     }
-    copy_root(host_path, host_path_size);
-    return append_segment(host_path, host_path_size, ".recomp-storage") &&
+    return copy_storage_root(host_path, host_path_size) &&
         append_segment(host_path, host_path_size, partition);
 }
 
 static bool is_utility_root(const char *host_path)
 {
     char root[MAX_PATH_LEN];
-    copy_root(root, sizeof root);
-    if (!append_segment(root, sizeof root, ".recomp-storage") ||
+    if (!copy_storage_root(root, sizeof root) ||
         !append_segment(root, sizeof root, "partition3")) return false;
     for (char partition = '3'; partition <= '5'; ++partition) {
         root[strlen(root) - 1u] = partition;

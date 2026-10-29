@@ -57,6 +57,36 @@ bool recomp_input_host_key(RecompInputHostKey key);
    call; zero on the call that starts a drag. */
 bool recomp_input_host_mouse_drag(float *dx, float *dy);
 
+/* A port's own layout (remapping): for each port and each Xbox control, the
+   key (SDL scancode, or -1) and the gamepad button (SDL_GamepadButton, or -1)
+   or trigger (SDL_GamepadAxis, or -1) that press it. With a layout set the
+   built-in one is not used; each port's gamepad still drives its sticks.
+   NULL returns to the built-in layout. Keys reach it from the SDL_GPU
+   presenter. */
+typedef enum RecompInputControl {
+    RECOMP_INPUT_CONTROL_UP, RECOMP_INPUT_CONTROL_DOWN, RECOMP_INPUT_CONTROL_LEFT,
+    RECOMP_INPUT_CONTROL_RIGHT, RECOMP_INPUT_CONTROL_START, RECOMP_INPUT_CONTROL_BACK,
+    RECOMP_INPUT_CONTROL_LEFT_THUMB, RECOMP_INPUT_CONTROL_RIGHT_THUMB,
+    /* Analog buttons, in the guest's order */
+    RECOMP_INPUT_CONTROL_A, RECOMP_INPUT_CONTROL_B, RECOMP_INPUT_CONTROL_X, RECOMP_INPUT_CONTROL_Y,
+    RECOMP_INPUT_CONTROL_BLACK, RECOMP_INPUT_CONTROL_WHITE,
+    RECOMP_INPUT_CONTROL_LEFT_TRIGGER, RECOMP_INPUT_CONTROL_RIGHT_TRIGGER,
+    RECOMP_INPUT_CONTROL_COUNT
+} RecompInputControl;
+
+typedef struct RecompInputHostBinding {
+    int16_t scancode;
+    int16_t pad_button;
+    int16_t pad_axis;
+} RecompInputHostBinding;
+
+typedef struct RecompInputHostLayout {
+    RecompInputHostBinding controls[RECOMP_INPUT_PORT_COUNT][RECOMP_INPUT_CONTROL_COUNT];
+} RecompInputHostLayout;
+
+/* Copies the layout. */
+void recomp_input_host_set_layout(const RecompInputHostLayout *layout);
+
 void recomp_input_host_set_vibration(
     uint32_t port,
     uint16_t left_motor,

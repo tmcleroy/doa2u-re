@@ -467,7 +467,19 @@ bool check_journal()
 }
 }
 
+static bool initialize(const char *root_argument, bool storage_given);
+
 extern "C" bool recomp_save_initialize(const char *disc_root)
+{
+    return initialize(disc_root, false);
+}
+
+extern "C" bool recomp_save_initialize_storage(const char *storage_root)
+{
+    return initialize(storage_root, true);
+}
+
+static bool initialize(const char *root_argument, bool storage_given)
 {
 #ifdef _WIN32
     if (journal_lock != INVALID_HANDLE_VALUE) {
@@ -484,19 +496,26 @@ extern "C" bool recomp_save_initialize(const char *disc_root)
     depth = 0;
     failed = false;
     try {
-        require(disc_root != nullptr && *disc_root != '\0');
+        require(root_argument != nullptr && *root_argument != '\0');
+        fs::path given = root_argument;
+        if (storage_given) {
+            given = fs::absolute(given).lexically_normal();
+            if (given.filename().empty()) given = given.parent_path();
+            require(exists_plain(given.parent_path()) && fs::is_directory(given.parent_path()));
+            fs::create_directories(given);
+        }
 #ifdef _WIN32
-        fs::path root = fs::absolute(disc_root).lexically_normal();
+        fs::path root = fs::absolute(given).lexically_normal();
 #else
         // macOS reaches /tmp and /var through symlinks, which check_parents
         // rejects; resolve the root first.
         std::error_code ec;
-        fs::path root = fs::canonical(disc_root, ec);
-        if (ec) root = fs::absolute(disc_root).lexically_normal();
+        fs::path root = fs::canonical(given, ec);
+        if (ec) root = fs::absolute(given).lexically_normal();
 #endif
         check_parents(root);
         require(exists_plain(root) && fs::is_directory(root));
-        storage = root / ".recomp-storage";
+        storage = storage_given ? root : root / ".recomp-storage";
         live = storage / "partition1"; /* UDATA profiles and TDATA title saves */
         journal = storage / "save-undo-v1";
         undo = journal / "undo";

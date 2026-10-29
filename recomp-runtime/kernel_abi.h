@@ -65,6 +65,10 @@ RecompFunction recomp_lookup_kernel(uint32_t guest_address);
 
 /* Filesystem root supplied by the runner for disc-file resolution. */
 extern const char *recomp_disc_root_path;
+/* Where the hard disk's partitions, the save journal and the runtime's own
+   files live. NULL keeps them in <disc root>/.recomp-storage; a port sets it
+   to keep them out of the player's game folder. */
+extern const char *recomp_storage_root_path;
 
 /* Each subsystem exposes one of these; kernel_dispatch.c chains them. */
 RecompFunction recomp_kernel_config(uint32_t ordinal);

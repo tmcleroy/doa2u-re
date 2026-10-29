@@ -15,6 +15,7 @@ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 #define ReleaseSRWLockExclusive pthread_mutex_unlock
 #endif
 static uint8_t held[RECOMP_INPUT_KEY_COUNT], pending[RECOMP_INPUT_KEY_COUNT];
+static uint8_t scancode_held[RECOMP_INPUT_SCANCODE_COUNT], scancode_pending[RECOMP_INPUT_SCANCODE_COUNT];
 
 void recomp_input_keyboard_event(uint32_t key, bool down)
 {
@@ -30,6 +31,8 @@ void recomp_input_keyboard_reset(void)
     AcquireSRWLockExclusive(&lock);
     memset(held, 0, sizeof held);
     memset(pending, 0, sizeof pending);
+    memset(scancode_held, 0, sizeof scancode_held);
+    memset(scancode_pending, 0, sizeof scancode_pending);
     ReleaseSRWLockExclusive(&lock);
 }
 
@@ -39,6 +42,25 @@ void recomp_input_keyboard_sample(uint8_t keys[RECOMP_INPUT_KEY_COUNT])
     for (uint32_t i = 0; i < RECOMP_INPUT_KEY_COUNT; ++i) {
         keys[i] = held[i] | pending[i];
         pending[i] = 0u;
+    }
+    ReleaseSRWLockExclusive(&lock);
+}
+
+void recomp_input_scancode_event(uint32_t scancode, bool down)
+{
+    if (scancode >= RECOMP_INPUT_SCANCODE_COUNT) return;
+    AcquireSRWLockExclusive(&lock);
+    if (down && !scancode_held[scancode]) scancode_pending[scancode] = 1u;
+    scancode_held[scancode] = (uint8_t)down;
+    ReleaseSRWLockExclusive(&lock);
+}
+
+void recomp_input_scancode_sample(uint8_t keys[RECOMP_INPUT_SCANCODE_COUNT])
+{
+    AcquireSRWLockExclusive(&lock);
+    for (uint32_t i = 0; i < RECOMP_INPUT_SCANCODE_COUNT; ++i) {
+        keys[i] = scancode_held[i] | scancode_pending[i];
+        scancode_pending[i] = 0u;
     }
     ReleaseSRWLockExclusive(&lock);
 }

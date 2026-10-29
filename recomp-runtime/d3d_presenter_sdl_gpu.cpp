@@ -2401,6 +2401,13 @@ bool triangleCovers(const float (&clip)[3][4], RecompD3dCullMode cull, const flo
 
 /* ---- Presentation ------------------------------------------------------------ */
 
+/* The window's name: RECOMP_WINDOW_TITLE, which a port's runner sets. */
+std::string windowTitle()
+{
+    const char *title = std::getenv("RECOMP_WINDOW_TITLE");
+    return title != nullptr && title[0] != '\0' ? title : "DOA2U Recomp";
+}
+
 /* The Windows virtual-key code of each key the input host reads; the
    keyboard model latches presses between guest samples, as on Windows. */
 uint32_t virtualKey(SDL_Scancode code)
@@ -2432,6 +2439,11 @@ void pumpEvents(RecompD3dPresenter *presenter)
     while (SDL_PollEvent(&event)) {
         if ((event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) && !event.key.repeat) {
             recomp_input_keyboard_event(virtualKey(event.key.scancode), event.type == SDL_EVENT_KEY_DOWN);
+            recomp_input_scancode_event(event.key.scancode, event.type == SDL_EVENT_KEY_DOWN);
+            // F11 switches full screen (RECOMP_D3D_FULLSCREEN chooses how the window starts).
+            if (event.type == SDL_EVENT_KEY_DOWN && event.key.scancode == SDL_SCANCODE_F11)
+                SDL_SetWindowFullscreen(presenter->window,
+                    (SDL_GetWindowFlags(presenter->window) & SDL_WINDOW_FULLSCREEN) == 0);
         } else if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
             recomp_input_keyboard_reset();
         } else if (event.type == SDL_EVENT_QUIT) {
@@ -2781,7 +2793,7 @@ void reportPerformance(RecompD3dPresenter *presenter)
     const uint32_t frames = presenter->second_presents - 1u;
     const double fps = frames * 1000.0 / elapsed_ms;
     char title[96];
-    std::snprintf(title, sizeof title, "DOA2U Recomp%s | %.1f FPS | %.1f ms/frame",
+    std::snprintf(title, sizeof title, "%s%s | %.1f FPS | %.1f ms/frame", windowTitle().c_str(),
         unpacedRun() ? " (unpaced)" : "", fps, elapsed_ms / frames);
     SDL_SetWindowTitle(presenter->window, title);
     std::fprintf(stderr, "recomp performance: present=%u fps=%.2f frame_ms=%.3f max_ms=%.1f draws=%u\n",
@@ -3143,8 +3155,10 @@ RecompD3dPresenterError d3d_backend_create(const RecompD3dPresenterConfig *confi
     const bool steam = envFlag("SteamTenfoot") || envFlag("SteamDeck");
     SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (std::getenv("RECOMP_HEADLESS") != nullptr) flags |= SDL_WINDOW_HIDDEN;
-    else if (steam) flags |= SDL_WINDOW_FULLSCREEN;
-    created->window = SDL_CreateWindow(unpacedRun() ? "DOA2U Recomp (unpaced)" : "DOA2U Recomp",
+    else if (steam || envFlag("RECOMP_D3D_FULLSCREEN")) flags |= SDL_WINDOW_FULLSCREEN;
+    std::string title = windowTitle();
+    if (unpacedRun()) title += " (unpaced)";
+    created->window = SDL_CreateWindow(title.c_str(),
         static_cast<int>(window_width), static_cast<int>(window_height), flags);
     if (created->window == nullptr) return fail("window");
     if (!SDL_ClaimWindowForGPUDevice(created->device, created->window)) return fail("swapchain");

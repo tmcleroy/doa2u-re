@@ -13,6 +13,9 @@ extern "C" {
    or reinitialization. The reserved lock file is empty and persists on disk.
    Callers must close partition 1 handles before ending an operation or recovering. */
 bool recomp_save_initialize(const char *disc_root);
+/* The same, with the storage root given (recomp_storage_root_path) instead of
+   <disc root>/.recomp-storage; it is made if missing, its parent must exist. */
+bool recomp_save_initialize_storage(const char *storage_root);
 bool recomp_save_begin(uint32_t owner);
 /* False means an aborted operation or an error; never continue guest writes
    after an error. A nested failure also makes the outer operation abort. */
