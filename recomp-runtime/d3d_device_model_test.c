@@ -112,12 +112,34 @@ int recomp_d3d_device_model_test(void)
     changed_request.presentation.flags = 0x10u;
     passed &= expect("native widescreen request supported",
         recomp_d3d_create_request_supported(&changed_request));
-    changed_request.presentation.flags = 0x30u;
-    passed &= expect("unverified presentation flags rejected",
+    changed_request.presentation.flags = 0x130u;
+    passed &= expect("interlaced 10x11 widescreen request supported",
+        recomp_d3d_create_request_supported(&changed_request));
+    changed_request.presentation.flags = 0x200u;
+    passed &= expect("unknown presentation flag rejected",
         !recomp_d3d_create_request_supported(&changed_request));
+    changed_request = request;
+    changed_request.presentation.back_buffer_width = 640u;
+    passed &= expect("640x480 request supported",
+        recomp_d3d_create_request_supported(&changed_request));
+    changed_request.presentation.back_buffer_width = 1921u;
+    passed &= expect("over-wide request rejected",
+        !recomp_d3d_create_request_supported(&changed_request));
+    changed_request = request;
+    changed_request.presentation.back_buffer_height = 0u;
+    passed &= expect("empty request rejected",
+        !recomp_d3d_create_request_supported(&changed_request));
+    changed_request = request;
+    changed_request.presentation.swap_effect = 3u;
+    changed_request.presentation.multi_sample_type = 0x2012u;
+    passed &= expect("copy swap with vertical supersampling supported",
+        recomp_d3d_create_request_supported(&changed_request));
     for (size_t i = 0u; i < sizeof request / 4u; ++i) {
         uint32_t word;
 
+        /* Any width and height up to 1920x1080 is valid; checked above. */
+        if (i == offsetof(RecompD3dCreateRequest, presentation.back_buffer_width) / 4u ||
+            i == offsetof(RecompD3dCreateRequest, presentation.back_buffer_height) / 4u) continue;
         changed_request = request;
         memcpy(&word, (const unsigned char *)&changed_request + i * 4u, 4u);
         word ^= 1u;
@@ -317,7 +339,10 @@ int recomp_d3d_device_model_test(void)
         recomp_d3d_device_swap_buffers(&state) == RECOMP_D3D_DEVICE_OK &&
         memcmp(&state, &saved, sizeof state) == 0);
     changed_request.presentation.multi_sample_type = 0x1021u;
-    passed &= expect("other multisample types stay unsupported",
+    passed &= expect("2-sample multisampling decodes its buffer scale like supersampling",
+        recomp_d3d_create_request_supported(&changed_request));
+    changed_request.presentation.multi_sample_type = 0x4011u;
+    passed &= expect("undefined multisample types stay unsupported",
         !recomp_d3d_create_request_supported(&changed_request));
     recomp_d3d_device_reset(&state);
     passed &= expect("reset clears creation", !state.created);

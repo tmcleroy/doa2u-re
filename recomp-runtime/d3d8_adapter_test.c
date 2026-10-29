@@ -388,7 +388,7 @@ int main(void)
         recomp_runtime.registers.esp == ENTRY_ESP + 28u &&
         *recomp_memory_u32(OUTPUT) == 0u);
     arguments[4] = PARAMETERS;
-    *recomp_memory_u32(PARAMETERS) = 640u;
+    *recomp_memory_u32(PARAMETERS) = 4096u;  /* wider than any Xbox mode */
     passed &= call(0x34a470u, arguments, 6u, "d3d8:create-device-request");
     passed &= expect("unsupported request does not publish or mutate device",
         *recomp_memory_u32(OUTPUT) == 0u &&
@@ -692,7 +692,7 @@ int main(void)
         {0x50001u, 0x100000u, 0u, 0x11229u, 0x2f1df2cfu, 0u},
         {0x50001u, 0x520000u, 0u, 0x12e29u, 0x5f1df59fu, 0u},
     };
-    *recomp_memory_u32(PARAMETERS + 16u) = 0x1021u;
+    *recomp_memory_u32(PARAMETERS + 16u) = 0x4011u;  /* no such multisample type */
     passed &= call(0x344720u, arguments, 1u, "d3d8:reset-mode");
     *recomp_memory_u32(PARAMETERS + 16u) = 0x2021u;
     passed &= call(0x344720u, arguments, 1u, "d3d8:reset-surfaces");
