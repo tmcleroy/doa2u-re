@@ -5,6 +5,7 @@
 #include "symbolic_link_model.h"
 #include "save_transaction.h"
 #include "stop_report.h"
+#include "disc_image.h"
 
 #include <ctype.h>
 #include <stddef.h>
@@ -57,6 +58,10 @@ typedef struct FileHandleEntry {
     RecompReadFilter read_filter;
     uint32_t save_owner;
     uint32_t delete_owner;
+    /* A file of the disc image (disc_image.h): host_handle is the image file,
+       and reads and sizes are the entry's. */
+    int image;
+    uint64_t image_offset, image_size;
     char host_path[MAX_PATH_LEN];
 } FileHandleEntry;
 
@@ -183,6 +188,32 @@ static bool save_write_allowed(const FileHandleEntry *entry, uint32_t owner)
     return true;
 }
 
+static void copy_root(char *host_path, size_t host_path_size);
+
+/* With a disc image open (the disc root is then the image file), the path
+   inside the image of a host path under the disc root, else NULL. */
+static const char *image_relative_path(const char *host_path)
+{
+    if (!recomp_disc_image_active() || recomp_disc_root_path == NULL) return NULL;
+    char root[MAX_PATH_LEN];
+    copy_root(root, sizeof root);
+    const size_t length = strlen(root);
+    if (strncmp(host_path, root, length) != 0) return NULL;
+    const char next = host_path[length];
+    return next == '\0' || next == '\\' || next == '/' ? host_path + length : NULL;
+}
+
+static void add_image_entry(void *context, const char *name, const RecompDiscImageEntry *image)
+{
+    RecompDirectoryEntry entry = {0};
+    if (strlen(name) >= sizeof entry.name) return;
+    strcpy(entry.name, name);
+    entry.size = image->directory ? 0u : image->size;
+    entry.allocation_size = (entry.size + 2047u) & ~2047ull;
+    entry.attributes = image->directory ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_READONLY;
+    (void)recomp_directory_add((RecompDirectoryModel *)context, &entry);
+}
+
 static uint32_t register_file_handle(
     HANDLE host_handle,
     FileHandleKind kind,
@@ -226,13 +257,25 @@ static uint32_t register_file_handle(
             file_handles[i].directory_pattern[0] = '\0';
             file_handles[i].kind = kind;
             file_handles[i].host_path[0] = '\0';
+            file_handles[i].image = 0;
             if (host_path != NULL) {
                 strncpy(file_handles[i].host_path, host_path,
                     sizeof file_handles[i].host_path - 1u);
                 file_handles[i].host_path[
                     sizeof file_handles[i].host_path - 1u] = '\0';
             }
-            if (kind == FILE_HANDLE_DIRECTORY && host_path != NULL) {
+            const char *image_path = host_path != NULL ? image_relative_path(host_path) : NULL;
+            if (image_path != NULL) {
+                RecompDiscImageEntry image;
+                if (recomp_disc_image_lookup(image_path, &image)) {
+                    file_handles[i].image = 1;
+                    file_handles[i].image_offset = image.offset;
+                    file_handles[i].image_size = image.size;
+                    if (kind == FILE_HANDLE_DIRECTORY)
+                        recomp_disc_image_list(image_path, add_image_entry, &file_handles[i].directory);
+                }
+            }
+            if (kind == FILE_HANDLE_DIRECTORY && host_path != NULL && image_path == NULL) {
                 char pattern[MAX_PATH_LEN];
                 char disc_root[MAX_PATH_LEN] = {0};
                 WIN32_FIND_DATAA data;
@@ -1154,6 +1197,26 @@ static const char *resolve_and_open(
         *out_status = RECOMP_STATUS_DELETE_PENDING;
         return "profile-path-delete-pending";
     }
+    const char *image_path = *out_is_writable ? NULL : image_relative_path(host_path);
+    if (image_path != NULL) {
+        RecompDiscImageEntry image;
+        if (!recomp_disc_image_lookup(image_path, &image)) {
+            *out_status = RECOMP_STATUS_OBJECT_NAME_NOT_FOUND;
+            return "image-path-not-found";
+        }
+        if (image.directory) {
+            *out_is_directory = 1;
+            return "image-directory-open";
+        }
+        /* The image file itself stands for the handle; reads use the entry. */
+        *out_host_handle = CreateFileA(recomp_disc_root_path, GENERIC_READ, FILE_SHARE_READ, NULL,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (*out_host_handle == INVALID_HANDLE_VALUE) {
+            *out_status = RECOMP_STATUS_OBJECT_NAME_NOT_FOUND;
+            return "image-open-failed";
+        }
+        return "image-file-open";
+    }
     DWORD open_error;
     if (try_open_host_file(host_path, MAX_PATH_LEN, out_host_handle,
             profile_access(host_path, desired_access), share_access, &open_error)) {
@@ -1509,7 +1572,9 @@ static void bridge_nt_query_information_file(void)
             }
         }
         LARGE_INTEGER size = {0};
-        if ((directory && !profile_metadata) ||
+        if (entry->image) {
+            size.QuadPart = directory ? 0 : (LONGLONG)entry->image_size;
+        } else if ((directory && !profile_metadata) ||
             (!directory && (entry->host_handle == INVALID_HANDLE_VALUE ||
                             !GetFileSizeEx(entry->host_handle, &size)))) {
             status = RECOMP_STATUS_INVALID_HANDLE;
@@ -2113,6 +2178,26 @@ static void bridge_nt_read_file(void)
             break;
         }
 
+        if (file_handles[i].image) {
+            const uint64_t size = file_handles[i].image_size;
+            const uint32_t count = read_offset >= size ? 0u
+                : (uint32_t)(size - read_offset < length ? size - read_offset : length);
+            void *host_buffer = count == 0u ? NULL : (void *)recomp_memory(buffer, count);
+            bytes_read = (uint32_t)recomp_disc_image_read(file_handles[i].image_offset + read_offset,
+                host_buffer, count);
+            if (bytes_read != count) {
+                status = RECOMP_STATUS_UNSUCCESSFUL;
+                policy = "image-file-read-failed";
+                break;
+            }
+            if (recomp_kernel_read_hook != NULL && bytes_read != 0u) {
+                recomp_kernel_read_hook(file_handles[i].host_path, read_offset);
+            }
+            file_handles[i].cursor = read_offset + bytes_read;
+            status = bytes_read == 0u && length != 0u ? RECOMP_STATUS_END_OF_FILE : RECOMP_STATUS_SUCCESS;
+            policy = "image-file-read";
+            break;
+        }
         LARGE_INTEGER distance;
         distance.QuadPart = (LONGLONG)read_offset;
         if (!SetFilePointerEx(

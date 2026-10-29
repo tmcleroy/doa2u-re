@@ -1,5 +1,7 @@
 #include "xbe_parser.h"
 
+#include <utility>
+
 #include "sha.h"
 
 #include <algorithm>
@@ -201,6 +203,12 @@ XbeParseResult XbeParser::parse(const std::filesystem::path& path) const
     std::vector<std::uint8_t> bytes(
         (std::istreambuf_iterator<char>(input)),
         std::istreambuf_iterator<char>());
+    return parse(std::move(bytes));
+}
+
+XbeParseResult XbeParser::parse(std::vector<std::uint8_t> bytes) const
+{
+    XbeParseResult result;
     result.fileBytes = bytes;
     result.metadata.fileSize = bytes.size();
 

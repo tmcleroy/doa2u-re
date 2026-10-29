@@ -125,6 +125,8 @@ struct XbeParseResult {
 class XbeParser {
 public:
     XbeParseResult parse(const std::filesystem::path& path) const;
+    // The same for an XBE already in memory (read out of a disc image, say)
+    XbeParseResult parse(std::vector<std::uint8_t> bytes) const;
 };
 
 std::string hex32(std::uint32_t value);

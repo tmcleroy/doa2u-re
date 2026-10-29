@@ -178,6 +178,9 @@ add_executable(recomp_model_test
     d3d_tile_model.c d3d_tile_model_test.c)
 add_test(NAME recomp-runtime-models COMMAND recomp_model_test)
 
+add_executable(recomp_disc_image_test disc_image.c disc_image_test.c)
+add_test(NAME recomp-runtime-disc-image COMMAND recomp_disc_image_test)
+
 add_executable(recomp_manual_test program_manual.c program_manual_test.c)
 add_test(NAME recomp-runtime-unbound-lookups COMMAND recomp_manual_test)
 
@@ -384,7 +387,7 @@ endif()
         runtime.c stop_report.c guest_heap.c xapi_clock.cpp native_fiber.c
         fiber_model.c fiber_adapter.c
         kernel_config.c kernel_crypto.c kernel_debug.c kernel_device.c
-        kernel_dispatch.c kernel_file.c kernel_interrupt.c kernel_memory.c
+        kernel_dispatch.c kernel_file.c disc_image.c kernel_interrupt.c kernel_memory.c
         kernel_ordinals.c kernel_rtl.c kernel_startup.c kernel_thread.c kernel_video.c
         device_model.c apu_model.c ohci_model.c directory_model.c symbolic_link_model.c
         save_transaction.cpp)
