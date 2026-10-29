@@ -19,22 +19,28 @@ bool recomp_d3d_create_request_supported(
         return false;
     }
     presentation = &request->presentation;
-    /* shortcut: only the verified startup mode and its 2x horizontal
-       supersample Reset (0x2021), expand after API validation. */
+    /* Supersampling factors are the type's two low nibbles (0x11 none, 0x2021
+       2x horizontal, 0x2012 2x vertical); the 0x1000 types multisample. */
+    const uint32_t scale_x = (presentation->multi_sample_type >> 4u) & 15u;
+    const uint32_t scale_y = presentation->multi_sample_type & 15u;
+    /* D3DPRESENTFLAG: WIDESCREEN 0x10, INTERLACED 0x20, PROGRESSIVE 0x40,
+       10X11PIXELASPECTRATIO 0x100. */
+    const uint32_t flags = 0x10u | 0x20u | 0x40u | 0x100u;
     return request->adapter == 0u && request->device_type == 1u &&
         request->focus_window == 0u && request->behavior_flags == 0x40u &&
-        presentation->back_buffer_width == 720u &&
-        presentation->back_buffer_height == 480u &&
+        presentation->back_buffer_width >= 1u &&
+        presentation->back_buffer_width <= 1920u &&
+        presentation->back_buffer_height >= 1u &&
+        presentation->back_buffer_height <= 1080u &&
         presentation->back_buffer_format == 0x12u &&
         presentation->back_buffer_count == 1u &&
-        (presentation->multi_sample_type == 0x11u ||
-         presentation->multi_sample_type == 0x2021u) &&
-        presentation->swap_effect == 1u &&
+        (presentation->multi_sample_type & ~0x30ffu) == 0u &&
+        scale_x >= 1u && scale_x <= 2u && scale_y >= 1u && scale_y <= 2u &&
+        presentation->swap_effect >= 1u && presentation->swap_effect <= 4u &&
         presentation->device_window == 0u && presentation->windowed == 0u &&
         presentation->enable_auto_depth_stencil == 1u &&
         presentation->auto_depth_stencil_format == 0x2eu &&
-        /* FUN_00282570 sets D3DPRESENTFLAG_WIDESCREEN for XC_VIDEO bit 0. */
-        (presentation->flags == 0u || presentation->flags == 0x10u) &&
+        (presentation->flags & ~flags) == 0u &&
         presentation->full_screen_refresh_rate == 0u &&
         (presentation->full_screen_presentation_interval == 0x80000001u ||
          presentation->full_screen_presentation_interval == 1u) &&
