@@ -70,6 +70,7 @@ constexpr char kDrawShaderPrologue[] =
     "    float4 reflection_stage2_flags;\n"
     "    float4 raster_bias;\n"
     "    float4 pixel_constants[24];\n"
+    "    float4 general_light[4];\n"
     "}\n"
     "Texture2D guest_texture : register(t0);\n"
     "Texture3D guest_volume : register(t3);\n"
@@ -404,6 +405,7 @@ bool buildGeneralShaderSource(const RecompD3dDrawShaderKey &key, const RecompD3d
         "    float4 t1 : TEXCOORD1;\n"
         "    float4 t2 : TEXCOORD2;\n"
         "    float4 t3 : TEXCOORD3;\n"
+        "    float4 specular : COLOR1;\n"
         "};\n"
         "VSOut vs_main(VSIn input) {\n"
         "    VSOut output = (VSOut)0;\n";
@@ -417,6 +419,43 @@ bool buildGeneralShaderSource(const RecompD3dDrawShaderKey &key, const RecompD3d
     out += position;
     /* With lighting off the fixed-function default diffuse is white. */
     out += has_diffuse ? "    output.color = input.diffuse;\n" : "    output.color = float4(1, 1, 1, 1);\n";
+    if (has_normal && !layout.pretransformed && layout.blend_weight_count == 0u) {
+        /* D3D fixed-function lighting, in the space of the lights (the adapter's
+           directional_normals[0] and light_world[0]). Material diffuse, ambient
+           and emissive each come from the material or the vertex diffuse color
+           (general_light[0]); lit alpha is the diffuse material's. */
+        out += std::string("    if (directional_flags.x > 0.5f) {\n"
+            "        float3 n = mul(float4(input.normal, 0), directional_normals[0]).xyz;\n"
+            "        if (directional_flags.y > 0.5f && dot(n, n) > 0) n *= rsqrt(dot(n, n));\n"
+            "        float3 world_pos = mul(float4(input.position, 1), light_world[0]).xyz;\n"
+            "        float4 vertex_diffuse = ") + (has_diffuse ? "input.diffuse" : "float4(1, 1, 1, 1)") + ";\n"
+            "        float4 md = general_light[0].x > 0.5f ? vertex_diffuse : directional_material;\n"
+            "        float3 ma = general_light[0].y > 0.5f ? vertex_diffuse.rgb : general_light[2].rgb;\n"
+            "        float3 me = general_light[0].z > 0.5f ? vertex_diffuse.rgb : general_light[3].rgb;\n"
+            "        float3 rgb = me + general_light[1].rgb * ma, spec = 0;\n"
+            "        float3 to_viewer = light_view.xyz;\n"
+            "        if (general_light[0].w > 0.5f) {\n"
+            "            to_viewer -= world_pos;\n"
+            "            to_viewer = dot(to_viewer, to_viewer) > 0 ? normalize(to_viewer) : float3(0, 0, 0);\n"
+            "        }\n"
+            "        for (uint i = 0; i < (uint)directional_flags.z; ++i) {\n"
+            "            float3 l = directional_directions[i].xyz; float atten = 1;\n"
+            "            if (light_positions[i].w > 0.5f) {\n"
+            "                l = light_positions[i].xyz - world_pos;\n"
+            "                float d = length(l);\n"
+            "                float denominator = dot(light_attenuation[i].xyz, float3(1, d, d * d));\n"
+            "                atten = d <= light_attenuation[i].w && denominator > 0 ? 1 / denominator : 0;\n"
+            "                l = d > 0 ? l / d : float3(0, 0, 0);\n"
+            "            }\n"
+            "            float lambert = dot(n, l);\n"
+            "            rgb += (md.rgb * directional_colors[i].rgb * max(0, lambert) + light_ambient[i].rgb * ma) * atten;\n"
+            "            if (light_view.w > 0 && lambert > 0)\n"
+            "                spec += atten * light_specular[i].rgb * pow(max(dot(n, normalize(l + to_viewer)), 1e-6f), light_view.w);\n"
+            "        }\n"
+            "        output.color = float4(saturate(rgb), md.a);\n"
+            "        output.specular = float4(saturate(spec), 0);\n"
+            "    }\n";
+    }
     for (uint32_t i = 0u; i < coords; ++i) {
         out += "    output.t" + std::to_string(i) + " = float4(input.texcoord" +
             (i ? std::to_string(i) : std::string()) + ", 0, 1);\n";
@@ -660,6 +699,13 @@ bool recomp_d3d_draw_constants(
     std::fill(constants_out, constants_out + kRecompD3dDrawConstantFloats, 0.0f);
     std::memcpy(constants_out + kRecompD3dPixelConstantsFloat, draw.pixel_program.constants,
         sizeof draw.pixel_program.constants);
+    if (draw.directional.enabled && draw.pixel_program.kind != RECOMP_D3D_PIXEL_NONE) {
+        float *general = constants_out + kRecompD3dGeneralLightingFloat;
+        std::memcpy(general, draw.directional.sources, sizeof draw.directional.sources);
+        std::memcpy(general + 4, draw.directional.global_ambient, sizeof draw.directional.global_ambient);
+        std::memcpy(general + 8, draw.directional.material_ambient, sizeof draw.directional.material_ambient);
+        std::memcpy(general + 12, draw.directional.material_emissive, sizeof draw.directional.material_emissive);
+    }
     /* Restore depth slope per guest pixel after anisotropic host scaling.
        Constant bias stays in the native D24 rasterizer, after clipping. */
     if (scaled_depth_bias) {

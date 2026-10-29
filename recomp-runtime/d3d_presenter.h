@@ -97,6 +97,16 @@ typedef struct RecompD3dDirectionalLighting {
     /* Stage 0: RGB texture, RGB source, alpha texture, alpha source.
        Sources: 0 = one, 1 = diffuse, 2 = TFACTOR. Texture selectors are 0/1. */
     float stage[4];
+    /* General pixel programs only (pixel_program.kind != NONE), where the
+       vertex shader evaluates D3D lighting with per-vertex material sources:
+       diffuse, ambient and emissive each from the material (0) or the vertex
+       diffuse color (1), and in w 1 for LOCALVIEWER (view.xyz is then the
+       eye's world position); the global ambient; the material ambient and
+       emissive. ambient[] then holds each light's own ambient, unscaled. */
+    float sources[4];
+    float global_ambient[4];
+    float material_ambient[4];
+    float material_emissive[4];
 } RecompD3dDirectionalLighting;
 
 typedef enum RecompD3dCullMode {

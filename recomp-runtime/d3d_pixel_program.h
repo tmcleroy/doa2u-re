@@ -94,6 +94,8 @@ typedef struct RecompD3dPixelProgram {
     RecompD3dPixelStage stages[RECOMP_D3D_PIXEL_STAGES];
     RecompD3dCombiners combiners;      /* kind COMBINERS; stages[].sampled and
                                           .texcoord say which textures it reads */
+    bool specular_add;                 /* FIXED_FUNCTION: D3DRS_SPECULARENABLE, the
+                                          SDK final combiner adds V1 */
     /* Not part of the shader's identity: */
     float constants[RECOMP_D3D_PIXEL_CONSTANTS][4];
 } RecompD3dPixelProgram;
@@ -110,8 +112,8 @@ uint64_t recomp_d3d_pixel_program_hash(const RecompD3dPixelProgram *program);
 
 #include <string>
 
-/* HLSL statements that compute `float4 shaded` from `input.color` (diffuse;
-   specular reads zero for now), `input.t0` to `input.t3` (float4 texture coordinates),
+/* HLSL statements that compute `float4 shaded` from `input.color` (diffuse),
+   `input.specular` (V1), `input.t0` to `input.t3` (float4 texture coordinates),
    the stage textures (guest_texture, alpha_mask and bump_map with their
    samplers) and pixel_constants. */
 bool recomp_d3d_pixel_program_source(const RecompD3dPixelProgram &program, std::string &source);

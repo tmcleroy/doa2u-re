@@ -19,9 +19,11 @@
    stage-1 texture matrix (16), bump matrices, bump fog and fog color (16),
    the extra reflection world-view/normal transforms (96), and the stage-2
    texture matrix and flags (20), then scaled receiver depth bias (4), then
-   a general pixel program's constants (d3d_pixel_program.h, 96). */
+   a general pixel program's constants (d3d_pixel_program.h, 96), then its
+   lighting sources, global ambient and material ambient and emissive (16). */
 constexpr uint32_t kRecompD3dPixelConstantsFloat = 140u + 192u * 4u + 512u + 4u;
-constexpr uint32_t kRecompD3dDrawConstantFloats = kRecompD3dPixelConstantsFloat + 96u;
+constexpr uint32_t kRecompD3dGeneralLightingFloat = kRecompD3dPixelConstantsFloat + 96u;
+constexpr uint32_t kRecompD3dDrawConstantFloats = kRecompD3dGeneralLightingFloat + 16u;
 
 /* Every FVF seen across all logged runs (14). Compiling them at boot keeps
    first use of each scene from stalling ~85 ms per shader. */

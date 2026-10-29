@@ -213,7 +213,7 @@ bool combinerSource(const RecompD3dPixelProgram &program, std::string &out)
     char line[512];
     out =
         "    float4 zero4 = float4(0, 0, 0, 0), fog = pixel_constants[23];\n"
-        "    float4 v0 = input.color, v1 = float4(0, 0, 0, 0);\n"
+        "    float4 v0 = input.color, v1 = input.specular;\n"
         "    float4 coords[4] = {input.t0, input.t1, input.t2, input.t3};\n"
         "    float4 t0 = zero4, t1 = zero4, t2 = zero4, t3 = zero4;\n";
     std::snprintf(line, sizeof line, "    const bool mux_msb = %s;\n", (c.control & 0x100u) ? "true" : "false");
@@ -329,7 +329,7 @@ bool recomp_d3d_pixel_program_source(const RecompD3dPixelProgram &program, std::
     if (program.kind == RECOMP_D3D_PIXEL_COMBINERS) return combinerSource(program, source);
     char line[256];
     source =
-        "    float4 diffuse = input.color, specular = float4(0, 0, 0, 0);\n"
+        "    float4 diffuse = input.color, specular = input.specular;\n"
         "    float4 tfactor = pixel_constants[4];\n"
         "    float4 current = diffuse, temp = float4(0, 0, 0, 0), tex = float4(1, 1, 1, 1);\n"
         "    float4 coords[4] = {input.t0, input.t1, input.t2, input.t3};\n";
@@ -356,6 +356,8 @@ bool recomp_d3d_pixel_program_source(const RecompD3dPixelProgram &program, std::
         source += "        float a = " + alpha + ";\n";
         source += std::string("        ") + result + " = saturate(float4(rgb, a));\n    }\n";
     }
-    source += "    float4 shaded = current;\n";
+    /* With SPECULARENABLE the SDK's final combiner adds V1. */
+    source += program.specular_add ? "    float4 shaded = float4(saturate(current.rgb + specular.rgb), current.a);\n"
+                                   : "    float4 shaded = current;\n";
     return true;
 }
