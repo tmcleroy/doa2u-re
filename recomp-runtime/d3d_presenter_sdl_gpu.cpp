@@ -2904,8 +2904,11 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
     if (presenter->previous_frame != nullptr) copyGuestBuffer(presenter, presenter->previous_frame);
     submitCommands(presenter);
     ++presenter->present_count;
+    /* RECOMP_D3D_DRAW_LOG_AT=N starts the log at present N too (headless runs). */
+    static const char *log_at = std::getenv("RECOMP_D3D_DRAW_LOG_AT");
+    const bool log_now = log_at != nullptr && std::strtoul(log_at, nullptr, 10) == presenter->present_count + 1u;
     if (presenter->draw_log_trigger != nullptr && !presenter->draw_log_active &&
-        fileExists(presenter->draw_log_trigger)) {
+        (log_now || fileExists(presenter->draw_log_trigger))) {
         presenter->draw_log_active = true;
         presenter->draw_log_index = 0u;
         std::fprintf(stderr, "recomp draw log: begin present=%u\n", presenter->present_count + 1u);
