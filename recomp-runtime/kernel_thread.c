@@ -61,6 +61,8 @@ typedef struct GuestThread {
     uint32_t wait_result;
     UserApc apcs[MAX_EVENTS];
     unsigned apc_count;
+    /* recomp_kernel_drain_others: not run again until no other thread can */
+    bool draining;
 } GuestThread;
 
 /* shortcut: retain thread records until exit; add reclamation if a title
@@ -304,6 +306,7 @@ static bool thread_ready(GuestThread *thread)
 {
     if (thread->handle == 0u || thread->exited || thread->suspend_count != 0u)
         return false;
+    if (thread->draining) return false;
     if (!thread->waiting) return true;
     if (thread->alertable && thread->apc_count != 0u) {
         thread->wait_result = THREAD_STATUS_USER_APC;
@@ -367,6 +370,26 @@ static void preempt_higher_priority(void)
     if (selected != current_thread) switch_thread(selected);
 }
 
+/* recomp_kernel_drain_others: a drain under way, and the turns the other threads
+   have had in it (it ends after kDrainTurns, as some threads only ever yield) */
+static bool drain_active;
+static unsigned drain_turns;
+enum { kDrainTurns = 64 };
+
+static bool end_drain(void)
+{
+    for (unsigned i = 0u; i < MAX_THREADS; ++i) {
+        if (!threads[i].draining) continue;
+        threads[i].draining = false;
+        threads[i].waiting = false;
+        drain_active = false;
+        if (i != current_thread) switch_thread(i);
+        return true;
+    }
+    drain_active = false;
+    return false;
+}
+
 static void schedule(void)
 {
     GuestThread *outgoing = &threads[current_thread];
@@ -389,6 +412,7 @@ static void schedule(void)
             unsigned index = (current_thread + step) % MAX_THREADS;
             GuestThread *target = &threads[index];
             if (thread_ready(target)) {
+                if (drain_active && ++drain_turns > kDrainTurns && end_drain()) return;
                 if (target == outgoing) return;
                 switch_thread(index);
                 return;
@@ -406,6 +430,8 @@ static void schedule(void)
                 }
             }
         }
+        /* No thread can run: a draining thread goes on (recomp_kernel_drain_others). */
+        if (drain_active && end_drain()) return;
         /* Advance idle guest time in unpaced mode. Indefinite waits still sleep. */
         if (earliest < UINT64_MAX / 100u &&
             recomp_xapi_skip_wait(earliest * 100u)) continue;
@@ -461,7 +487,7 @@ static void schedule(void)
 void recomp_kernel_poll(void)
 {
     static uint64_t next_slice;
-    if (!scheduler_started) return;
+    if (!scheduler_started || drain_active) return; /* (a drain switches only at waits) */
     const uint64_t now = recomp_xapi_performance_counter();
     if (now < next_slice) return;
     next_slice = now + UINT64_C(1000000);
@@ -475,6 +501,24 @@ void recomp_kernel_poll(void)
         }
     }
     if (selected != current_thread) switch_thread(selected);
+}
+
+/* Runs every other guest thread that can run until none can (each waiting for
+   something), then returns: what they do between two calls no longer depends on
+   how long the host took, only on what they wait for. For a port that needs two
+   machines' games to run alike (online play). */
+void recomp_kernel_drain_others(void)
+{
+    if (!scheduler_started) return;
+    GuestThread *thread = &threads[current_thread];
+    thread->object_count = 0u;
+    thread->alertable = false;
+    thread->deadline = UINT64_MAX;
+    thread->waiting = true;
+    thread->draining = true;
+    drain_active = true;
+    drain_turns = 0u;
+    schedule();
 }
 
 /* Vblank waiters are blocked until the shared refresh deadline. Merely

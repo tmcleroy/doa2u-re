@@ -188,6 +188,8 @@ void recomp_kernel_queue_user_apc(
 void recomp_kernel_drain_dpcs(void);
 /* Service cooperative worker progress at native API clock-read boundaries. */
 void recomp_kernel_poll(void);
+/* Runs the other guest threads until none can run, then returns (kernel_thread.c). */
+void recomp_kernel_drain_others(void);
 /* Signal expired timers and queue their DPCs; returns the number queued. */
 unsigned recomp_kernel_expire_timers(void);
 
