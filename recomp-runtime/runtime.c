@@ -498,6 +498,25 @@ static void check_watch_write(void)
         return;
     }
 
+    /* RECOMP_WATCH_NAN: only writes of a NaN float; it and RECOMP_WATCH_FRAMES name the host frames */
+    static int nan_only = -1, frames_named = -1;
+    if (nan_only < 0) nan_only = getenv("RECOMP_WATCH_NAN") != NULL;
+    if (frames_named < 0) frames_named = nan_only || getenv("RECOMP_WATCH_FRAMES") != NULL;
+    if (nan_only && (current & 0x7f800000u) != 0x7f800000u) {
+        watch.value = current;
+        return;
+    }
+#ifndef _WIN32
+    if (frames_named && watch.hits < watch.hit_limit) {
+        void *frames[16];
+        const int count = backtrace(frames, 16);
+        for (int i = 0; i < count; ++i) {
+            Dl_info info;
+            fprintf(stderr, "recomp watch: frame %d %s\n", i,
+                dladdr(frames[i], &info) && info.dli_sname != NULL ? info.dli_sname : "?");
+        }
+    }
+#endif
     ++watch.hits;
     if (watch.hits <= watch.hit_limit) {
         report_watch_writer(watch.value, current);
