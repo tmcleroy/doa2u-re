@@ -120,6 +120,24 @@ static const char *disc_override_of(const char *relative)
     return NULL;
 }
 
+/* A disc directory listing's entry `name` in `directory` (a disc path without
+   the drive, "" for the root) takes the size of the host file standing in for
+   it: the game sizes its reads from the listing (Soulcalibur II lists D:\ for
+   root.olk's), so an override longer than the disc's file would read short. */
+static void override_listed_size(const char *directory, const char *name, uint64_t *size, uint64_t *allocation)
+{
+    char relative[MAX_PATH_LEN];
+    while (*directory == '\\' || *directory == '/') ++directory;
+    if (snprintf(relative, sizeof relative, "%s%s%s", directory, *directory ? "\\" : "", name) >= (int)sizeof relative)
+        return;
+    const char *host = disc_override_of(relative);
+    if (host == NULL) return;
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    if (!GetFileAttributesExA(host, GetFileExInfoStandard, &data)) return;
+    *size = (uint64_t)data.nFileSizeLow | (uint64_t)data.nFileSizeHigh << 32u;
+    *allocation = (*size + 2047u) & ~2047ull;
+}
+
 /* Private proving runs use these fail-loud checkpoints to interrupt real
    save writes. They are inactive unless explicitly selected in the environment. */
 static unsigned save_write_number;
@@ -238,6 +256,9 @@ static const char *image_relative_path(const char *host_path)
     return next == '\0' || next == '\\' || next == '/' ? host_path + length : NULL;
 }
 
+/* The image directory being listed (add_image_entry's), a disc path. */
+static const char *listing_image_directory = "";
+
 static void add_image_entry(void *context, const char *name, const RecompDiscImageEntry *image)
 {
     RecompDirectoryEntry entry = {0};
@@ -245,6 +266,7 @@ static void add_image_entry(void *context, const char *name, const RecompDiscIma
     strcpy(entry.name, name);
     entry.size = image->directory ? 0u : image->size;
     entry.allocation_size = (entry.size + 2047u) & ~2047ull;
+    if (!image->directory) override_listed_size(listing_image_directory, name, &entry.size, &entry.allocation_size);
     entry.attributes = image->directory ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_READONLY;
     (void)recomp_directory_add((RecompDirectoryModel *)context, &entry);
 }
@@ -306,8 +328,11 @@ static uint32_t register_file_handle(
                     file_handles[i].image = 1;
                     file_handles[i].image_offset = image.offset;
                     file_handles[i].image_size = image.size;
-                    if (kind == FILE_HANDLE_DIRECTORY)
+                    if (kind == FILE_HANDLE_DIRECTORY) {
+                        listing_image_directory = image_path;
                         recomp_disc_image_list(image_path, add_image_entry, &file_handles[i].directory);
+                        listing_image_directory = "";
+                    }
                 }
             }
             if (kind == FILE_HANDLE_DIRECTORY && host_path != NULL && image_path == NULL) {
@@ -351,6 +376,12 @@ static uint32_t register_file_handle(
                         entry.size = size;
                         entry.allocation_size = (size + 4095u) & ~4095ull;
                         entry.attributes = data.dwFileAttributes;
+                        if (disc_root[0] != '\0' && !(data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                            const size_t root_length = strlen(disc_root);
+                            if (_strnicmp(host_path, disc_root, root_length) == 0)
+                                override_listed_size(host_path + root_length, data.cFileName,
+                                    &entry.size, &entry.allocation_size);
+                        }
                         if (!recomp_directory_add(
                                 &file_handles[i].directory, &entry)) {
                             fprintf(stderr, "recomp kernel: directory '%s' lists only its first %u entries\n",
