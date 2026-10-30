@@ -85,6 +85,41 @@ const char *recomp_disc_root_path = NULL;
 const char *recomp_storage_root_path = NULL;
 void (*recomp_kernel_read_hook)(const char *host_path, uint64_t offset);
 
+static struct {
+    char disc_path[MAX_PATH_LEN];
+    char host_path[MAX_PATH_LEN];
+} disc_overrides[8];
+static size_t disc_override_count;
+
+bool recomp_disc_override(const char *disc_path, const char *host_path)
+{
+    if (disc_override_count >= sizeof disc_overrides / sizeof disc_overrides[0] ||
+        strlen(disc_path) >= MAX_PATH_LEN || strlen(host_path) >= MAX_PATH_LEN) {
+        return false;
+    }
+    strcpy(disc_overrides[disc_override_count].disc_path, disc_path);
+    strcpy(disc_overrides[disc_override_count].host_path, host_path);
+    ++disc_override_count;
+    return true;
+}
+
+/* The host file standing in for a disc path (without the drive), or NULL. */
+static const char *disc_override_of(const char *relative)
+{
+    while (*relative == '\\' || *relative == '/') ++relative;
+    for (size_t i = 0; i < disc_override_count; ++i) {
+        const char *a = relative, *b = disc_overrides[i].disc_path;
+        while (*a != '\0' && *b != '\0' &&
+               (tolower((unsigned char)*a) == tolower((unsigned char)*b) ||
+                ((*a == '\\' || *a == '/') && (*b == '\\' || *b == '/')))) {
+            ++a;
+            ++b;
+        }
+        if (*a == '\0' && *b == '\0') return disc_overrides[i].host_path;
+    }
+    return NULL;
+}
+
 /* Private proving runs use these fail-loud checkpoints to interrupt real
    save writes. They are inactive unless explicitly selected in the environment. */
 static unsigned save_write_number;
@@ -1185,7 +1220,11 @@ static const char *resolve_and_open(
         if (!normalize_guest_path(path, normalized, sizeof(normalized))) {
             return "pseudo-handle-open";
         }
-        if (!build_host_path(normalized + 2, host_path, MAX_PATH_LEN)) {
+        const char *override = disc_override_of(normalized + 2);
+        if (override != NULL) {
+            strncpy(host_path, override, MAX_PATH_LEN - 1u);
+            host_path[MAX_PATH_LEN - 1u] = '\0';
+        } else if (!build_host_path(normalized + 2, host_path, MAX_PATH_LEN)) {
             *out_status = RECOMP_STATUS_INVALID_PARAMETER;
             return "invalid-disc-path";
         }

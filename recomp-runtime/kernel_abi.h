@@ -69,6 +69,10 @@ extern const char *recomp_disc_root_path;
    files live. NULL keeps them in <disc root>/.recomp-storage; a port sets it
    to keep them out of the player's game folder. */
 extern const char *recomp_storage_root_path;
+/* Puts a host file in place of a disc file (a path from the disc's root,
+   such as "root.olk"): the game reads the host file instead. For data
+   a port builds from the player's own files. False when the table is full. */
+bool recomp_disc_override(const char *disc_path, const char *host_path);
 
 /* Each subsystem exposes one of these; kernel_dispatch.c chains them. */
 RecompFunction recomp_kernel_config(uint32_t ordinal);

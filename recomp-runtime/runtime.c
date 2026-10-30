@@ -7,6 +7,9 @@
 #include <stdio.h>
 #if !defined(_WIN32)
 #include <dlfcn.h>
+#ifndef _WIN32
+#include <execinfo.h>
+#endif
 #endif
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -128,6 +131,18 @@ static void fail_memory_access(uint32_t guest_address, size_t width)
         for (USHORT i = 0u; i < count; ++i) {
             fprintf(stderr, "[DEBUG-r501-fault] frame=%u pc=%p\n",
                 (unsigned)i, frames[i]);
+        }
+    }
+#else
+    if (getenv("RECOMP_FAULT_TRACE") != NULL) {
+        /* the host frames, named (dladdr) where the symbol is exported:
+           a lifted sub_XXXXXXXX names the guest routine */
+        void *frames[32];
+        const int count = __builtin_frame_address(0) != NULL ? backtrace(frames, 32) : 0;
+        for (int i = 0; i < count; ++i) {
+            Dl_info info;
+            fprintf(stderr, "recomp runtime: fault frame %d %s\n", i,
+                dladdr(frames[i], &info) && info.dli_sname != NULL ? info.dli_sname : "?");
         }
     }
 #endif
