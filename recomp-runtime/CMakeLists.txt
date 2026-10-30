@@ -428,6 +428,7 @@ endif()
 set(RECOMP_PROGRAM_DIR "" CACHE PATH "Authenticated complete generated-source snapshot")
 # A game's own runner sources beside the shared ones, relative to this directory.
 set(RECOMP_GAME_SOURCES "" CACHE STRING "Extra runner sources a game adds")
+set(RECOMP_GAME_LIBS "" CACHE STRING "Libraries those sources need")
 set(RECOMP_PROGRAM_MANIFEST_SHA256 "" CACHE STRING "SHA-256 of the generated-source manifest")
 set(RECOMP_XBE_SHA256 "" CACHE STRING "SHA-256 of the executable used to generate this program")
 set(RECOMP_PROGRAM_EBP_EXPECTED 0 CACHE STRING "Expected uninitialized generated EBP prologue count")
@@ -541,7 +542,8 @@ if(RECOMP_PROGRAM_DIR)
         # The lifter writes conditions as if ((a == b)); clang would warn on every one.
         set_source_files_properties(${_program_sources} PROPERTIES COMPILE_OPTIONS -Wno-parentheses-equality)
     endif()
-    target_link_libraries(recomp_program_runner PRIVATE recomp_kernel recomp_xbe recomp_d3d_presenter recomp_audio)
+    target_link_libraries(recomp_program_runner PRIVATE recomp_kernel recomp_xbe recomp_d3d_presenter recomp_audio
+        ${RECOMP_GAME_LIBS})
     if(WIN32)
         target_link_libraries(recomp_program_runner PRIVATE dbghelp user32)
     endif()
