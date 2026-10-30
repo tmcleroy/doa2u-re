@@ -12,6 +12,8 @@
 
 #ifdef RECOMP_SHADERC_LINKED
 #include <shaderc/shaderc.h>
+#elif defined(_WIN32)
+#include <windows.h>
 #else
 #include <dlfcn.h>
 #endif
@@ -78,6 +80,22 @@ bool loadShaderc()
     bind(shaderc.result_bytes, shaderc_result_get_bytes);
     bind(shaderc.result_length, shaderc_result_get_length);
     bind(shaderc.result_release, shaderc_result_release);
+#elif defined(_WIN32)
+    // Windows: shaderc's DLL beside the program (MSYS2's and the Vulkan SDK's names).
+    HMODULE library = nullptr;
+    for (const char *name : {"libshaderc_shared.dll", "shaderc_shared.dll"}) {
+        library = LoadLibraryA(name);
+        if (library != nullptr) break;
+    }
+    if (library == nullptr) {
+        std::fprintf(stderr, "recomp shaders: SDL_GPU shaders need shaderc (libshaderc_shared.dll)\n");
+        return false;
+    }
+    const auto symbol = [library](auto &slot, const char *name) {
+        slot = reinterpret_cast<std::remove_reference_t<decltype(slot)>>(
+            reinterpret_cast<void *>(GetProcAddress(library, name)));
+        return slot != nullptr;
+    };
 #else
     // SteamOS and Fedora ship libshaderc_shared; Debian and Ubuntu name it libshaderc.
     void *library = nullptr;
@@ -94,6 +112,8 @@ bool loadShaderc()
         slot = reinterpret_cast<std::remove_reference_t<decltype(slot)>>(dlsym(library, name));
         return slot != nullptr;
     };
+#endif
+#ifndef RECOMP_SHADERC_LINKED
     if (!symbol(shaderc.compiler_initialize, "shaderc_compiler_initialize") ||
         !symbol(shaderc.options_initialize, "shaderc_compile_options_initialize") ||
         !symbol(shaderc.options_release, "shaderc_compile_options_release") ||

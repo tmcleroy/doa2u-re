@@ -33,6 +33,9 @@ if(WIN32)
         add_custom_command(TARGET ${target} POST_BUILD COMMAND "${CMAKE_COMMAND}" -E
             copy_if_different "$<TARGET_FILE:SDL3::SDL3>" "$<TARGET_FILE_DIR:${target}>")
     endfunction()
+    # (the SDL_GPU presenter loads shaderc's DLL at run time: RECOMP_WINDOWS_SDL_GPU)
+    function(recomp_use_shader_compiler target)
+    endfunction()
 else()
     # macOS builds need SDL3 (brew install sdl3). Linux uses the system SDL3,
     # or builds it when RECOMP_FETCH_SDL3 is on, as build_game.py asks (Ubuntu
@@ -123,6 +126,15 @@ set_source_files_properties(d3d_presenter_d3d11.cpp d3d_presenter_sdl_gpu.cpp
     PROPERTIES COMPILE_DEFINITIONS RECOMP_SMAA
     INCLUDE_DIRECTORIES "${CMAKE_CURRENT_BINARY_DIR};${smaa_SOURCE_DIR}/Textures")
 
+# A Windows build can draw through the SDL_GPU presenter (Vulkan or Direct3D 12)
+# instead of Direct3D 11. It loads shaderc's DLL at run time, as Linux does.
+option(RECOMP_WINDOWS_SDL_GPU "Windows: the SDL_GPU presenter instead of Direct3D 11" OFF)
+if(WIN32 AND NOT RECOMP_WINDOWS_SDL_GPU)
+    set(RECOMP_D3D11_PRESENTER ON)
+else()
+    set(RECOMP_D3D11_PRESENTER OFF)
+endif()
+
 # Dear ImGui draws the runtime's overlay text (the free camera's panel) over
 # the game through the presenter (Direct3D 11 on Windows, SDL_GPU elsewhere);
 # see overlay_*.cpp. Set FETCHCONTENT_SOURCE_DIR_IMGUI to configure offline.
@@ -137,7 +149,7 @@ if(WIN32 OR SDL3_FOUND)
         "${imgui_SOURCE_DIR}/imgui_tables.cpp"
         "${imgui_SOURCE_DIR}/imgui_widgets.cpp")
     target_include_directories(recomp_imgui PUBLIC "${imgui_SOURCE_DIR}")
-    if(WIN32)
+    if(RECOMP_D3D11_PRESENTER)
         target_sources(recomp_imgui PRIVATE "${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp")
         target_link_libraries(recomp_imgui PUBLIC d3d11 d3dcompiler)
     else()
@@ -319,7 +331,7 @@ set(RECOMP_PRESENTER_SHARED d3d_draw_shader.cpp d3d_pixel_program.cpp d3d_vertex
     d3d_texture_model.c d3d_vblank.cpp)
 # Both presenters draw the runtime's overlay text and save screenshots.
 set(RECOMP_PRESENTER_SHARED ${RECOMP_PRESENTER_SHARED} overlay_imgui_panel.cpp overlay_text.c screenshot.c)
-if(WIN32)
+if(RECOMP_D3D11_PRESENTER)
     add_library(recomp_d3d_presenter STATIC
         d3d_presenter_d3d11.cpp d3d_presenter_thread.cpp d3d_presenter_capture.cpp overlay_d3d11.cpp
         ${RECOMP_PRESENTER_SHARED})
@@ -335,6 +347,9 @@ else()
     target_link_libraries(recomp_d3d_presenter PUBLIC recomp_keyboard)
     if(SDL3_FOUND)
         target_link_libraries(recomp_d3d_presenter PUBLIC recomp_imgui)
+    endif()
+    if(WIN32)
+        target_link_libraries(recomp_d3d_presenter PUBLIC recomp_imgui user32 shell32 ole32 uuid)
     endif()
     recomp_use_sdl3(recomp_d3d_presenter)
     recomp_use_shader_compiler(recomp_d3d_presenter)
