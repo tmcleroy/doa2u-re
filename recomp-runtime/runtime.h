@@ -225,6 +225,9 @@ void recomp_fpu_context_save(RecompFpuContext *context);
 void recomp_fpu_context_restore(const RecompFpuContext *context);
 
 extern uint32_t recomp_last_dispatch_address;
+/* Widens the read watch (RECOMP_READ_WATCH) to cover [start, end): the kernel
+   calls it for RECOMP_READ_WATCH_FILE when that part of a file is read in. */
+void recomp_read_watch_arm(uint32_t start, uint32_t end);
 
 #ifdef __cplusplus
 }

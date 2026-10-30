@@ -2137,6 +2137,43 @@ static void bridge_nt_write_file(void)
     kernel_return(8u, status);
 }
 
+/* RECOMP_READ_WATCH_FILE=NAME:START-END[,START-END...] (hex offsets in the file
+   NAME): when a read brings part of one into memory, the runtime's read watch
+   covers where it landed. */
+static void arm_read_watch_for_file(const char *host_path, uint64_t offset, uint32_t buffer, uint32_t count)
+{
+    static int parsed;
+    static char name[128];
+    static uint64_t ranges[64][2];
+    static uint32_t range_count;
+    if (!parsed) {
+        parsed = 1;
+        const char *setting = getenv("RECOMP_READ_WATCH_FILE");
+        const char *colon = setting != NULL ? strrchr(setting, ':') : NULL;
+        if (colon != NULL && (size_t)(colon - setting) < sizeof name) {
+            memcpy(name, setting, (size_t)(colon - setting));
+            name[colon - setting] = '\0';
+            const char *at = colon + 1;
+            while (*at != '\0' && range_count < 64u) {
+                char *end;
+                ranges[range_count][0] = strtoull(at, &end, 16);
+                ranges[range_count][1] = *end == '-' ? strtoull(end + 1, &end, 16) : ranges[range_count][0] + 4u;
+                ++range_count;
+                at = *end == ',' ? end + 1 : end;
+                if (*end != ',') break;
+            }
+        }
+    }
+    if (name[0] == '\0' || count == 0u || host_path == NULL) return;
+    const size_t length = strlen(host_path), name_length = strlen(name);
+    if (length < name_length || _stricmp(host_path + length - name_length, name) != 0) return;
+    for (uint32_t i = 0; i < range_count; ++i) {
+        const uint64_t from = offset > ranges[i][0] ? offset : ranges[i][0];
+        const uint64_t to = offset + count < ranges[i][1] ? offset + count : ranges[i][1];
+        if (from < to) recomp_read_watch_arm(buffer + (uint32_t)(from - offset), buffer + (uint32_t)(to - offset));
+    }
+}
+
 static void bridge_nt_read_file(void)
 {
     uint32_t guest_handle = kernel_arg(1u);
@@ -2193,6 +2230,7 @@ static void bridge_nt_read_file(void)
             if (recomp_kernel_read_hook != NULL && bytes_read != 0u) {
                 recomp_kernel_read_hook(file_handles[i].host_path, read_offset);
             }
+            arm_read_watch_for_file(file_handles[i].host_path, read_offset, buffer, bytes_read);
             file_handles[i].cursor = read_offset + bytes_read;
             status = bytes_read == 0u && length != 0u ? RECOMP_STATUS_END_OF_FILE : RECOMP_STATUS_SUCCESS;
             policy = "image-file-read";
@@ -2229,6 +2267,7 @@ static void bridge_nt_read_file(void)
         if (recomp_kernel_read_hook != NULL && bytes_read != 0u) {
             recomp_kernel_read_hook(file_handles[i].host_path, read_offset);
         }
+        arm_read_watch_for_file(file_handles[i].host_path, read_offset, buffer, bytes_read);
         file_handles[i].cursor = read_offset + bytes_read;
         status = bytes_read == 0u && length != 0u
             ? RECOMP_STATUS_END_OF_FILE

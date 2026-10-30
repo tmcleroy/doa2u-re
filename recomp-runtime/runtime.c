@@ -5,6 +5,12 @@
 
 #include <inttypes.h>
 #include <stdio.h>
+#if !defined(_WIN32)
+#include <dlfcn.h>
+#endif
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 
@@ -339,14 +345,88 @@ static struct {
     uint32_t hit_limit;
 } watch;
 
+static struct {
+    bool active;
+    uint32_t start, end;            /* RECOMP_READ_WATCH's range */
+    uint32_t ranges[64][2];         /* armed ranges */
+    uint32_t range_count;
+    uint32_t seen[256];
+    uint32_t seen_count;
+} read_watch;
+
 static void update_fast_ram(void)
 {
-    recomp_fast_ram = !watch.active && recomp_runtime.accesses == NULL &&
+    recomp_fast_ram = !watch.active && !read_watch.active && recomp_runtime.accesses == NULL &&
         !mmio_u32_access.pending ? direct_ram : NULL;
+}
+
+/* RECOMP_READ_WATCH=START-END (hex): names each function (the last dispatch)
+   that touches the range, once, for finding the code that reads a structure. */
+
+static void read_watch_init(void)
+{
+    const char *setting = getenv("RECOMP_READ_WATCH");
+    char *end;
+    if (setting == NULL || setting[0] == '\0') return;
+    read_watch.start = (uint32_t)strtoul(setting, &end, 16);
+    read_watch.end = *end == '-' ? (uint32_t)strtoul(end + 1, NULL, 16) : read_watch.start + 4u;
+    read_watch.active = read_watch.end > read_watch.start;
+    if (read_watch.active)
+        fprintf(stderr, "recomp read watch: 0x%08" PRIx32 "-0x%08" PRIx32 "\n", read_watch.start, read_watch.end);
+}
+
+void recomp_read_watch_arm(uint32_t start, uint32_t end)
+{
+    if (end <= start) return;
+    const uint32_t length = end - start;
+    start &= 0x03ffffffu;
+    end = start + length;
+    for (uint32_t i = 0; i < read_watch.range_count; ++i) {
+        /* (a read continuing an armed range extends it) */
+        if (start <= read_watch.ranges[i][1] && end >= read_watch.ranges[i][0]) {
+            if (start < read_watch.ranges[i][0]) read_watch.ranges[i][0] = start;
+            if (end > read_watch.ranges[i][1]) read_watch.ranges[i][1] = end;
+            return;
+        }
+    }
+    if (read_watch.range_count >= 64u) return;
+    read_watch.ranges[read_watch.range_count][0] = start;
+    read_watch.ranges[read_watch.range_count][1] = end;
+    ++read_watch.range_count;
+    read_watch.active = true;
+    update_fast_ram();
+    fprintf(stderr, "recomp read watch: armed 0x%08" PRIx32 "-0x%08" PRIx32 "\n", start, end);
+}
+
+/* `caller` is the host code that asked for the memory (a generated function):
+   named with dladdr where the platform has it. */
+static void check_read_watch(uint32_t guest_address, const void *caller)
+{
+    const uint32_t offset = guest_address & 0x03ffffffu;
+    if (!read_watch.active) return;
+    bool inside = offset >= read_watch.start && offset < read_watch.end;
+    for (uint32_t i = 0; !inside && i < read_watch.range_count; ++i)
+        inside = offset >= read_watch.ranges[i][0] && offset < read_watch.ranges[i][1];
+    if (!inside) return;
+    const char *name = NULL;
+    uintptr_t key = (uintptr_t)caller;
+#if !defined(_WIN32)
+    Dl_info info;
+    if (dladdr(caller, &info) != 0 && info.dli_sname != NULL) {
+        name = info.dli_sname;
+        key = (uintptr_t)info.dli_saddr;
+    }
+#endif
+    for (uint32_t i = 0; i < read_watch.seen_count; ++i)
+        if (read_watch.seen[i] == (uint32_t)key) return;
+    if (read_watch.seen_count < 256u) read_watch.seen[read_watch.seen_count++] = (uint32_t)key;
+    fprintf(stderr, "recomp read watch: %s (last dispatch 0x%08" PRIx32 ") at 0x%08" PRIx32 "\n",
+        name != NULL ? name : "?", recomp_last_dispatch_address, offset);
 }
 
 static void watch_init(void)
 {
+    read_watch_init();
     const char *setting = getenv("RECOMP_WATCH");
     const char *limit;
 
@@ -377,6 +457,8 @@ static void report_watch_writer(uint32_t previous, uint32_t current)
         watch.hits, watch.address, previous, current, recomp_last_dispatch_address);
     report_dispatch_stack();
 }
+
+static void update_fast_ram(void);
 
 static void check_watch_write(void)
 {
@@ -417,7 +499,7 @@ static uint8_t *find_direct_ram(uint32_t guest_address, size_t width)
     uint32_t window = guest_address & 0xfc000000u;
     uint32_t offset = guest_address & 0x03ffffffu;
 
-    if (direct_ram == NULL || watch.active || recomp_runtime.accesses != NULL ||
+    if (direct_ram == NULL || watch.active || read_watch.active || recomp_runtime.accesses != NULL ||
         (window != 0u && window != XBOX_CACHED_ALIAS &&
          window != XBOX_PHYSICAL_ALIAS) || width > XBOX_RAM_SIZE - offset) {
         return NULL;
@@ -436,6 +518,11 @@ static uint8_t *recomp_memory_slow(uint32_t guest_address, size_t width)
     uint8_t *memory;
 
     check_watch_write();
+#if defined(_MSC_VER)
+    check_read_watch(guest_address, _ReturnAddress());
+#else
+    check_read_watch(guest_address, __builtin_return_address(0));
+#endif
 
     /* MCPX audio aperture is device space, not guest RAM, so it is served
        from its model instead of a declared region. */
