@@ -188,8 +188,21 @@ void recomp_kernel_queue_user_apc(
 void recomp_kernel_drain_dpcs(void);
 /* Service cooperative worker progress at native API clock-read boundaries. */
 void recomp_kernel_poll(void);
-/* Runs the other guest threads until none can run, then returns (kernel_thread.c). */
-void recomp_kernel_drain_others(void);
+/* True: threads switch only at waits and drains, never on the host's clock (online play) */
+extern bool recomp_kernel_no_time_slices;
+/* Online play: no time slices, and the other threads' timeouts and the timers by
+   recomp_kernel_virtual_time (100 ns units, set by the game each frame) rather
+   than the host's clock; the calling thread keeps the host's (kernel_thread.c) */
+void recomp_kernel_set_deterministic(bool on);
+extern uint64_t recomp_kernel_virtual_time;
+/* Whether the running thread goes by the virtual clock (online play, not the thread that set it) */
+bool recomp_kernel_virtual_reader(void);
+/* Blocks the running thread until the given host time (ns), the next vblank (d3d_vblank.cpp) */
+void recomp_kernel_wait_for_vblank(uint64_t deadline_ns);
+uint64_t recomp_kernel_interrupt_time(void);
+/* Runs the other guest threads until none can run, then returns how many turns
+   they had (kernel_thread.c). */
+unsigned recomp_kernel_drain_others(void);
 /* Thread `index`'s guest memory (its object, stack and TLS; size 0 for none) and
    whether it is the running one; false past the last. For save states. */
 bool recomp_kernel_thread_region(unsigned index, uint32_t *base, uint32_t *size, bool *current);

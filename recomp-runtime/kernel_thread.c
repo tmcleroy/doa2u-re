@@ -6,6 +6,7 @@
 #include "fiber_adapter.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -175,6 +176,8 @@ static uint64_t interrupt_time(void)
     return count / freq * 10000000ull + count % freq * 10000000ull / freq;
 }
 
+uint64_t recomp_kernel_interrupt_time(void) { return interrupt_time(); }
+
 static uint64_t system_time(void)
 {
     struct timespec now;
@@ -185,11 +188,62 @@ static uint64_t system_time(void)
         (uint64_t)now.tv_nsec / 100ull;
 }
 
-static uint64_t wait_deadline(uint32_t timeout)
+/* Online play (recomp_kernel_set_deterministic): the other threads' timeouts and
+   the timers go by a virtual clock the game's frames move on
+   (recomp_kernel_virtual_time), not the host's, so they end at the same frame on
+   both machines; the thread that set it keeps the host's for its own waits (its
+   vblank waits pace the game). */
+extern bool recomp_kernel_no_time_slices;
+static uint64_t last_drain_at; /* (the host's time a drain last began) */
+static uint64_t deterministic_system_base, deterministic_virtual_base;
+static uint64_t system_time(void);
+static bool deterministic;
+static unsigned deterministic_owner;
+uint64_t recomp_kernel_virtual_time;
+
+static uint32_t armed_timers[MAX_EVENTS];
+
+void recomp_kernel_set_deterministic(bool on)
+{
+    deterministic = on;
+    recomp_kernel_no_time_slices = on;
+    deterministic_owner = current_thread;
+    if (!on) return;
+    deterministic_system_base = system_time();
+    deterministic_virtual_base = recomp_kernel_virtual_time;
+    /* (the timeouts and timers set before, by the host's clock: each machine came to
+       this point at its own time in them, so all end at the first drain on both) */
+    for (unsigned i = 0u; i < MAX_THREADS; ++i) {
+        if (i == current_thread || !threads[i].waiting) continue;
+        if (threads[i].deadline != UINT64_MAX && threads[i].deadline > recomp_kernel_virtual_time)
+            threads[i].deadline = recomp_kernel_virtual_time;
+        for (uint32_t o = 0u; o < threads[i].object_count; ++o) {
+            const uint32_t object = threads[i].objects[o];
+            if (find_thread(object) != NULL) continue;
+            const uint32_t type = (uint8_t)*recomp_memory_i8(object);
+            if ((type == 8u || type == 9u) && *recomp_memory_u64(object + TIMER_DUE_TIME) > recomp_kernel_virtual_time)
+                *recomp_memory_u64(object + TIMER_DUE_TIME) = recomp_kernel_virtual_time;
+        }
+    }
+    for (unsigned i = 0u; i < MAX_EVENTS; ++i)
+        if (armed_timers[i] != 0u && *recomp_memory_u64(armed_timers[i] + TIMER_DUE_TIME) > recomp_kernel_virtual_time)
+            *recomp_memory_u64(armed_timers[i] + TIMER_DUE_TIME) = recomp_kernel_virtual_time;
+}
+
+static uint64_t now_for(unsigned index)
+{
+    return deterministic && index != deterministic_owner ? recomp_kernel_virtual_time : interrupt_time();
+}
+
+static uint64_t timer_now(void)
+{
+    return deterministic ? recomp_kernel_virtual_time : interrupt_time();
+}
+
+static uint64_t deadline_from(uint32_t timeout, uint64_t now)
 {
     if (timeout == 0u) return UINT64_MAX;
     int64_t interval = (int64_t)*recomp_memory_u64(timeout);
-    uint64_t now = interrupt_time();
     uint64_t delta;
     if (interval <= 0) {
         delta = 0u - (uint64_t)interval;
@@ -200,6 +254,11 @@ static uint64_t wait_deadline(uint32_t timeout)
     return delta >= UINT64_MAX - now ? UINT64_MAX - 1u : now + delta;
 }
 
+static uint64_t wait_deadline(uint32_t timeout)
+{
+    return deadline_from(timeout, now_for(current_thread));
+}
+
 /* Timers armed with a DPC. Their DPC is queued at expiry, which the DPC drain
    and the idle scheduler poll; nothing raises a clock interrupt. */
 static uint32_t armed_timers[MAX_EVENTS];
@@ -207,7 +266,7 @@ static uint32_t armed_timers[MAX_EVENTS];
 static bool expire_timer(uint32_t timer)
 {
     uint64_t due = *recomp_memory_u64(timer + TIMER_DUE_TIME);
-    if (due == 0u || interrupt_time() < due) return false;
+    if (due == 0u || timer_now() < due) return false;
     *recomp_memory_u32(timer + DISPATCHER_SIGNAL_STATE) = 1u;
     *recomp_memory_u64(timer + TIMER_DUE_TIME) = 0u;
     uint32_t dpc = *recomp_memory_u32(timer + TIMER_DPC);
@@ -331,7 +390,7 @@ static bool thread_ready(GuestThread *thread)
             for (uint32_t i = 0u; i < thread->object_count; ++i)
                 consume_object(thread->objects[i]);
             thread->wait_result = THREAD_STATUS_SUCCESS;
-        } else if (interrupt_time() >= thread->deadline) {
+        } else if (now_for((unsigned)(thread - threads)) >= thread->deadline) {
             thread->wait_result = thread->object_count == 0u
                 ? THREAD_STATUS_SUCCESS : THREAD_STATUS_TIMEOUT;
         } else {
@@ -394,9 +453,15 @@ static bool end_drain(void)
     return false;
 }
 
+static void deterministic_wait(GuestThread *owner);
+
 static void schedule(void)
 {
     GuestThread *outgoing = &threads[current_thread];
+    if (deterministic && !drain_active && current_thread == deterministic_owner) {
+        deterministic_wait(outgoing);
+        return;
+    }
 #ifdef _WIN32
     static HANDLE idle_timer;
 #endif
@@ -498,10 +563,22 @@ bool recomp_kernel_thread_region(unsigned index, uint32_t *base, uint32_t *size,
     return true;
 }
 
+/* Online play: no switching on the host's clock, only at waits and drains, so the
+   threads' interleaving is the same on both machines */
+bool recomp_kernel_no_time_slices;
+
 void recomp_kernel_poll(void)
 {
     static uint64_t next_slice;
     if (!scheduler_started || drain_active) return; /* (a drain switches only at waits) */
+    if (recomp_kernel_no_time_slices) {
+        /* (a thread spinning on the clock 100 ms since the others last ran is waiting
+           for their work: they run then. Spins on the GPU end sooner, and how many
+           clock reads they take is the host's, so they let nothing run.) */
+        if (current_thread == deterministic_owner && interrupt_time() - last_drain_at > 1000000u)
+            (void)recomp_kernel_drain_others();
+        return;
+    }
     const uint64_t now = recomp_xapi_performance_counter();
     if (now < next_slice) return;
     next_slice = now + UINT64_C(1000000);
@@ -521,9 +598,10 @@ void recomp_kernel_poll(void)
    something), then returns: what they do between two calls no longer depends on
    how long the host took, only on what they wait for. For a port that needs two
    machines' games to run alike (online play). */
-void recomp_kernel_drain_others(void)
+unsigned recomp_kernel_drain_others(void)
 {
-    if (!scheduler_started) return;
+    if (!scheduler_started) return 0u;
+    last_drain_at = interrupt_time();
     GuestThread *thread = &threads[current_thread];
     thread->object_count = 0u;
     thread->alertable = false;
@@ -533,6 +611,48 @@ void recomp_kernel_drain_others(void)
     drain_active = true;
     drain_turns = 0u;
     schedule();
+    return drain_turns;
+}
+
+/* Online play (recomp_kernel_set_deterministic): the thread that set it waiting.
+   Nothing else runs meanwhile, so how long the host takes never decides how far
+   the others get (they run at drains). A wait on objects that lasts 100 ms is for
+   one of theirs: then they run as in a drain (each until it waits), and while it
+   still cannot go on, the virtual clock moves a millisecond and they run again. */
+static void deterministic_wait(GuestThread *owner)
+{
+    const uint64_t began = interrupt_time();
+    for (;;) {
+        if (thread_ready(owner)) return;
+        /* (objects the host signals, the GPU's above all, come by themselves: the
+           others run for one only after 100 ms, a wait on one of their own) */
+        if (owner->object_count == 0u || interrupt_time() - began < 1000000u) {
+            uint64_t now = interrupt_time();
+            uint64_t remaining = owner->deadline > now ? owner->deadline - now : 0u;
+            if (remaining > 10000u) remaining = 10000u;
+#ifdef _WIN32
+            Sleep(remaining >= 5000u ? 1u : 0u);
+#else
+            struct timespec pause = {.tv_sec = 0, .tv_nsec = (long)remaining * 100L};
+            nanosleep(&pause, NULL);
+#endif
+            continue;
+        }
+        const uint32_t count = owner->object_count;
+        uint32_t objects[MAX_EVENTS];
+        memcpy(objects, owner->objects, count * sizeof objects[0]);
+        const bool wait_all = owner->wait_all, alertable = owner->alertable;
+        const uint64_t deadline = owner->deadline;
+        (void)recomp_kernel_drain_others();
+        owner->object_count = count;
+        memcpy(owner->objects, objects, count * sizeof objects[0]);
+        owner->wait_all = wait_all;
+        owner->alertable = alertable;
+        owner->deadline = deadline;
+        owner->waiting = true;
+        if (thread_ready(owner)) return;
+        recomp_kernel_virtual_time += 10000u;
+    }
 }
 
 /* Vblank waiters are blocked until the shared refresh deadline. Merely
@@ -725,11 +845,22 @@ static void bridge_ke_initialize_timer_ex(void)
     kernel_return(2u, 0u);
 }
 
+/* (online play: the other threads read the virtual clock, so what they make of
+   the time is the same on both machines) */
+static bool virtual_reader(void)
+{
+    return deterministic && current_thread != deterministic_owner;
+}
+
+bool recomp_kernel_virtual_reader(void) { return virtual_reader(); }
+
 static void bridge_ke_query_system_time(void)
 {
     uint32_t current_time = kernel_arg(1u);
 
-    if (current_time != 0u) *recomp_memory_u64(current_time) = system_time();
+    if (current_time != 0u)
+        *recomp_memory_u64(current_time) = virtual_reader()
+            ? deterministic_system_base + (recomp_kernel_virtual_time - deterministic_virtual_base) : system_time();
     kernel_return(1u, 0u);
 }
 
@@ -750,6 +881,12 @@ static void return_u64(uint64_t value)
 
 static void bridge_ke_query_performance_counter(void)
 {
+    if (virtual_reader()) {
+        const uint64_t freq = recomp_xapi_performance_frequency();
+        const uint64_t t = recomp_kernel_virtual_time;
+        return_u64(t / 10000000ull * freq + t % 10000000ull * freq / 10000000ull);
+        return;
+    }
     return_u64(recomp_xapi_performance_counter());
 }
 
@@ -761,6 +898,10 @@ static void bridge_ke_query_performance_frequency(void)
 /* KeQueryInterruptTime returns 100 ns units since boot. */
 static void bridge_ke_query_interrupt_time(void)
 {
+    if (virtual_reader()) {
+        return_u64(recomp_kernel_virtual_time);
+        return;
+    }
     const uint64_t count = recomp_xapi_performance_counter();
     const uint64_t freq = recomp_xapi_performance_frequency();
 
@@ -822,7 +963,7 @@ static void bridge_ke_set_timer(void)
         was_set = *recomp_memory_u64(timer + TIMER_DUE_TIME) != 0u;
         *recomp_memory_u32(timer + DISPATCHER_SIGNAL_STATE) = 0u;
         *recomp_memory_u64(timer + TIMER_DUE_TIME) =
-            wait_deadline(recomp_runtime.registers.esp + 8u);
+            deadline_from(recomp_runtime.registers.esp + 8u, timer_now());
         *recomp_memory_u32(timer + TIMER_DPC) = dpc;
         if (dpc != 0u) arm_timer(timer);
     }
