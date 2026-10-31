@@ -687,9 +687,11 @@ static inline uint32_t XMM_MOVEMASK(RecompXmm a)
            ((a.u[2] >> 29) & 4u) | ((a.u[3] >> 28) & 8u);
 }
 
-#if RECOMP_HOST_X86
+#if RECOMP_HOST_X86 && !RECOMP_PORTABLE_FLOAT
 /* RCPSS/RSQRTSS are table approximations; the host instruction gives the
-   guest's bits on Intel, where exact division would not. */
+   guest's bits on Intel, where exact division would not. A game defining
+   RECOMP_PORTABLE_FLOAT (online play: every host the same bits, and AMD's
+   tables are not Intel's) takes the exact values below on every host. */
 static inline float recomp_rcpss(float x)
 {
     return _mm_cvtss_f32(_mm_rcp_ss(_mm_set_ss(x)));
