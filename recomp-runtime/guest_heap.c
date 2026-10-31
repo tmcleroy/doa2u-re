@@ -60,6 +60,20 @@ bool xbox_ArenaRelease(uint32_t base, uint32_t size)
     return false;
 }
 
+void xbox_HeapStateSave(uint32_t out[3])
+{
+    out[0] = heap_base;
+    out[1] = heap_cursor;
+    out[2] = contiguous_cursor;
+}
+
+void xbox_HeapStateLoad(const uint32_t in[3])
+{
+    heap_base = in[0];
+    heap_cursor = in[1];
+    contiguous_cursor = in[2];
+}
+
 uint32_t xbox_HeapCheckpoint(void)
 {
     return heap_cursor;

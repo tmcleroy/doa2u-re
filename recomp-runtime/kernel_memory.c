@@ -264,6 +264,29 @@ static void free_guest(uint32_t base)
     xbox_HeapFree(base);
 }
 
+/* Save states: the allocations and the arena's cursors (guest_heap.c) as they
+   were, with guest RAM put back (for the guest's own record of what it holds) */
+typedef struct KernelMemoryState {
+    Allocation allocations[MAX_ALLOCATIONS];
+    uint32_t heap[3];
+} KernelMemoryState;
+
+size_t recomp_kernel_memory_state_size(void) { return sizeof(KernelMemoryState); }
+
+void recomp_kernel_memory_state_save(void *out)
+{
+    KernelMemoryState *state = (KernelMemoryState *)out;
+    memcpy(state->allocations, allocations, sizeof allocations);
+    xbox_HeapStateSave(state->heap);
+}
+
+void recomp_kernel_memory_state_load(const void *in)
+{
+    const KernelMemoryState *state = (const KernelMemoryState *)in;
+    memcpy(allocations, state->allocations, sizeof allocations);
+    xbox_HeapStateLoad(state->heap);
+}
+
 uint32_t recomp_kernel_allocate_pool(uint32_t size)
 {
     return allocate_guest(size, 4u, PAGE_READWRITE, ALLOCATION_POOL);

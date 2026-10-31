@@ -63,12 +63,16 @@ typedef struct GuestThread {
     unsigned apc_count;
     /* recomp_kernel_drain_others: not run again until no other thread can */
     bool draining;
+    /* The guest memory it owns: its object, stack and TLS (save states leave
+       other threads' alone) */
+    uint32_t region, region_size;
 } GuestThread;
 
 /* shortcut: retain thread records until exit; add reclamation if a title
    creates more than 31 worker threads. */
 static GuestThread threads[MAX_THREADS] = {
-    {.handle = 1u, .object = XBOX_STARTUP_THREAD_OBJECT, .priority = 8},
+    {.handle = 1u, .object = XBOX_STARTUP_THREAD_OBJECT, .priority = 8,
+     .region = XBOX_STARTUP_STACK_BASE, .region_size = XBOX_KERNEL_DATA_BASE - XBOX_STARTUP_STACK_BASE},
 };
 static unsigned current_thread;
 static bool scheduler_started;
@@ -484,6 +488,16 @@ static void schedule(void)
     }
 }
 
+bool recomp_kernel_thread_region(unsigned index, uint32_t *base, uint32_t *size, bool *current)
+{
+    if (index >= MAX_THREADS) return false;
+    const GuestThread *thread = &threads[index];
+    *base = thread->handle != 0u && !thread->exited ? thread->region : 0u;
+    *size = thread->handle != 0u && !thread->exited ? thread->region_size : 0u;
+    *current = index == current_thread;
+    return true;
+}
+
 void recomp_kernel_poll(void)
 {
     static uint64_t next_slice;
@@ -615,6 +629,8 @@ static void bridge_ps_create_system_thread_ex(void)
     recomp_guest_memset(allocation, 0, stack_size + tls_size + extension + 0x204u);
     thread->handle = 0xbee10000u + (uint32_t)(thread - threads - 1u) * 4u;
     thread->object = allocation;
+    thread->region = allocation;
+    thread->region_size = stack_size + tls_size + extension + 0x204u;
     uint32_t stack_base = allocation + 0x200u + extension;
     uint32_t tls_slot = stack_base + stack_size;
     thread->entry = entry != 0u ? entry : context1;

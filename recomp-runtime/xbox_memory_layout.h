@@ -30,6 +30,9 @@ void xbox_HeapFree(uint32_t guest_address);
    a title freed on one side serves the other. False leaves the range a free
    block for reuse. */
 bool xbox_ArenaRelease(uint32_t base, uint32_t size);
+/* Save states: the arena's three cursors */
+void xbox_HeapStateSave(uint32_t out[3]);
+void xbox_HeapStateLoad(const uint32_t in[3]);
 uint32_t xbox_HeapCheckpoint(void);
 bool xbox_HeapRestore(uint32_t checkpoint);
 typedef struct XboxHeapSnapshot {

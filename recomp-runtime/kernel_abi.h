@@ -190,6 +190,13 @@ void recomp_kernel_drain_dpcs(void);
 void recomp_kernel_poll(void);
 /* Runs the other guest threads until none can run, then returns (kernel_thread.c). */
 void recomp_kernel_drain_others(void);
+/* Thread `index`'s guest memory (its object, stack and TLS; size 0 for none) and
+   whether it is the running one; false past the last. For save states. */
+bool recomp_kernel_thread_region(unsigned index, uint32_t *base, uint32_t *size, bool *current);
+/* Save states: the kernel's record of guest allocations (kernel_memory.c) */
+size_t recomp_kernel_memory_state_size(void);
+void recomp_kernel_memory_state_save(void *out);
+void recomp_kernel_memory_state_load(const void *in);
 /* Signal expired timers and queue their DPCs; returns the number queued. */
 unsigned recomp_kernel_expire_timers(void);
 
