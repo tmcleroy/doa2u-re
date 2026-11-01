@@ -330,7 +330,7 @@ add_test(NAME recomp-runtime-d3d-capture COMMAND recomp_d3d_capture_test)
 set(RECOMP_PRESENTER_SHARED d3d_draw_shader.cpp d3d_pixel_program.cpp d3d_vertex_program.cpp d3d_draw_model.c
     d3d_texture_model.c d3d_vblank.cpp)
 # Both presenters draw the runtime's overlay text and save screenshots.
-set(RECOMP_PRESENTER_SHARED ${RECOMP_PRESENTER_SHARED} overlay_imgui_panel.cpp overlay_text.c screenshot.c)
+set(RECOMP_PRESENTER_SHARED ${RECOMP_PRESENTER_SHARED} overlay_imgui_panel.cpp overlay_text.c screenshot.c d3d_shader_preset.cpp)
 if(RECOMP_D3D11_PRESENTER)
     add_library(recomp_d3d_presenter STATIC
         d3d_presenter_d3d11.cpp d3d_presenter_thread.cpp d3d_presenter_capture.cpp overlay_d3d11.cpp
@@ -341,7 +341,7 @@ if(RECOMP_D3D11_PRESENTER)
         recomp_keyboard recomp_imgui)
 else()
     add_library(recomp_d3d_presenter STATIC
-        d3d_presenter_sdl_gpu.cpp d3d_presenter_inline.cpp d3d_shader_compiler.cpp overlay_sdl_gpu.cpp
+        d3d_presenter_sdl_gpu.cpp d3d_presenter_inline.cpp d3d_shader_compiler.cpp d3d_shader_chain.cpp overlay_sdl_gpu.cpp
         ${RECOMP_PRESENTER_SHARED})
     target_include_directories(recomp_d3d_presenter PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(recomp_d3d_presenter PUBLIC recomp_keyboard)

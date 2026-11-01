@@ -10,7 +10,9 @@
 #include "d3d_presenter_backend.h"
 #include "d3d_draw_model.h"
 #include "d3d_draw_shader.h"
+#include "d3d_shader_chain.h"
 #include "d3d_shader_compiler.h"
+#include "d3d_shader_preset.h"
 #include "d3d_texture_model.h"
 #include "d3d_vblank.h"
 #include "input_keyboard_win32.h"
@@ -324,6 +326,9 @@ struct RecompD3dPresenter {
     SDL_GPUGraphicsPipeline *smaa_pipelines[3]{};  // edges, weights, blend
     SDL_GPUTexture *smaa_textures[5]{};  // edges, area, search, weights, output
     SDL_GPUGraphicsPipeline *gamma_pipeline = nullptr;
+    /* The RetroArch preset the window's picture goes through (d3d_shader_preset.h), and the ask it was made for */
+    RecompShaderChain *shader_chain = nullptr;
+    unsigned shader_generation = 0u;
     SDL_GPUTexture *gamma_target = nullptr;
     /* show_image's picture, and its size */
     SDL_GPUTexture *image_texture = nullptr;
@@ -2811,6 +2816,29 @@ void reportPerformance(RecompD3dPresenter *presenter)
     presenter->draw_count = 0u;
 }
 
+/* Takes the preset last asked for (d3d_shader_preset.h); one that cannot be made leaves the picture as it is. */
+void updateShaderChain(RecompD3dPresenter *presenter)
+{
+    unsigned generation = 0u;
+    const std::string preset = recomp_d3d_shader_preset(generation);
+    if (generation == presenter->shader_generation) return;
+    presenter->shader_generation = generation;
+    recomp_shader_chain_free(presenter->shader_chain);
+    presenter->shader_chain = nullptr;
+    if (preset.empty()) {
+        recomp_d3d_shader_report(0);
+        return;
+    }
+    std::string error;
+    presenter->shader_chain = recomp_shader_chain_load(presenter->device, presenter->shader_format, preset, error);
+    if (presenter->shader_chain == nullptr) {
+        std::fprintf(stderr, "recomp shader preset %s: %s\n", preset.c_str(), error.c_str());
+    } else {
+        std::fprintf(stderr, "recomp shader preset: %s\n", preset.c_str());
+    }
+    recomp_d3d_shader_report(presenter->shader_chain != nullptr ? 1 : -1);
+}
+
 RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const RecompD3dPresenterPresentCommand &present)
 {
     if (present.effective_flags != 5u || present.swap_counter == 0u) {
@@ -2820,6 +2848,7 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
     if (presenter->close_requested) return RECOMP_D3D_PRESENTER_CLOSED;
     flushSegment(presenter);
     resolveMain(presenter);
+    updateShaderChain(presenter);
     SDL_GPUCommandBuffer *commands = commandBuffer(presenter);
     if (commands == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     /* Keep guest pixels uncorrected: gamma is display state and must not feed
@@ -2846,6 +2875,13 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
     }
     SDL_GPUTexture *swapchain = nullptr;
     Uint32 swap_width = 0u, swap_height = 0u;
+    // (RECOMP_SHADER_SHOT: the frame dump is the shaded picture, at the window's size)
+    char burst_shot[1024];
+    struct {
+        SDL_GPUTexture *texture;
+        uint32_t width, height;
+        const char *path;
+    } shaded_shot{};
     if (SDL_WaitAndAcquireGPUSwapchainTexture(commands, presenter->window, &swapchain, &swap_width, &swap_height) &&
         swapchain != nullptr && swap_width != 0u && swap_height != 0u) {
         // The window keeps the guest aspect; the rest of the swapchain is black.
@@ -2874,6 +2910,26 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
         blit.load_op = SDL_GPU_LOADOP_CLEAR;
         blit.clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
         blit.filter = SDL_GPU_FILTER_LINEAR;
+        // Through the preset: the game's picture at its own size (cropped as the window's), drawn at the window's
+        if (presenter->shader_chain != nullptr) {
+            const uint32_t original_width = presenter->config.width - 2u *
+                static_cast<uint32_t>(presenter->config.width * crop);
+            const uint32_t original_height = presenter->config.height - 2u *
+                static_cast<uint32_t>(presenter->config.height * crop);
+            uint32_t drawn_width = 0u, drawn_height = 0u;
+            if (SDL_GPUTexture *shaded = recomp_shader_chain_draw(presenter->shader_chain, commands, blit.source,
+                    original_width, original_height, static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+                    presenter->present_count, drawn_width, drawn_height)) {
+                blit.source = {shaded, 0u, 0u, 0u, 0u, drawn_width, drawn_height};
+                if (drawn_width == blit.destination.w && drawn_height == blit.destination.h)
+                    blit.filter = SDL_GPU_FILTER_NEAREST;
+                static const bool shot = std::getenv("RECOMP_SHADER_SHOT") != nullptr;
+                if (shot) {
+                    if (const char *path = frameDumpPath(presenter, presenter->present_count + 1u, burst_shot))
+                        shaded_shot = {shaded, drawn_width, drawn_height, path};
+                }
+            }
+        }
         SDL_BlitGPUTexture(commands, &blit);
         // The runtime's overlay text goes on the window, not the game's back
         // buffer, which the game reads back as its front buffer.
@@ -2885,7 +2941,9 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
     if (recomp_screenshot_take_request()) saveScreenshot(presenter, shown);
     // Capture what the window shows, at the main target size, as the D3D11 backend does.
     char burst[1024];
-    if (const char *path = frameDumpPath(presenter, presenter->present_count + 1u, burst)) {
+    if (shaded_shot.texture != nullptr) {
+        dumpTexture(presenter, shaded_shot.texture, shaded_shot.width, shaded_shot.height, shaded_shot.path);
+    } else if (const char *path = frameDumpPath(presenter, presenter->present_count + 1u, burst)) {
         dumpTexture(presenter, shown, mainWidth(presenter), mainHeight(presenter), path);
     }
     if (presenter->draw_log_active) {
@@ -2999,6 +3057,7 @@ void releasePresenter(RecompD3dPresenter *presenter)
             presenter->program_mask_sampler, presenter->point_sampler}) {
         if (sampler != nullptr) SDL_ReleaseGPUSampler(presenter->device, sampler);
     }
+    recomp_shader_chain_free(presenter->shader_chain);
     if (presenter->gamma_pipeline != nullptr) SDL_ReleaseGPUGraphicsPipeline(presenter->device, presenter->gamma_pipeline);
     for (SDL_GPUGraphicsPipeline *pipeline : presenter->smaa_pipelines) {
         if (pipeline != nullptr) SDL_ReleaseGPUGraphicsPipeline(presenter->device, pipeline);

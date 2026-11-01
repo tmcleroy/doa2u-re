@@ -46,4 +46,14 @@ bool recomp_shader_compile(const std::string &hlsl, const char *entry_point, boo
     RecompShaderTarget target, const std::vector<std::string> &defines,
     RecompCompiledShader &out, std::string &error);
 
+/* RetroArch's slang shaders (d3d_shader_chain.h): GLSL 450 to SPIR-V by shaderc's GLSL front end, entry point
+   main, the bindings as the source gives them. */
+bool recomp_shader_compile_glsl(const std::string &glsl, bool vertex, std::vector<uint8_t> &spirv,
+    std::string &error);
+
+/* SPIR-V whose resources already carry SDL_GPU's bindings (above; a vertex shader's textures in set 0) to MSL.
+   Apple hosts only. */
+bool recomp_shader_spirv_to_msl(const std::vector<uint8_t> &spirv, bool vertex, RecompCompiledShader &out,
+    std::string &error);
+
 #endif

@@ -29,7 +29,7 @@ namespace {
 using Compiler = void *;
 using Options = void *;
 using Result = void *;
-enum { SourceHlsl = 1, StageVertex = 0, StageFragment = 1, StatusSuccess = 0, OptimizePerformance = 2 };
+enum { SourceGlsl = 0, SourceHlsl = 1, StageVertex = 0, StageFragment = 1, StatusSuccess = 0, OptimizeZero = 0, OptimizePerformance = 2 };
 
 struct Shaderc {
     Compiler (*compiler_initialize)();
@@ -138,7 +138,7 @@ bool loadShaderc()
 }
 
 bool compileSpirv(const std::string &hlsl, const char *entry_point, bool vertex,
-    const std::vector<std::string> &defines, std::vector<uint8_t> &spirv, std::string &error)
+    const std::vector<std::string> &defines, std::vector<uint8_t> &spirv, std::string &error, bool glsl = false)
 {
     std::lock_guard<std::mutex> lock(shaderc_lock);
     if (!loadShaderc()) {
@@ -150,11 +150,12 @@ bool compileSpirv(const std::string &hlsl, const char *entry_point, bool vertex,
         error = "shaderc options";
         return false;
     }
-    shaderc.set_source_language(options, SourceHlsl);
+    shaderc.set_source_language(options, glsl ? SourceGlsl : SourceHlsl);
     // Constant buffers hold only float4 and float4x4, so HLSL and std140 offsets agree.
-    shaderc.set_hlsl_offsets(options, true);
+    if (!glsl) shaderc.set_hlsl_offsets(options, true);
     shaderc.set_auto_map_locations(options, true);
-    shaderc.set_optimization_level(options, OptimizePerformance);
+    // (unoptimized GLSL keeps its names, which the slang presets' uniforms and textures are bound by)
+    shaderc.set_optimization_level(options, glsl ? OptimizeZero : OptimizePerformance);
     shaderc.add_macro_definition(options, "RECOMP_UNIFORM_SET", 18u, vertex ? "1" : "3", 1u);
     bool samples = false;
     for (const std::string &define : defines) samples |= define.rfind("RECOMP_SAMPLE_COUNT", 0) == 0;
@@ -166,7 +167,7 @@ bool compileSpirv(const std::string &hlsl, const char *entry_point, bool vertex,
         shaderc.add_macro_definition(options, name.data(), name.size(), value.data(), value.size());
     }
     Result result = shaderc.compile_into_spv(shaderc.compiler, hlsl.data(), hlsl.size(),
-        vertex ? StageVertex : StageFragment, "presenter.hlsl", entry_point, options);
+        vertex ? StageVertex : StageFragment, glsl ? "preset.slang" : "presenter.hlsl", entry_point, options);
     shaderc.options_release(options);
     if (result == nullptr) {
         error = "shaderc returned no result";
@@ -212,7 +213,7 @@ bool translateMsl(const std::vector<uint8_t> &spirv, bool vertex, RecompCompiled
     spvc_compiler_options_set_uint(options, SPVC_COMPILER_OPTION_MSL_PLATFORM, SPVC_MSL_PLATFORM_MACOS);
     if (spvc_compiler_install_compiler_options(compiler, options) != SPVC_SUCCESS) return fail("spirv-cross install");
     const SpvExecutionModel stage = vertex ? SpvExecutionModelVertex : SpvExecutionModelFragment;
-    for (unsigned slot = 0u; slot < 8u; ++slot) {
+    for (unsigned slot = 0u; slot < 16u; ++slot) {
         spvc_msl_resource_binding_2 binding;
         spvc_msl_resource_binding_init_2(&binding);
         binding.stage = stage;
@@ -222,10 +223,9 @@ bool translateMsl(const std::vector<uint8_t> &spirv, bool vertex, RecompCompiled
         binding.msl_buffer = slot;
         if (spvc_compiler_msl_add_resource_binding_2(compiler, &binding) != SPVC_SUCCESS)
             return fail("spirv-cross buffer binding");
-        if (vertex) continue;
         spvc_msl_resource_binding_init_2(&binding);
         binding.stage = stage;
-        binding.desc_set = 2u;
+        binding.desc_set = vertex ? 0u : 2u;
         binding.binding = slot;
         binding.count = 1u;
         binding.msl_texture = slot;
@@ -473,6 +473,26 @@ static bool compileUncached(const std::string &hlsl, const char *entry_point, bo
 #ifdef __APPLE__
     return translateMsl(spirv, vertex, out, error);
 #else
+    error = "MSL output needs SPIRV-Cross, built only for Apple hosts";
+    return false;
+#endif
+}
+
+bool recomp_shader_compile_glsl(const std::string &glsl, bool vertex, std::vector<uint8_t> &spirv,
+    std::string &error)
+{
+    return compileSpirv(glsl, "main", vertex, {}, spirv, error, true);
+}
+
+bool recomp_shader_spirv_to_msl(const std::vector<uint8_t> &spirv, bool vertex, RecompCompiledShader &out,
+    std::string &error)
+{
+#ifdef __APPLE__
+    return translateMsl(spirv, vertex, out, error);
+#else
+    (void)spirv;
+    (void)vertex;
+    (void)out;
     error = "MSL output needs SPIRV-Cross, built only for Apple hosts";
     return false;
 #endif
