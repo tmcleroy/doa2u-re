@@ -93,6 +93,7 @@ double recomp_d3d_vblank_wait_ms;
 void (*recomp_d3d_frame_breakdown)(char *out, size_t size);
 unsigned recomp_d3d_submit_count;
 double recomp_d3d_submit_mb;
+float recomp_d3d_present_crop;
 
 void recomp_d3d_vblank_reset(void)
 {

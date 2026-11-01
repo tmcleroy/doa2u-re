@@ -2525,6 +2525,8 @@ void dumpTexture(RecompD3dPresenter *presenter, SDL_GPUTexture *texture, uint32_
 void saveScreenshot(RecompD3dPresenter *presenter, SDL_GPUTexture *frame)
 {
     const uint32_t width = mainWidth(presenter), height = mainHeight(presenter);
+    const float crop = recomp_d3d_present_crop;
+    const uint32_t left = static_cast<uint32_t>(width * crop), top = static_cast<uint32_t>(height * crop);
     SDL_GPUTransferBufferCreateInfo info{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, width * height * 4u, 0};
     SDL_GPUTransferBuffer *download = SDL_CreateGPUTransferBuffer(presenter->device, &info);
     bool saved = false;
@@ -2543,7 +2545,8 @@ void saveScreenshot(RecompD3dPresenter *presenter, SDL_GPUTexture *frame)
             SDL_ReleaseGPUFence(presenter->device, fence);
             if (const auto *pixels = static_cast<const uint8_t *>(
                     SDL_MapGPUTransferBuffer(presenter->device, download, false))) {
-                recomp_screenshot_save(pixels, width, height, width * 4u);
+                recomp_screenshot_save(pixels + (static_cast<size_t>(top) * width + left) * 4u, width - 2u * left,
+                    height - 2u * top, width * 4u);
                 saved = true;
                 SDL_UnmapGPUTransferBuffer(presenter->device, download);
             }
@@ -2858,8 +2861,11 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
         }
         SDL_GPUBlitInfo blit{};
         blit.source.texture = shown;
-        blit.source.w = mainWidth(presenter);
-        blit.source.h = mainHeight(presenter);
+        const float crop = recomp_d3d_present_crop;
+        blit.source.x = static_cast<Uint32>(mainWidth(presenter) * crop);
+        blit.source.y = static_cast<Uint32>(mainHeight(presenter) * crop);
+        blit.source.w = mainWidth(presenter) - 2u * blit.source.x;
+        blit.source.h = mainHeight(presenter) - 2u * blit.source.y;
         blit.destination.texture = swapchain;
         blit.destination.x = static_cast<Uint32>(x);
         blit.destination.y = static_cast<Uint32>(y);

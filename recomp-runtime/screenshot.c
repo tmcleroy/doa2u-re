@@ -188,7 +188,14 @@ done:
     return written;
 }
 
-/* RECOMP_SCREENSHOT_DIR, or DOA2U in the user's Pictures folder. */
+/* The game's name for its screenshots' folder and files: RECOMP_SCREENSHOT_NAME, or DOA2U. */
+static const char *screenshot_name(void)
+{
+    const char *name = getenv("RECOMP_SCREENSHOT_NAME");
+    return name != NULL && name[0] != '\0' ? name : "DOA2U";
+}
+
+/* RECOMP_SCREENSHOT_DIR, or the game's name in the user's Pictures folder. */
 static bool screenshot_folder(char *folder, size_t size)
 {
     char pictures[1024];
@@ -211,7 +218,7 @@ static bool screenshot_folder(char *folder, size_t size)
     snprintf(pictures, sizeof pictures, "%s/Pictures", home);
     if (make_folder(pictures) != 0 && errno != EEXIST) return false;
 #endif
-    return (size_t)snprintf(folder, size, "%s/DOA2U", pictures) < size;
+    return (size_t)snprintf(folder, size, "%s/%s", pictures, screenshot_name()) < size;
 }
 
 bool recomp_screenshot_path(char *path, size_t size)
@@ -230,8 +237,8 @@ bool recomp_screenshot_path(char *path, size_t size)
     char stamp[32];
     strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", &local);
     for (unsigned n = 0u; n < 100u; ++n) {
-        if (n == 0u) snprintf(path, size, "%s/DOA2U-%s.png", folder, stamp);
-        else snprintf(path, size, "%s/DOA2U-%s-%u.png", folder, stamp, n);
+        if (n == 0u) snprintf(path, size, "%s/%s-%s.png", folder, screenshot_name(), stamp);
+        else snprintf(path, size, "%s/%s-%s-%u.png", folder, screenshot_name(), stamp, n);
         FILE *existing = open_file(path, "rb");
         if (existing == NULL) return true;
         fclose(existing);

@@ -22,7 +22,7 @@ bool recomp_screenshot_take_request(void);
 bool recomp_screenshot_write_png(const char *path, const uint8_t *bgra,
     uint32_t width, uint32_t height, uint32_t pitch);
 
-/* A new UTF-8 file path under RECOMP_SCREENSHOT_DIR, or DOA2U in the user's
+/* A new UTF-8 file path under RECOMP_SCREENSHOT_DIR, or RECOMP_SCREENSHOT_NAME (DOA2U) in the user's
    Pictures folder, creating the folder. False when no folder can be made. */
 bool recomp_screenshot_path(char *path, size_t size);
 
