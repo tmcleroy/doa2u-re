@@ -25,6 +25,9 @@ extern double recomp_d3d_submit_mb;
 // screenshot), and of its width at each side, so what is left fills the window as the whole did: a game's own
 // letterbox taken away (0: the whole picture). Set by the game's side between frames.
 extern float recomp_d3d_present_crop;
+// Moves the next refreshes the game waits for by ns (any thread; taken at the next wait), to keep frames in step
+// with a display that refreshes at a multiple of 60 Hz (d3d_display_phase).
+void recomp_d3d_vblank_nudge(long long ns);
 // Sleeps the calling thread until a steady_clock time, in nanoseconds since its epoch.
 void recomp_d3d_sleep_until(long long steady_ns);
 

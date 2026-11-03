@@ -14,6 +14,7 @@
 #include "d3d_shader_compiler.h"
 #include "d3d_shader_preset.h"
 #include "d3d_texture_model.h"
+#include "d3d_display_phase.h"
 #include "d3d_vblank.h"
 #include "input_keyboard_win32.h"
 #include "overlay_sdl_gpu.h"
@@ -3060,6 +3061,10 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
     // (mips only for a copy made with them: the one a draw's bind makes has one level)
     if (presenter->previous_frame != nullptr)
         copyGuestBuffer(presenter, presenter->previous_frame, presenter->previous_frame_mips);
+    // On a display at a multiple of 60 Hz, the frame's end steers the game's clock (d3d_display_phase).
+    recomp_display_phase_follow(presenter->window);
+    if (presenter->command_buffer != nullptr &&
+        recomp_display_phase_submit(presenter->device, presenter->command_buffer)) presenter->command_buffer = nullptr;
     submitCommands(presenter);
     ++presenter->present_count;
     /* RECOMP_D3D_DRAW_LOG_AT=N starts the log at present N too (headless runs). */
@@ -3126,6 +3131,7 @@ void releasePresenter(RecompD3dPresenter *presenter)
     flushSegment(presenter);
     submitCommands(presenter);
     SDL_WaitForGPUIdle(presenter->device);
+    recomp_display_phase_stop();
     recomp_overlay_sdl_gpu_shutdown();
     releaseQuery(presenter, presenter->visibility_active);
     for (VisibilityQuery &query : presenter->visibility_pending) releaseQuery(presenter, query);
