@@ -7,6 +7,7 @@
 #include <windows.h>
 #endif
 #include <SDL3/SDL.h>
+#include "host_call.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -83,9 +84,18 @@ static bool trace_enabled(void)
 /* SDL starts lazily on the guest thread that polls it. There is no SDL event
    loop; SDL_UpdateGamepads pumps it. A new gamepad takes the lowest free port
    and keeps it until it disconnects. */
+static void update_pads_here(void *unused);
 static void update_pads(void)
 {
+    /* (SDL's gamepads reach Java on Android: host_call.h) */
+    recomp_host_call(update_pads_here, NULL);
+}
+
+static void update_pads_here(void *unused)
+{
     static bool initialized;
+
+    (void)unused;
 
     if (!initialized) {
         initialized = true;
@@ -127,6 +137,13 @@ static void update_pads(void)
     SDL_free(ids);
 }
 
+/* (the same fields as recomp_input_host_set_vibration's call) */
+static void rumble_here(void *data)
+{
+    struct { SDL_Gamepad *pad; uint16_t left, right; bool sent; } *call = data;
+    call->sent = SDL_RumbleGamepad(call->pad, call->left, call->right, RUMBLE_DURATION_MS);
+}
+
 void recomp_input_host_set_vibration(
     uint32_t port,
     uint16_t left_motor,
@@ -139,7 +156,9 @@ void recomp_input_host_set_vibration(
         return;
     }
     /* SDL sends only changed values and keeps a held value alive. */
-    bool sent = SDL_RumbleGamepad(pads[port], left_motor, right_motor, RUMBLE_DURATION_MS);
+    struct { SDL_Gamepad *pad; uint16_t left, right; bool sent; } rumble = {pads[port], left_motor, right_motor, false};
+    recomp_host_call(rumble_here, &rumble);
+    bool sent = rumble.sent;
     if (trace_enabled() && traced[port] != motors) {
         traced[port] = motors;
         fprintf(stderr, "recomp input: vibration port=%u left=%u right=%u sent=%u\n",

@@ -343,6 +343,9 @@ else()
     add_library(recomp_d3d_presenter STATIC
         d3d_presenter_sdl_gpu.cpp d3d_presenter_inline.cpp d3d_shader_compiler.cpp d3d_shader_chain.cpp overlay_sdl_gpu.cpp
         ${RECOMP_PRESENTER_SHARED})
+    if(ANDROID)
+        target_sources(recomp_d3d_presenter PRIVATE host_call.cpp) # (host_call.h: SDL's Java calls off the fibers)
+    endif()
     target_include_directories(recomp_d3d_presenter PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(recomp_d3d_presenter PUBLIC recomp_keyboard)
     if(SDL3_FOUND)
@@ -524,7 +527,13 @@ if(RECOMP_PROGRAM_DIR)
         endif()
     endforeach()
     message(STATUS "Generated ${_missing_count} fail-loud stubs for absent snapshot bodies")
-    add_executable(recomp_program_runner runner.cpp program_adapters.c program_manual.c
+    # (Android: a library, which the app's activity loads and calls the main of)
+    if(ANDROID)
+        add_library(recomp_program_runner SHARED)
+    else()
+        add_executable(recomp_program_runner)
+    endif()
+    target_sources(recomp_program_runner PRIVATE runner.cpp program_adapters.c program_manual.c
         d3d8_adapter.c d3d8_state_adapter.c d3d8_resource_adapter.c d3d8_draw_adapter.c
         d3d_device_model.c d3d_light_model.c d3d_render_state_model.c d3d_card_model.c
         d3d_frame_model.c d3d_tile_model.c d3d_vertex_shader_model.c
@@ -554,6 +563,9 @@ if(RECOMP_PROGRAM_DIR)
         ${RECOMP_GAME_LIBS})
     if(WIN32)
         target_link_libraries(recomp_program_runner PRIVATE dbghelp user32)
+    endif()
+    if(ANDROID)
+        target_link_libraries(recomp_program_runner PRIVATE log)
     endif()
     recomp_use_sdl3(recomp_program_runner)
     target_include_directories(recomp_program_runner PRIVATE "${_derived_dir}")

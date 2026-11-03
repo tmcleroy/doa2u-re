@@ -20,6 +20,7 @@
 #include "screenshot.h"
 
 #include <SDL3/SDL.h>
+#include "host_call.h"
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -2442,9 +2443,10 @@ uint32_t virtualKey(SDL_Scancode code)
 
 void pumpEvents(RecompD3dPresenter *presenter)
 {
-    SDL_PumpEvents();
+    // (pumping reaches Java on Android, host_call.h; taking the events from the queue does not)
+    recomp_host_call([](void *) { SDL_PumpEvents(); }, nullptr);
     SDL_Event event;
-    while (SDL_PollEvent(&event)) {
+    while (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST) > 0) {
         if ((event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) && !event.key.repeat) {
             recomp_input_keyboard_event(virtualKey(event.key.scancode), event.type == SDL_EVENT_KEY_DOWN);
             recomp_input_scancode_event(event.key.scancode, event.type == SDL_EVENT_KEY_DOWN);
@@ -3229,8 +3231,20 @@ RecompD3dPresenterError d3d_backend_create(const RecompD3dPresenterConfig *confi
     else if (steam || envFlag("RECOMP_D3D_FULLSCREEN")) flags |= SDL_WINDOW_FULLSCREEN;
     std::string title = windowTitle();
     if (unpacedRun()) title += " (unpaced)";
+#ifdef __ANDROID__
+    // Android: the window is made through Java (host_call.h). It is the whole screen there.
+    struct WindowCall { const char *title; int width, height; SDL_WindowFlags flags; SDL_Window *window; } call{
+        title.c_str(), static_cast<int>(window_width), static_cast<int>(window_height), flags | SDL_WINDOW_FULLSCREEN,
+        nullptr};
+    recomp_host_call([](void *data) {
+        auto *c = static_cast<WindowCall *>(data);
+        c->window = SDL_CreateWindow(c->title, c->width, c->height, c->flags);
+    }, &call);
+    created->window = call.window;
+#else
     created->window = SDL_CreateWindow(title.c_str(),
         static_cast<int>(window_width), static_cast<int>(window_height), flags);
+#endif
     if (created->window == nullptr) return fail("window");
     if (!SDL_ClaimWindowForGPUDevice(created->device, created->window)) return fail("swapchain");
     const SDL_GPUPresentMode present_mode = preferMailbox(immediate_present) &&

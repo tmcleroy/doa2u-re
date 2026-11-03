@@ -11,6 +11,24 @@
 #include <execinfo.h>
 #endif
 #endif
+#if defined(__ANDROID__) && __ANDROID_API__ < 33
+/* Android has backtrace() from API 33 on; before that, the unwinder's walk */
+#include <unwind.h>
+struct backtrace_walk { void **frames; int size, count; };
+static _Unwind_Reason_Code backtrace_frame(struct _Unwind_Context *context, void *argument)
+{
+    struct backtrace_walk *walk = (struct backtrace_walk *)argument;
+    if (walk->count >= walk->size) return _URC_END_OF_STACK;
+    walk->frames[walk->count++] = (void *)_Unwind_GetIP(context);
+    return _URC_NO_REASON;
+}
+static int backtrace(void **frames, int size)
+{
+    struct backtrace_walk walk = {frames, size, 0};
+    _Unwind_Backtrace(backtrace_frame, &walk);
+    return walk.count;
+}
+#endif
 #if defined(_MSC_VER)
 #include <intrin.h>
 #endif

@@ -14,6 +14,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <cerrno>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>
@@ -93,6 +94,22 @@ bool exists_plain(const fs::path &path)
     return true;
 #endif
 }
+
+#ifndef _WIN32
+/* The journal's lock, so that two copies never share it. Android's shared
+   storage (FUSE) has no flock(), so there a POSIX record lock, and where the
+   file system has neither, none: one copy of the game runs there at a time. */
+bool lock_whole_file(int fd)
+{
+    if (flock(fd, LOCK_EX | LOCK_NB) == 0) return true;
+    if (errno != ENOSYS && errno != EOPNOTSUPP && errno != EINVAL) return false;
+    struct flock whole = {};
+    whole.l_type = F_WRLCK;
+    whole.l_whence = SEEK_SET;
+    if (fcntl(fd, F_SETLK, &whole) == 0) return true;
+    return errno == ENOSYS || errno == EOPNOTSUPP || errno == EINVAL;
+}
+#endif
 
 void check_parents(const fs::path &path)
 {
@@ -541,7 +558,7 @@ static bool initialize(const char *root_argument, bool storage_given)
         if (exists_plain(lock_path)) require(fs::is_regular_file(lock_path));
         journal_lock = open(lock_path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0666);
         require(journal_lock >= 0);
-        require(flock(journal_lock, LOCK_EX | LOCK_NB) == 0);
+        require(lock_whole_file(journal_lock));
 #endif
         if (created) {
             write_file(journal / "version", version);
