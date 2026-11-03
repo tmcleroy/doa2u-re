@@ -231,7 +231,13 @@ extern "C" uint32_t recomp_audio_output_speakers(void)
     return surround && std::strcmp(surround, "0") != 0 ? 6u : 2u;
 }
 
-extern "C" void recomp_audio_output_set_paused(int paused)
+extern "C" /* How many times a playing voice has run dry (an audible gap), since the start */
+unsigned long long recomp_audio_output_underruns(void)
+{
+    return underruns;
+}
+
+void recomp_audio_output_set_paused(int paused)
 {
     std::lock_guard<std::mutex> lock(audio_mutex);
     for (const SDL_AudioDeviceID device : {audio_device, reverb_device}) {

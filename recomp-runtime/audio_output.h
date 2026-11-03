@@ -32,6 +32,8 @@ int recomp_audio_output_on_owner_thread(void);
    device's gain to zero and back, and set before the device opens it starts
    muted (unlike RECOMP_AUDIO_GAIN=0, which opens no device). */
 void recomp_audio_output_set_paused(int paused);
+/* How many times a playing voice has run dry (an audible gap), since the start */
+unsigned long long recomp_audio_output_underruns(void);
 void recomp_audio_output_set_muted(int muted);
 int recomp_audio_output_muted(void);
 
