@@ -285,6 +285,7 @@ struct RecompD3dPresenter {
     SDL_GPUTexture *previous_frame = nullptr;     // GetBackBuffer(-1)
     bool previous_frame_mips = false;             // (made with mip levels: an upscaled copy)
     bool copy_mips = false;
+    bool block_compressed = true;                 // the GPU samples BC1-3 (most phones' do not: decoded then)
     SDL_GPUTexture *white_texture = nullptr;
     SDL_GPUTexture *white_volume = nullptr;
 
@@ -903,6 +904,80 @@ void countDrawTexture(const RecompD3dPresenterDrawCommand &draw, bool sampled)
     }
 }
 
+/* One mip level of DXT1, DXT3 or DXT5 decoded to BGRA bytes, for a GPU that cannot sample BC1-3. DXT1's
+   colour1 >= colour0 blocks have three colours and transparent black. */
+void decodeBlockLevel(const uint8_t *src, uint32_t width, uint32_t height, uint32_t format_byte,
+    std::vector<uint8_t> &out)
+{
+    out.assign(static_cast<size_t>(width) * height * 4u, 0u);
+    const bool dxt1 = format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT1;
+    const bool dxt3 = format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT3;
+    const uint32_t block_bytes = dxt1 ? 8u : 16u;
+    const uint32_t blocks_x = (width + 3u) / 4u, blocks_y = (height + 3u) / 4u;
+    const auto expand = [](uint16_t c, uint8_t rgb[3]) {
+        rgb[0] = static_cast<uint8_t>(((c >> 11) & 31u) * 255u / 31u);
+        rgb[1] = static_cast<uint8_t>(((c >> 5) & 63u) * 255u / 63u);
+        rgb[2] = static_cast<uint8_t>((c & 31u) * 255u / 31u);
+    };
+    for (uint32_t by = 0u; by < blocks_y; ++by) {
+        for (uint32_t bx = 0u; bx < blocks_x; ++bx) {
+            const uint8_t *block = src + (static_cast<size_t>(by) * blocks_x + bx) * block_bytes;
+            uint8_t alpha[16];
+            const uint8_t *colour = block;
+            if (dxt3) {
+                for (int i = 0; i < 16; ++i) {
+                    const uint8_t nibble = (block[i / 2] >> ((i & 1) * 4)) & 15u;
+                    alpha[i] = static_cast<uint8_t>(nibble * 17u);
+                }
+                colour = block + 8;
+            } else if (!dxt1) {
+                uint8_t a[8] = {block[0], block[1]};
+                if (a[0] > a[1]) {
+                    for (int i = 1; i < 7; ++i) a[i + 1] = static_cast<uint8_t>(((7 - i) * a[0] + i * a[1]) / 7);
+                } else {
+                    for (int i = 1; i < 5; ++i) a[i + 1] = static_cast<uint8_t>(((5 - i) * a[0] + i * a[1]) / 5);
+                    a[6] = 0u;
+                    a[7] = 255u;
+                }
+                uint64_t bits = 0u;
+                for (int i = 0; i < 6; ++i) bits |= static_cast<uint64_t>(block[2 + i]) << (8 * i);
+                for (int i = 0; i < 16; ++i) alpha[i] = a[(bits >> (3 * i)) & 7u];
+                colour = block + 8;
+            } else {
+                std::memset(alpha, 255, sizeof alpha);
+            }
+            const uint16_t c0 = static_cast<uint16_t>(colour[0] | colour[1] << 8);
+            const uint16_t c1 = static_cast<uint16_t>(colour[2] | colour[3] << 8);
+            uint8_t rgb[4][3];
+            expand(c0, rgb[0]);
+            expand(c1, rgb[1]);
+            bool transparent = false;
+            for (int k = 0; k < 3; ++k) {
+                if (!dxt1 || c0 > c1) {
+                    rgb[2][k] = static_cast<uint8_t>((2 * rgb[0][k] + rgb[1][k]) / 3);
+                    rgb[3][k] = static_cast<uint8_t>((rgb[0][k] + 2 * rgb[1][k]) / 3);
+                } else {
+                    rgb[2][k] = static_cast<uint8_t>((rgb[0][k] + rgb[1][k]) / 2);
+                    rgb[3][k] = 0u;
+                    transparent = true;
+                }
+            }
+            const uint32_t indices = static_cast<uint32_t>(colour[4] | colour[5] << 8 | colour[6] << 16) |
+                static_cast<uint32_t>(colour[7]) << 24;
+            for (int i = 0; i < 16; ++i) {
+                const uint32_t x = bx * 4u + (i & 3), y = by * 4u + (i >> 2);
+                if (x >= width || y >= height) continue;
+                const uint32_t index = (indices >> (2 * i)) & 3u;
+                uint8_t *texel = out.data() + (static_cast<size_t>(y) * width + x) * 4u;
+                texel[0] = rgb[index][2];
+                texel[1] = rgb[index][1];
+                texel[2] = rgb[index][0];
+                texel[3] = transparent && index == 3u ? 0u : alpha[i];
+            }
+        }
+    }
+}
+
 SDL_GPUTexture *lookupTexture(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw)
 {
     const RecompD3dTextureDesc &desc = draw.texture;
@@ -992,8 +1067,9 @@ SDL_GPUTexture *lookupTexture(RecompD3dPresenter *presenter, const RecompD3dPres
             return entry.texture;
         }
     }
+    const bool decode_blocks = compressed && !presenter->block_compressed;
     const SDL_GPUTextureFormat format = volume ? SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM
-        : linear_bgra ? SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM : hostTextureFormat(desc.format_byte);
+        : linear_bgra || decode_blocks ? SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM : hostTextureFormat(desc.format_byte);
     if (format == SDL_GPU_TEXTUREFORMAT_INVALID || draw.texture_bytes == nullptr ||
         draw.texture_byte_count == 0u || (desc.linear && !linear_bgra)) {
         return nullptr;
@@ -1048,10 +1124,17 @@ SDL_GPUTexture *lookupTexture(RecompD3dPresenter *presenter, const RecompD3dPres
     if (compressed) {
         const uint32_t block_bytes = desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT1 ? 8u : 16u;
         uint32_t width = desc.width, height = desc.height, offset = 0u;
+        std::vector<uint8_t> decoded;
         for (uint32_t level = 0u; level < levels && uploaded; ++level) {
             const uint32_t size = ((width + 3u) / 4u) * block_bytes * ((height + 3u) / 4u);
-            uploaded = uploadTexture(presenter, texture,
-                static_cast<const uint8_t *>(draw.texture_bytes) + offset, size, level, width, height);
+            const uint8_t *blocks = static_cast<const uint8_t *>(draw.texture_bytes) + offset;
+            if (decode_blocks) {
+                decodeBlockLevel(blocks, width, height, desc.format_byte, decoded);
+                uploaded = uploadTexture(presenter, texture, decoded.data(), static_cast<uint32_t>(decoded.size()),
+                    level, width, height);
+            } else {
+                uploaded = uploadTexture(presenter, texture, blocks, size, level, width, height);
+            }
             offset += size;
             width = width > 1u ? width / 2u : 1u;
             height = height > 1u ? height / 2u : 1u;
@@ -3216,6 +3299,15 @@ RecompD3dPresenterError d3d_backend_create(const RecompD3dPresenterConfig *confi
             SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET)) {
         created->depth_format = SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT;
     }
+    // (most phones' GPUs sample ETC and ASTC, not BC: DXT textures are decoded for them, lookupTexture;
+    // RECOMP_D3D_DECODE_DXT=1 does it anywhere, to try it)
+    for (SDL_GPUTextureFormat bc : {SDL_GPU_TEXTUREFORMAT_BC1_RGBA_UNORM, SDL_GPU_TEXTUREFORMAT_BC2_RGBA_UNORM,
+             SDL_GPU_TEXTUREFORMAT_BC3_RGBA_UNORM}) {
+        if (!SDL_GPUTextureSupportsFormat(created->device, bc, SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREUSAGE_SAMPLER))
+            created->block_compressed = false;
+    }
+    if (envFlag("RECOMP_D3D_DECODE_DXT")) created->block_compressed = false;
+    if (!created->block_compressed) std::fprintf(stderr, "recomp d3d presenter: DXT textures decoded (no BC1-3)\n");
     if (const char *msaa = std::getenv("RECOMP_D3D_MSAA")) {
         created->msaa = supportedSamples(created->device, created->depth_format,
             static_cast<uint32_t>(std::clamp(std::atoi(msaa), 1, 32)));
