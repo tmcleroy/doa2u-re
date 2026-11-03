@@ -3185,7 +3185,19 @@ RecompD3dPresenterError d3d_backend_create(const RecompD3dPresenterConfig *confi
         SDL_QuitSubSystem(SDL_INIT_VIDEO);
         return RECOMP_D3D_PRESENTER_HOST_FAILURE;
     };
+#ifdef __ANDROID__
+    // Phones' Vulkan drivers vary: of SDL's optional features only depth clamping is asked for, which most of the
+    // pipelines use (no depth clip); none uses clip distances, anisotropy or indirect draws
+    SDL_PropertiesID properties = SDL_CreateProperties();
+    SDL_SetBooleanProperty(properties, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
+    SDL_SetBooleanProperty(properties, SDL_PROP_GPU_DEVICE_CREATE_FEATURE_CLIP_DISTANCE_BOOLEAN, false);
+    SDL_SetBooleanProperty(properties, SDL_PROP_GPU_DEVICE_CREATE_FEATURE_INDIRECT_DRAW_FIRST_INSTANCE_BOOLEAN, false);
+    SDL_SetBooleanProperty(properties, SDL_PROP_GPU_DEVICE_CREATE_FEATURE_ANISOTROPY_BOOLEAN, false);
+    created->device = SDL_CreateGPUDeviceWithProperties(properties);
+    SDL_DestroyProperties(properties);
+#else
     created->device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_MSL | SDL_GPU_SHADERFORMAT_SPIRV, false, nullptr);
+#endif
     if (created->device == nullptr) return fail("SDL_GPU device");
     if (SDL_GetGPUShaderFormats(created->device) & SDL_GPU_SHADERFORMAT_SPIRV) {
         created->shader_target = RecompShaderTarget::Spirv;
