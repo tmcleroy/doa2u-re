@@ -283,6 +283,7 @@ struct RecompD3dPresenter {
     bool main_resolved = true;
     SDL_GPUTexture *back_buffer_copy = nullptr;   // GetBackBuffer(0) snapshots
     SDL_GPUTexture *previous_frame = nullptr;     // GetBackBuffer(-1)
+    bool previous_frame_mips = false;             // (made with mip levels: an upscaled copy)
     bool copy_mips = false;
     SDL_GPUTexture *white_texture = nullptr;
     SDL_GPUTexture *white_volume = nullptr;
@@ -871,6 +872,7 @@ SDL_GPUTexture *lookupBackBufferTexture(RecompD3dPresenter *presenter,
             SDL_GPU_TEXTUREUSAGE_SAMPLER | (levels > 1u ? SDL_GPU_TEXTUREUSAGE_COLOR_TARGET : 0u),
             mainWidth(presenter), mainHeight(presenter), 1u, levels);
         if (copy == nullptr) return nullptr;
+        if (previous_frame) presenter->previous_frame_mips = levels > 1u;
     }
     /* Present refreshes the previous frame; until the first one, use this frame. */
     if (previous_frame && !created) return copy;
@@ -2967,7 +2969,9 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
         unlink(presenter->draw_log_trigger);
     }
     /* Keep the presented guest frame for GetBackBuffer(-1) once a draw has used it. */
-    if (presenter->previous_frame != nullptr) copyGuestBuffer(presenter, presenter->previous_frame);
+    // (mips only for a copy made with them: the one a draw's bind makes has one level)
+    if (presenter->previous_frame != nullptr)
+        copyGuestBuffer(presenter, presenter->previous_frame, presenter->previous_frame_mips);
     submitCommands(presenter);
     ++presenter->present_count;
     /* RECOMP_D3D_DRAW_LOG_AT=N starts the log at present N too (headless runs). */
