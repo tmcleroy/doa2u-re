@@ -14,6 +14,7 @@
 #include "d3d_shader_compiler.h"
 #include "d3d_shader_preset.h"
 #include "d3d_texture_model.h"
+#include "d3d_texture_replace.h"
 #include "d3d_display_phase.h"
 #include "d3d_vblank.h"
 #include "input_keyboard_win32.h"
@@ -979,6 +980,50 @@ void decodeBlockLevel(const uint8_t *src, uint32_t width, uint32_t height, uint3
     }
 }
 
+/* A texture pack's image for a guest texture (d3d_texture_replace.h), uploaded with its own levels: decoded to
+   BGRA when the GPU cannot sample BC1-3. nullptr when there is none (or it cannot be made). */
+SDL_GPUTexture *replacementTexture(RecompD3dPresenter *presenter, uint64_t key)
+{
+    RecompD3dReplacement replacement{};
+    if (key == 0u || !recomp_d3d_texture_replacement(key, &replacement) ||
+        replacement.width > kMaxTextureSize || replacement.height > kMaxTextureSize) return nullptr;
+    static const uint32_t kFormatBytes[] = {0u, RECOMP_D3D_TEXTURE_FORMAT_DXT1, RECOMP_D3D_TEXTURE_FORMAT_DXT3,
+        RECOMP_D3D_TEXTURE_FORMAT_DXT5};
+    const uint32_t format_byte = kFormatBytes[replacement.format];
+    const bool compressed = format_byte != 0u;
+    const bool decode = compressed && !presenter->block_compressed;
+    const SDL_GPUTextureFormat format = compressed && !decode ? hostTextureFormat(format_byte)
+        : SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
+    SDL_GPUTexture *texture = createTexture(presenter, SDL_GPU_TEXTURETYPE_2D, format, SDL_GPU_TEXTUREUSAGE_SAMPLER,
+        replacement.width, replacement.height, 1u, replacement.levels);
+    if (texture == nullptr) return nullptr;
+    const uint32_t block = format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT1 ? 8u : 16u;
+    uint32_t width = replacement.width, height = replacement.height;
+    size_t offset = 0u;
+    std::vector<uint8_t> decoded;
+    for (uint32_t level = 0u; level < replacement.levels; ++level) {
+        const size_t size = compressed ? static_cast<size_t>((width + 3u) / 4u) * ((height + 3u) / 4u) * block
+                                       : static_cast<size_t>(width) * height * 4u;
+        const uint8_t *bytes = replacement.data + offset;
+        bool uploaded;
+        if (decode) {
+            decodeBlockLevel(bytes, width, height, format_byte, decoded);
+            uploaded = uploadTexture(presenter, texture, decoded.data(), static_cast<uint32_t>(decoded.size()),
+                level, width, height);
+        } else {
+            uploaded = uploadTexture(presenter, texture, bytes, static_cast<uint32_t>(size), level, width, height);
+        }
+        if (!uploaded) {
+            SDL_ReleaseGPUTexture(presenter->device, texture);
+            return nullptr;
+        }
+        offset += size;
+        width = width > 1u ? width / 2u : 1u;
+        height = height > 1u ? height / 2u : 1u;
+    }
+    return texture;
+}
+
 SDL_GPUTexture *lookupTexture(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw)
 {
     const RecompD3dTextureDesc &desc = draw.texture;
@@ -1068,85 +1113,95 @@ SDL_GPUTexture *lookupTexture(RecompD3dPresenter *presenter, const RecompD3dPres
             return entry.texture;
         }
     }
+    /* A texture pack's image in its place, or this one dumped for making one (d3d_texture_replace.h) */
+    SDL_GPUTexture *replaced = nullptr;
+    if (!volume && !linear_bgra && draw.texture_bytes != nullptr && recomp_d3d_textures_active()) {
+        const void *palette = palettized ? draw.palette_bytes : nullptr;
+        const uint64_t key = recomp_d3d_texture_key(&desc, draw.texture_bytes, draw.texture_byte_count, palette);
+        recomp_d3d_texture_dump(key, &desc, draw.texture_bytes, draw.texture_byte_count, palette);
+        replaced = replacementTexture(presenter, key);
+    }
     const bool decode_blocks = compressed && !presenter->block_compressed;
     const SDL_GPUTextureFormat format = volume ? SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM
         : linear_bgra || decode_blocks ? SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM : hostTextureFormat(desc.format_byte);
-    if (format == SDL_GPU_TEXTUREFORMAT_INVALID || draw.texture_bytes == nullptr ||
-        draw.texture_byte_count == 0u || (desc.linear && !linear_bgra)) {
+    if (replaced == nullptr && (format == SDL_GPU_TEXTUREFORMAT_INVALID || draw.texture_bytes == nullptr ||
+        draw.texture_byte_count == 0u || (desc.linear && !linear_bgra))) {
         return nullptr;
     }
-
-    std::vector<uint8_t> unpacked;
-    if (volume) {
-        unpacked.resize(static_cast<size_t>(desc.width) * desc.height * desc.volume_depth * 4u);
-        if (!recomp_d3d_texture_unswizzle_volume(static_cast<const uint8_t *>(draw.texture_bytes),
-                unpacked.data(), desc.width, desc.height, desc.volume_depth, 4u)) return nullptr;
-        /* RGBA8 is supported for native 3D textures; guest words are BGRA. */
-        for (size_t i = 0u; i < unpacked.size(); i += 4u) std::swap(unpacked[i], unpacked[i + 2u]);
-    } else if (linear_bgra) {
-        unpacked.resize(static_cast<size_t>(desc.width) * desc.height * 4u);
-        for (uint32_t y = 0u; y < desc.height; ++y) {
-            std::memcpy(unpacked.data() + static_cast<size_t>(y) * desc.width * 4u,
-                static_cast<const uint8_t *>(draw.texture_bytes) + static_cast<size_t>(y) * desc.pitch,
-                desc.width * 4u);
-        }
-    } else if (palettized) {
-        const size_t texels = static_cast<size_t>(desc.width) * desc.height;
-        if (desc.width == 0u || desc.height == 0u || desc.width > kMaxTextureSize ||
-            desc.height > kMaxTextureSize || texels > draw.texture_byte_count) return nullptr;
-        std::vector<uint8_t> indices(texels);
-        if (!recomp_d3d_texture_unswizzle(static_cast<const uint8_t *>(draw.texture_bytes),
-                indices.data(), desc.width, desc.height, 1u)) return nullptr;
-        unpacked.resize(texels * 4u);
-        const auto *palette = static_cast<const uint8_t *>(draw.palette_bytes);
-        for (size_t i = 0u; i < texels; ++i) {
-            /* Little-endian ARGB palette words are already BGRA bytes. */
-            std::memcpy(unpacked.data() + i * 4u, palette + indices[i] * 4u, 4u);
-        }
-    } else if (isSwizzledTextureFormat(desc.format_byte)) {
-        const uint32_t texel_bytes = desc.bits_per_pixel / 8u;
-        if (texel_bytes == 0u || desc.width == 0u || desc.height == 0u ||
-            desc.width > kMaxTextureSize || desc.height > kMaxTextureSize) return nullptr;
-        unpacked.resize(static_cast<size_t>(desc.width) * desc.height * texel_bytes);
-        if (!recomp_d3d_texture_unswizzle(static_cast<const uint8_t *>(draw.texture_bytes),
-                unpacked.data(), desc.width, desc.height, texel_bytes)) return nullptr;
-        if (desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8) {
-            std::vector<uint8_t> white(unpacked.size() * 4u, 0xffu);
-            for (size_t i = 0u; i < unpacked.size(); ++i) white[i * 4u + 3u] = unpacked[i];
-            unpacked.swap(white);
-        }
-    }
-
-    SDL_GPUTexture *texture = createTexture(presenter,
-        volume ? SDL_GPU_TEXTURETYPE_3D : SDL_GPU_TEXTURETYPE_2D, format, SDL_GPU_TEXTUREUSAGE_SAMPLER,
-        desc.width, desc.height, volume ? desc.volume_depth : 1u, levels);
-    if (texture == nullptr) return nullptr;
-    bool uploaded = true;
-    if (compressed) {
-        const uint32_t block_bytes = desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT1 ? 8u : 16u;
-        uint32_t width = desc.width, height = desc.height, offset = 0u;
-        std::vector<uint8_t> decoded;
-        for (uint32_t level = 0u; level < levels && uploaded; ++level) {
-            const uint32_t size = ((width + 3u) / 4u) * block_bytes * ((height + 3u) / 4u);
-            const uint8_t *blocks = static_cast<const uint8_t *>(draw.texture_bytes) + offset;
-            if (decode_blocks) {
-                decodeBlockLevel(blocks, width, height, desc.format_byte, decoded);
-                uploaded = uploadTexture(presenter, texture, decoded.data(), static_cast<uint32_t>(decoded.size()),
-                    level, width, height);
-            } else {
-                uploaded = uploadTexture(presenter, texture, blocks, size, level, width, height);
+    SDL_GPUTexture *texture = replaced;
+    if (texture == nullptr) {
+        std::vector<uint8_t> unpacked;
+        if (volume) {
+            unpacked.resize(static_cast<size_t>(desc.width) * desc.height * desc.volume_depth * 4u);
+            if (!recomp_d3d_texture_unswizzle_volume(static_cast<const uint8_t *>(draw.texture_bytes),
+                    unpacked.data(), desc.width, desc.height, desc.volume_depth, 4u)) return nullptr;
+            /* RGBA8 is supported for native 3D textures; guest words are BGRA. */
+            for (size_t i = 0u; i < unpacked.size(); i += 4u) std::swap(unpacked[i], unpacked[i + 2u]);
+        } else if (linear_bgra) {
+            unpacked.resize(static_cast<size_t>(desc.width) * desc.height * 4u);
+            for (uint32_t y = 0u; y < desc.height; ++y) {
+                std::memcpy(unpacked.data() + static_cast<size_t>(y) * desc.width * 4u,
+                    static_cast<const uint8_t *>(draw.texture_bytes) + static_cast<size_t>(y) * desc.pitch,
+                    desc.width * 4u);
             }
-            offset += size;
-            width = width > 1u ? width / 2u : 1u;
-            height = height > 1u ? height / 2u : 1u;
+        } else if (palettized) {
+            const size_t texels = static_cast<size_t>(desc.width) * desc.height;
+            if (desc.width == 0u || desc.height == 0u || desc.width > kMaxTextureSize ||
+                desc.height > kMaxTextureSize || texels > draw.texture_byte_count) return nullptr;
+            std::vector<uint8_t> indices(texels);
+            if (!recomp_d3d_texture_unswizzle(static_cast<const uint8_t *>(draw.texture_bytes),
+                    indices.data(), desc.width, desc.height, 1u)) return nullptr;
+            unpacked.resize(texels * 4u);
+            const auto *palette = static_cast<const uint8_t *>(draw.palette_bytes);
+            for (size_t i = 0u; i < texels; ++i) {
+                /* Little-endian ARGB palette words are already BGRA bytes. */
+                std::memcpy(unpacked.data() + i * 4u, palette + indices[i] * 4u, 4u);
+            }
+        } else if (isSwizzledTextureFormat(desc.format_byte)) {
+            const uint32_t texel_bytes = desc.bits_per_pixel / 8u;
+            if (texel_bytes == 0u || desc.width == 0u || desc.height == 0u ||
+                desc.width > kMaxTextureSize || desc.height > kMaxTextureSize) return nullptr;
+            unpacked.resize(static_cast<size_t>(desc.width) * desc.height * texel_bytes);
+            if (!recomp_d3d_texture_unswizzle(static_cast<const uint8_t *>(draw.texture_bytes),
+                    unpacked.data(), desc.width, desc.height, texel_bytes)) return nullptr;
+            if (desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8) {
+                std::vector<uint8_t> white(unpacked.size() * 4u, 0xffu);
+                for (size_t i = 0u; i < unpacked.size(); ++i) white[i * 4u + 3u] = unpacked[i];
+                unpacked.swap(white);
+            }
         }
-    } else {
-        uploaded = uploadTexture(presenter, texture, unpacked.data(), static_cast<uint32_t>(unpacked.size()),
-            0u, desc.width, desc.height, volume ? desc.volume_depth : 1u);
-    }
-    if (!uploaded) {
-        SDL_ReleaseGPUTexture(presenter->device, texture);
-        return nullptr;
+
+        texture = createTexture(presenter,
+            volume ? SDL_GPU_TEXTURETYPE_3D : SDL_GPU_TEXTURETYPE_2D, format, SDL_GPU_TEXTUREUSAGE_SAMPLER,
+            desc.width, desc.height, volume ? desc.volume_depth : 1u, levels);
+        if (texture == nullptr) return nullptr;
+        bool uploaded = true;
+        if (compressed) {
+            const uint32_t block_bytes = desc.format_byte == RECOMP_D3D_TEXTURE_FORMAT_DXT1 ? 8u : 16u;
+            uint32_t width = desc.width, height = desc.height, offset = 0u;
+            std::vector<uint8_t> decoded;
+            for (uint32_t level = 0u; level < levels && uploaded; ++level) {
+                const uint32_t size = ((width + 3u) / 4u) * block_bytes * ((height + 3u) / 4u);
+                const uint8_t *blocks = static_cast<const uint8_t *>(draw.texture_bytes) + offset;
+                if (decode_blocks) {
+                    decodeBlockLevel(blocks, width, height, desc.format_byte, decoded);
+                    uploaded = uploadTexture(presenter, texture, decoded.data(), static_cast<uint32_t>(decoded.size()),
+                        level, width, height);
+                } else {
+                    uploaded = uploadTexture(presenter, texture, blocks, size, level, width, height);
+                }
+                offset += size;
+                width = width > 1u ? width / 2u : 1u;
+                height = height > 1u ? height / 2u : 1u;
+            }
+        } else {
+            uploaded = uploadTexture(presenter, texture, unpacked.data(), static_cast<uint32_t>(unpacked.size()),
+                0u, desc.width, desc.height, volume ? desc.volume_depth : 1u);
+        }
+        if (!uploaded) {
+            SDL_ReleaseGPUTexture(presenter->device, texture);
+            return nullptr;
+        }
     }
 
     // ponytail: FIFO eviction; track recent use if upload churn is costly.
