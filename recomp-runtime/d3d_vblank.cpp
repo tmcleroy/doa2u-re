@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <atomic>
 #include <map>
 #include <memory>
 #include <thread>
@@ -22,6 +23,7 @@ using Clock = std::chrono::steady_clock;
 Clock::time_point last_vblank;
 // The refresh at which the last Present flips.
 Clock::time_point presented_vblank;
+std::atomic<long long> pending_nudge{0};
 std::map<uint32_t, unsigned> block_callers;
 unsigned present_waits;
 Clock::time_point next_report;
@@ -107,6 +109,7 @@ void recomp_d3d_wait_vblank(void)
     // Every waiter in this refresh interval observes the same vblank.
     // Keep the deadline local across guest switches and nested waits.
     const auto now = guest_now();
+    last_vblank += std::chrono::nanoseconds(pending_nudge.exchange(0, std::memory_order_relaxed));
     if (last_vblank <= now) {
         last_vblank += interval * ((now - last_vblank) / interval + 1);
     }
@@ -171,6 +174,11 @@ void recomp_d3d_note_block(uint32_t return_address)
     std::fputc('\n', stderr);
     block_callers.clear();
     present_waits = 0u;
+}
+
+void recomp_d3d_vblank_nudge(long long ns)
+{
+    pending_nudge.fetch_add(ns, std::memory_order_relaxed);
 }
 
 void recomp_d3d_sleep_until(long long steady_ns)
