@@ -1125,9 +1125,31 @@ static void bridge_nt_user_io_apc_dispatcher(void)
     kernel_return(3u, 0u);
 }
 
+/* A thread that yields in a loop with nothing else to run (a game's helper thread waiting for work) would keep a
+   host core busy all the time: on the Xbox that is idle time the game owns, on a phone it is heat and a slower
+   chip. After kIdleYields such yields in a row it sleeps a moment, as a host does with nothing to run. Online play's
+   deterministic mode keeps its own interleaving and is left as it is. */
+enum { kIdleYields = 16, kIdleYieldNs = 200000 };
+
 static void bridge_nt_yield_execution(void)
 {
+    static unsigned idle_yields;
+    const unsigned before = current_thread;
     schedule();
+    if (!deterministic && current_thread == before && !drain_active) {
+        if (++idle_yields >= kIdleYields) {
+            idle_yields = 0u;
+            struct timespec pause = {0, kIdleYieldNs};
+#ifndef _WIN32
+            nanosleep(&pause, NULL);
+#else
+            (void)pause;
+            Sleep(0);
+#endif
+        }
+    } else {
+        idle_yields = 0u;
+    }
     kernel_return(0u, THREAD_STATUS_SUCCESS);
 }
 
