@@ -1134,9 +1134,11 @@ enum { kIdleYields = 16, kIdleYieldNs = 200000 };
 static void bridge_nt_yield_execution(void)
 {
     static unsigned idle_yields;
+    static int spin = -1; /* (RECOMP_YIELD_SPIN=1: the old way, yields never sleep; for measuring) */
+    if (spin < 0) spin = getenv("RECOMP_YIELD_SPIN") != NULL;
     const unsigned before = current_thread;
     schedule();
-    if (!deterministic && current_thread == before && !drain_active) {
+    if (!spin && !deterministic && current_thread == before && !drain_active) {
         if (++idle_yields >= kIdleYields) {
             idle_yields = 0u;
             struct timespec pause = {0, kIdleYieldNs};
