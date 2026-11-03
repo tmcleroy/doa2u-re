@@ -2528,8 +2528,13 @@ uint32_t virtualKey(SDL_Scancode code)
 
 void pumpEvents(RecompD3dPresenter *presenter)
 {
-    // (pumping reaches Java on Android, host_call.h; taking the events from the queue does not)
-    recomp_host_call([](void *) { SDL_PumpEvents(); }, nullptr);
+#ifdef __ANDROID__
+    // (Android: pumped on a thread of its own, host_call.h; taking the events from the queue reaches no Java)
+    recomp_host_pump_start();
+    recomp_host_wait_foreground();
+#else
+    SDL_PumpEvents();
+#endif
     SDL_Event event;
     while (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST) > 0) {
         if ((event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) && !event.key.repeat) {

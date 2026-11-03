@@ -87,8 +87,7 @@ static bool trace_enabled(void)
 static void update_pads_here(void *unused);
 static void update_pads(void)
 {
-    /* (SDL's gamepads reach Java on Android: host_call.h) */
-    recomp_host_call(update_pads_here, NULL);
+    update_pads_here(NULL);
 }
 
 static void update_pads_here(void *unused)
@@ -107,7 +106,9 @@ static void update_pads_here(void *unused)
         SDL_SetJoystickEventsEnabled(false);
         SDL_SetGamepadEventsEnabled(false);
     }
-    SDL_UpdateGamepads();
+#ifndef __ANDROID__
+    SDL_UpdateGamepads(); /* (Android: on the pump's thread, host_call.h: it reaches Java) */
+#endif
     for (uint32_t port = 0u; port < RECOMP_INPUT_PORT_COUNT; ++port) {
         if (pads[port] != NULL && !SDL_GamepadConnected(pads[port])) {
             SDL_CloseGamepad(pads[port]);
