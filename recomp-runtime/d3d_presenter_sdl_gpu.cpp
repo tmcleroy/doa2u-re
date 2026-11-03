@@ -3658,6 +3658,11 @@ RecompD3dPresenterError d3d_backend_show_image(RecompD3dPresenter *presenter,
         blit.clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
         blit.filter = SDL_GPU_FILTER_LINEAR;
         SDL_BlitGPUTexture(commands, &blit);
+        // The overlay over the picture too (a port's touch screen controls work the menu shown this way)
+        RecompOverlayText overlay;
+        recomp_overlay_take(&overlay);
+        recomp_overlay_sdl_gpu_draw(presenter->device, presenter->window, commands,
+            swapchain, swap_width, swap_height, &overlay);
     }
     submitCommands(presenter);
     SDL_ReleaseGPUTransferBuffer(presenter->device, upload);
