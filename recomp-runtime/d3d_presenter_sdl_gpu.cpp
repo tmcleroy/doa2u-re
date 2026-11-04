@@ -2947,6 +2947,9 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
     /* Keep guest pixels uncorrected: gamma is display state and must not feed
        back into later draws or compound when a frame is presented twice. */
     SDL_GPUTexture *shown = presenter->main_resolve;
+    // (a Swap that leaves the front buffer alone: the frame last shown, kept for front-buffer reads, again)
+    const bool kept = present.keep_shown && presenter->previous_frame != nullptr;
+    if (kept) shown = presenter->previous_frame;
     if (presenter->smaa && presenter->smaa_pipelines[0] == nullptr && !createSmaa(presenter)) {
         presenter->smaa = false;
     }
@@ -3059,7 +3062,7 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
     }
     /* Keep the presented guest frame for GetBackBuffer(-1) once a draw has used it. */
     // (mips only for a copy made with them: the one a draw's bind makes has one level)
-    if (presenter->previous_frame != nullptr)
+    if (presenter->previous_frame != nullptr && !kept)
         copyGuestBuffer(presenter, presenter->previous_frame, presenter->previous_frame_mips);
     // On a display at a multiple of 60 Hz, the frame's end steers the game's clock (d3d_display_phase).
     recomp_display_phase_follow(presenter->window);

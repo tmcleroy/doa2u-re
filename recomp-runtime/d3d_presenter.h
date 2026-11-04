@@ -69,6 +69,11 @@ typedef struct RecompD3dPresenterClearCommand {
 typedef struct RecompD3dPresenterPresentCommand {
     uint32_t effective_flags;
     uint32_t swap_counter;
+    /* An Xbox Swap that does not copy the back buffer to the front (D3DSWAP_BYPASSCOPY, D3DSWAP_FINISH): the
+       window goes on showing the frame last presented, while the back buffer keeps what was drawn. Needs the kept
+       frame (previous_frame, made by the first front-buffer read); without it, and on Direct3D 11, the back buffer
+       is shown as for any present. */
+    bool keep_shown;
 } RecompD3dPresenterPresentCommand;
 
 /* Fixed-function vertex lighting: directional and point lights. DOA3 also
