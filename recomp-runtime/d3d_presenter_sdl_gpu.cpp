@@ -317,6 +317,7 @@ struct RecompD3dPresenter {
     std::unordered_multimap<uint32_t, uint32_t> texture_index;
     uint32_t texture_count = 0u;
     uint32_t next_texture_slot = 0u;
+    uint32_t texture_generation = 0u;   // (recomp_d3d_textures_generation when the textures were made)
     // Textures replaced while queued draws still bind them; released after the next flush.
     std::vector<SDL_GPUTexture *> retired_textures;
 
@@ -483,6 +484,18 @@ void retireTexture(RecompD3dPresenter *presenter, SDL_GPUTexture *&texture)
 {
     if (texture != nullptr) presenter->retired_textures.push_back(texture);
     texture = nullptr;
+}
+
+/* Every texture made from the game's dropped, to be made again (the texture pack folders changed) */
+void dropTextures(RecompD3dPresenter *presenter)
+{
+    for (TextureEntry &entry : presenter->textures) {
+        if (entry.used) retireTexture(presenter, entry.texture);
+        entry.used = false;
+    }
+    presenter->texture_index.clear();
+    presenter->texture_count = 0u;
+    presenter->next_texture_slot = 0u;
 }
 
 void releaseRetiredTextures(RecompD3dPresenter *presenter)
@@ -1026,6 +1039,10 @@ SDL_GPUTexture *replacementTexture(RecompD3dPresenter *presenter, uint64_t key)
 
 SDL_GPUTexture *lookupTexture(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &draw)
 {
+    if (const uint32_t generation = recomp_d3d_textures_generation(); generation != presenter->texture_generation) {
+        presenter->texture_generation = generation;
+        dropTextures(presenter);
+    }
     const RecompD3dTextureDesc &desc = draw.texture;
     const bool volume = desc.volume_depth != 0u;
     if (volume && (desc.linear || desc.depth || desc.format_byte != 6u ||

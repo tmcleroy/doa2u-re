@@ -43,6 +43,10 @@ typedef struct RecompD3dReplacement {
    replacement folder's names are read once, here. RECOMP_TEXTURES and RECOMP_TEXTURE_DUMP name them too, and win. */
 void recomp_d3d_textures_configure(const char *replace_folder, const char *dump_folder);
 
+/* A number that changes with each configure: a presenter that sees it change drops the textures it has made, so
+   the game's textures are made again with (or without) the folder's from the next frame. */
+uint32_t recomp_d3d_textures_generation(void);
+
 /* Whether there is a replacement folder with at least one texture, or a dump folder: when neither, a presenter
    need not hash textures at all. */
 bool recomp_d3d_textures_active(void);

@@ -4,6 +4,7 @@
 #define XXH_INLINE_ALL
 #include "xxhash.h"
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -25,6 +26,8 @@ struct Folders {
     std::unordered_set<uint64_t> dumped;  // the dump folder's (and those written since)
     bool active = false;
 };
+
+std::atomic<uint32_t> generation{0u};
 
 Folders &folders()
 {
@@ -141,8 +144,14 @@ extern "C" void recomp_d3d_textures_configure(const char *replace_folder, const 
     state.names.swap(names);
     state.dumped.swap(dumped);
     state.active = !state.names.empty() || !state.dump.empty();
+    ++generation;
     std::fprintf(stderr, "recomp textures: %zu replacements in '%s'%s%s\n", state.names.size(),
         state.replace.string().c_str(), state.dump.empty() ? "" : ", dumping to ", state.dump.string().c_str());
+}
+
+extern "C" uint32_t recomp_d3d_textures_generation(void)
+{
+    return generation.load();
 }
 
 extern "C" bool recomp_d3d_textures_active(void)

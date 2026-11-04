@@ -304,6 +304,7 @@ struct RecompD3dPresenter {
     uint32_t next_blend_state_slot = 0u;
     std::vector<TextureEntry> textures = std::vector<TextureEntry>(kTextureSlots);
     std::unordered_multimap<uint32_t, uint32_t> texture_index; // guest address -> slot
+    uint32_t texture_generation = 0u;   // (recomp_d3d_textures_generation when the textures were made)
     uint32_t texture_count = 0u;
     uint32_t next_texture_slot = 0u;
     std::vector<RenderTargetEntry> render_targets;
@@ -2051,6 +2052,16 @@ ID3D11ShaderResourceView *lookupTexture(
     RecompD3dPresenter *presenter,
     const RecompD3dPresenterDrawCommand &draw)
 {
+    if (const uint32_t generation = recomp_d3d_textures_generation(); generation != presenter->texture_generation) {
+        presenter->texture_generation = generation;
+        for (uint32_t i = 0u; i < presenter->texture_count; ++i) {
+            releaseCom(presenter->textures[i].view);
+            presenter->textures[i].used = false;
+        }
+        presenter->texture_index.clear();
+        presenter->texture_count = 0u;
+        presenter->next_texture_slot = 0u;
+    }
     const RecompD3dTextureDesc &desc = draw.texture;
     const bool volume = desc.volume_depth != 0u;
     if (volume && (desc.linear || desc.depth || desc.format_byte != 6u ||
