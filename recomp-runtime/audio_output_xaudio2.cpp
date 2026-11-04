@@ -484,8 +484,12 @@ extern "C" void recomp_audio_output_submit(
         dropBuffer(slot, "routing-channel-mismatch");
         return;
     }
-    if (voice.source && (voice.sample_rate != sample_rate ||
-        voice.channels != channels || voice.bits_per_sample != bits_per_sample)) {
+    /* sample_rate is the guest's current playback frequency, not a change
+       to the PCM layout. SC2 modulates it every frame for weapon effects.
+       Recreating the voice here repeatedly discards its queued sound before
+       the 50 ms preroll can finish. Keep its original format rate and pitch
+       the existing voice instead. */
+    if (voice.source && (voice.channels != channels || voice.bits_per_sample != bits_per_sample)) {
         destroyVoice(voice);
     }
     if (!voice.source) {
@@ -497,7 +501,8 @@ extern "C" void recomp_audio_output_submit(
         format.nBlockAlign = static_cast<WORD>(block_align);
         format.wBitsPerSample = static_cast<WORD>(bits_per_sample);
         HRESULT error = engine->CreateSourceVoice(
-            &voice.source, &format, 0, 1.0f + kRateTrim);
+            &voice.source, &format, 0,
+            (static_cast<float>(XAUDIO2_MAX_SAMPLE_RATE) / sample_rate) * (1.0f + kRateTrim));
         if (FAILED(error)) {
             dropBuffer(slot, "create-voice");
             disableOutput("CreateSourceVoice", error);
@@ -543,22 +548,24 @@ extern "C" void recomp_audio_output_submit(
     }
     const float queued_ms = static_cast<float>(
         voice.bytes_submitted / block_align - state.SamplesPlayed) * 1000.0f / sample_rate;
+    voice.level_ms += (queued_ms - voice.level_ms) / 16.0f; /* smooths pump jitter */
+    float ratio = 1.0f + (voice.level_ms - kPrerollMs) / 10000.0f;
+    if (ratio < 1.0f - kRateTrim) ratio = 1.0f - kRateTrim;
+    if (ratio > 1.0f + kRateTrim) ratio = 1.0f + kRateTrim;
+    ratio *= static_cast<float>(sample_rate) / voice.sample_rate;
+    error = voice.source->SetFrequencyRatio(ratio);
+    if (FAILED(error)) {
+        dropBuffer(slot, "rate");
+        disableOutput("SetFrequencyRatio", error);
+        return;
+    }
+    // A pitch change still applies when the queue cannot accept more PCM.
     if (voice.queued == kQueueSize) {
         dropBuffer(slot, "queue-full", queued_ms);
         return;
     }
     if (queued_ms > kMaxQueueMs) {
         dropBuffer(slot, "too-far-ahead", queued_ms);
-        return;
-    }
-    voice.level_ms += (queued_ms - voice.level_ms) / 16.0f; /* smooths pump jitter */
-    float ratio = 1.0f + (voice.level_ms - kPrerollMs) / 10000.0f;
-    if (ratio < 1.0f - kRateTrim) ratio = 1.0f - kRateTrim;
-    if (ratio > 1.0f + kRateTrim) ratio = 1.0f + kRateTrim;
-    error = voice.source->SetFrequencyRatio(ratio);
-    if (FAILED(error)) {
-        dropBuffer(slot, "rate");
-        disableOutput("SetFrequencyRatio", error);
         return;
     }
     if (!queueBuffer(voice, slot, pcm, bytes, silence)) return;

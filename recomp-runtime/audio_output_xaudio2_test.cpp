@@ -58,6 +58,7 @@ struct FakeSource {
     bool started = false;
     float volume = 1.0f;
     float ratio = 1.0f;
+    float max_ratio = 1.0f;
     UINT64 played = 0;
     std::vector<XAUDIO2_BUFFER> queued;
     std::vector<void *> sends;
@@ -68,7 +69,10 @@ struct FakeSource {
     HRESULT Start() { started = true; return S_OK; }
     void GetState(XAUDIO2_VOICE_STATE *state, UINT32 flags);
     HRESULT SetVolume(float gain) { volume = gain; return S_OK; }
-    HRESULT SetFrequencyRatio(float value) { ratio = value; return S_OK; }
+    HRESULT SetFrequencyRatio(float value) {
+        check(value >= XAUDIO2_MIN_FREQ_RATIO && value <= max_ratio);
+        ratio = value; return S_OK;
+    }
     HRESULT SetOutputVoices(const FakeVoiceSends *values)
     {
         ++send_calls;
@@ -202,9 +206,10 @@ struct FakeEngine {
             format->nBlockAlign == format->nChannels * (format->wBitsPerSample / 8) &&
             format->nAvgBytesPerSec == format->nSamplesPerSec * format->nBlockAlign &&
             format->cbSize == 0 &&
-            flags == 0 && ratio == 1.01f);
+            flags == 0 && ratio >= 1.01f && ratio <= XAUDIO2_MAX_FREQ_RATIO);
         *out = new FakeSource;
         (*out)->format = *format;
+        (*out)->max_ratio = ratio;
         fake_sources.push_back(*out);
         return S_OK;
     }
@@ -577,8 +582,22 @@ int main()
     check(source && source->matrices[master] == std::vector<float>(stereo_dry, stereo_dry + 4) &&
         source->matrices[reverb_voice] == std::vector<float>(stereo_wet, stereo_wet + 4));
     recomp_audio_output_submit(11, pcm, sizeof pcm, 16000, 2, 16, 0);
-    check(source->destroyed && voices[11].source && routing[11].channels == 2 &&
+    check(!source->destroyed && voices[11].source == source && routing[11].channels == 2 &&
         voices[11].source->matrices[reverb_voice] == std::vector<float>(stereo_wet, stereo_wet + 4));
+    check(source->queued.size() == 3 && source->ratio > 0.32f && source->ratio < 0.34f);
+    /* A pitch sweep at frame cadence must preserve the queued waveform and
+       never insert a second preroll. Exercise both ends of the valid range. */
+    const auto voice_count = fake_sources.size();
+    const auto first_pcm = source->queued[1].pAudioData;
+    const uint32_t sweep[] = {24000, 22050, 22100, 21900, 200000, 1000, 48000};
+    for (const uint32_t rate : sweep) {
+        recomp_audio_output_submit(11, pcm, sizeof pcm, rate, 2, 16, 0);
+        check(voices[11].source == source && !source->destroyed && fake_sources.size() == voice_count);
+        check(source->queued[1].pAudioData == first_pcm);
+        const float expected = static_cast<float>(rate) / 48000;
+        check(source->ratio >= expected * (1.0f - kRateTrim) &&
+            source->ratio <= expected * (1.0f + kRateTrim));
+    }
     recomp_audio_output_reset_voice(11);
     check(!routing[11].channels);
     const auto routed_submissions = submitted_buffers;
