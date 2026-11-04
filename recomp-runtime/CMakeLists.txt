@@ -323,6 +323,8 @@ add_executable(recomp_d3d_vblank_test d3d_vblank.cpp xapi_clock.cpp d3d_vblank_t
 add_test(NAME recomp-runtime-d3d-vblank COMMAND recomp_d3d_vblank_test)
 add_test(NAME recomp-runtime-unpaced COMMAND "${CMAKE_COMMAND}" -E env
     RECOMP_UNPACED=1 "$<TARGET_FILE:recomp_d3d_vblank_test>")
+add_executable(recomp_d3d_texture_replace_test d3d_texture_replace_test.cpp d3d_texture_replace.cpp d3d_texture_model.c)
+add_test(NAME recomp-runtime-d3d-texture-replace COMMAND recomp_d3d_texture_replace_test)
 add_executable(recomp_d3d_capture_test d3d_presenter_capture_test.cpp d3d_presenter_capture.cpp)
 add_test(NAME recomp-runtime-d3d-capture COMMAND recomp_d3d_capture_test)
 # The draw shader and constants are shared; the rest of the presenter is
@@ -330,7 +332,8 @@ add_test(NAME recomp-runtime-d3d-capture COMMAND recomp_d3d_capture_test)
 set(RECOMP_PRESENTER_SHARED d3d_draw_shader.cpp d3d_pixel_program.cpp d3d_vertex_program.cpp d3d_draw_model.c
     d3d_texture_model.c d3d_vblank.cpp)
 # Both presenters draw the runtime's overlay text and save screenshots.
-set(RECOMP_PRESENTER_SHARED ${RECOMP_PRESENTER_SHARED} overlay_imgui_panel.cpp overlay_text.c screenshot.c d3d_shader_preset.cpp)
+set(RECOMP_PRESENTER_SHARED ${RECOMP_PRESENTER_SHARED} overlay_imgui_panel.cpp overlay_text.c screenshot.c d3d_shader_preset.cpp
+    d3d_texture_replace.cpp)
 if(RECOMP_D3D11_PRESENTER)
     add_library(recomp_d3d_presenter STATIC
         d3d_presenter_d3d11.cpp d3d_presenter_thread.cpp d3d_presenter_capture.cpp overlay_d3d11.cpp

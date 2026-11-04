@@ -1,6 +1,7 @@
 #include "d3d_presenter_backend.h"
 #include "d3d_draw_model.h"
 #include "d3d_draw_shader.h"
+#include "d3d_texture_replace.h"
 #include "d3d_vblank.h"
 #include "input_keyboard_win32.h"
 #include "overlay_d3d11.h"
@@ -303,6 +304,7 @@ struct RecompD3dPresenter {
     uint32_t next_blend_state_slot = 0u;
     std::vector<TextureEntry> textures = std::vector<TextureEntry>(kTextureSlots);
     std::unordered_multimap<uint32_t, uint32_t> texture_index; // guest address -> slot
+    uint32_t texture_generation = 0u;   // (recomp_d3d_textures_generation when the textures were made)
     uint32_t texture_count = 0u;
     uint32_t next_texture_slot = 0u;
     std::vector<RenderTargetEntry> render_targets;
@@ -1972,10 +1974,94 @@ void unindexTexture(RecompD3dPresenter *presenter, uint32_t slot)
 }
 
 
+/* The cache entry for a texture just made (its guest description, not its host size: a pack's image is larger). */
+ID3D11ShaderResourceView *storeTexture(RecompD3dPresenter *presenter, const RecompD3dTextureDesc &desc,
+    uint32_t levels, bool palettized, const void *palette_bytes, uint64_t fingerprint, ID3D11ShaderResourceView *view)
+{
+    // ponytail: FIFO eviction; track recent use if upload churn is costly.
+    const uint32_t slot = presenter->next_texture_slot;
+    TextureEntry &entry = presenter->textures[slot];
+    if (entry.used) unindexTexture(presenter, slot);
+    releaseCom(entry.view);
+    presenter->next_texture_slot =
+        (presenter->next_texture_slot + 1u) % kTextureSlots;
+    if (presenter->texture_count < kTextureSlots) {
+        ++presenter->texture_count;
+    }
+    entry.used = true;
+    entry.data = desc.data;
+    entry.format_byte = desc.format_byte;
+    entry.width = desc.width;
+    entry.height = desc.height;
+    entry.volume_depth = desc.volume_depth;
+    entry.mip_levels = levels;
+    if (palettized) std::memcpy(entry.palette, palette_bytes, kPaletteBytes);
+    entry.fingerprint = fingerprint;
+    entry.view = view;
+    try {
+        presenter->texture_index.emplace(desc.data, slot);
+    } catch (const std::bad_alloc &) {
+        releaseCom(entry.view);
+        entry.used = false;
+        return nullptr;
+    }
+    return view;
+}
+
+/* A texture pack's image for a guest texture (d3d_texture_replace.h), with its own levels; nullptr when none. */
+ID3D11ShaderResourceView *replacementView(RecompD3dPresenter *presenter, uint64_t key)
+{
+    RecompD3dReplacement replacement{};
+    if (key == 0u || !recomp_d3d_texture_replacement(key, &replacement) ||
+        replacement.width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+        replacement.height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) return nullptr;
+    static const DXGI_FORMAT kFormats[] = {DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_BC2_UNORM,
+        DXGI_FORMAT_BC3_UNORM};
+    const bool compressed = replacement.format != RECOMP_D3D_REPLACEMENT_BGRA8;
+    const uint32_t block = replacement.format == RECOMP_D3D_REPLACEMENT_DXT1 ? 8u : 16u;
+    D3D11_TEXTURE2D_DESC texture_desc{};
+    texture_desc.Width = replacement.width;
+    texture_desc.Height = replacement.height;
+    texture_desc.MipLevels = replacement.levels;
+    texture_desc.ArraySize = 1u;
+    texture_desc.Format = kFormats[replacement.format];
+    texture_desc.SampleDesc.Count = 1u;
+    texture_desc.Usage = D3D11_USAGE_IMMUTABLE;
+    texture_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    std::vector<D3D11_SUBRESOURCE_DATA> subresources(replacement.levels);
+    uint32_t width = replacement.width, height = replacement.height;
+    size_t offset = 0u;
+    for (uint32_t level = 0u; level < replacement.levels; ++level) {
+        const uint32_t pitch = compressed ? ((width + 3u) / 4u) * block : width * 4u;
+        const uint32_t rows = compressed ? (height + 3u) / 4u : height;
+        subresources[level].pSysMem = replacement.data + offset;
+        subresources[level].SysMemPitch = pitch;
+        offset += static_cast<size_t>(pitch) * rows;
+        width = width > 1u ? width / 2u : 1u;
+        height = height > 1u ? height / 2u : 1u;
+    }
+    ID3D11Texture2D *created = nullptr;
+    if (FAILED(presenter->device->CreateTexture2D(&texture_desc, subresources.data(), &created))) return nullptr;
+    ID3D11ShaderResourceView *view = nullptr;
+    const HRESULT result = presenter->device->CreateShaderResourceView(created, nullptr, &view);
+    releaseCom(created);
+    return SUCCEEDED(result) ? view : nullptr;
+}
+
 ID3D11ShaderResourceView *lookupTexture(
     RecompD3dPresenter *presenter,
     const RecompD3dPresenterDrawCommand &draw)
 {
+    if (const uint32_t generation = recomp_d3d_textures_generation(); generation != presenter->texture_generation) {
+        presenter->texture_generation = generation;
+        for (uint32_t i = 0u; i < presenter->texture_count; ++i) {
+            releaseCom(presenter->textures[i].view);
+            presenter->textures[i].used = false;
+        }
+        presenter->texture_index.clear();
+        presenter->texture_count = 0u;
+        presenter->next_texture_slot = 0u;
+    }
     const RecompD3dTextureDesc &desc = draw.texture;
     const bool volume = desc.volume_depth != 0u;
     if (volume && (desc.linear || desc.depth || desc.format_byte != 6u ||
@@ -2072,6 +2158,14 @@ ID3D11ShaderResourceView *lookupTexture(
             }
             return entry.view;
         }
+    }
+    /* A texture pack's image in its place, or this one dumped for making one (d3d_texture_replace.h) */
+    if (!volume && !linear_bgra && draw.texture_bytes != nullptr && recomp_d3d_textures_active()) {
+        const void *palette = palettized ? draw.palette_bytes : nullptr;
+        const uint64_t key = recomp_d3d_texture_key(&desc, draw.texture_bytes, draw.texture_byte_count, palette);
+        recomp_d3d_texture_dump(key, &desc, draw.texture_bytes, draw.texture_byte_count, palette);
+        if (ID3D11ShaderResourceView *replaced = replacementView(presenter, key))
+            return storeTexture(presenter, desc, levels, palettized, draw.palette_bytes, fingerprint, replaced);
     }
     const DXGI_FORMAT format = linear_bgra
         ? DXGI_FORMAT_B8G8R8A8_UNORM : hostTextureFormat(desc.format_byte);
@@ -2192,34 +2286,7 @@ ID3D11ShaderResourceView *lookupTexture(
         return nullptr;
     }
 
-    // ponytail: FIFO eviction; track recent use if upload churn is costly.
-    const uint32_t slot = presenter->next_texture_slot;
-    TextureEntry &entry = presenter->textures[slot];
-    if (entry.used) unindexTexture(presenter, slot);
-    releaseCom(entry.view);
-    presenter->next_texture_slot =
-        (presenter->next_texture_slot + 1u) % kTextureSlots;
-    if (presenter->texture_count < kTextureSlots) {
-        ++presenter->texture_count;
-    }
-    entry.used = true;
-    entry.data = desc.data;
-    entry.format_byte = desc.format_byte;
-    entry.width = desc.width;
-    entry.height = desc.height;
-    entry.volume_depth = desc.volume_depth;
-    entry.mip_levels = levels;
-    if (palettized) std::memcpy(entry.palette, draw.palette_bytes, kPaletteBytes);
-    entry.fingerprint = fingerprint;
-    entry.view = view;
-    try {
-        presenter->texture_index.emplace(desc.data, slot);
-    } catch (const std::bad_alloc &) {
-        releaseCom(entry.view);
-        entry.used = false;
-        return nullptr;
-    }
-    return view;
+    return storeTexture(presenter, desc, levels, palettized, draw.palette_bytes, fingerprint, view);
 }
 
 ID3D11BlendState *lookupBlendState(
