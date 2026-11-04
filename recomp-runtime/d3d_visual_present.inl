@@ -219,6 +219,7 @@ void releaseVisualTargets(RecompD3dPresenter *p) {
 long long visualIdle(long long deadline) {
     auto *p = active_presenter;
     if (!p || !p->visual.enabled || p->visual.replaying || p->visual.suspended || p->close_requested) return 0;
+    p->gpu_timing.poll(p->device);
     auto &v = p->visual;
     const long long now = visualNow();
     if (!v.current.count()) return 0;

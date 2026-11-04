@@ -9,6 +9,7 @@
    Direct3D 11 only. */
 #include "d3d_presenter_backend.h"
 #include "d3d_presenter_capture.h"
+#include "d3d_gpu_timing.h"
 #include "d3d_visual_interpolation.h"
 #include "d3d_draw_model.h"
 #include "d3d_draw_shader.h"
@@ -347,6 +348,7 @@ struct VisualFrames {
 } // namespace
 
 struct RecompD3dPresenter {
+    D3dGpuTiming gpu_timing;
     VisualFrames visual;
     RecompD3dPresenterConfig config{};
     std::thread::id owner_thread;
@@ -501,6 +503,7 @@ bool preferMailbox(bool immediate)
 
 SDL_GPUCommandBuffer *commandBuffer(RecompD3dPresenter *presenter)
 {
+    presenter->gpu_timing.poll(presenter->device);
     if (presenter->command_buffer == nullptr) {
         presenter->command_buffer = SDL_AcquireGPUCommandBuffer(presenter->device);
     }
@@ -3205,10 +3208,14 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
         uint32_t width, height;
         const char *path;
     } shaded_shot{};
-    if ((presenter->visual.replaying
+    const auto timing_begin = presenter->gpu_timing.enabled() ? recomp_latency::now() : 0;
+    const auto timing_scene = presenter->visual.replaying ? presenter->visual.current.latency.scene : recomp_latency::executing.scene;
+    const bool acquired = (presenter->visual.replaying
             ? SDL_AcquireGPUSwapchainTexture(commands, presenter->window, &swapchain, &swap_width, &swap_height)
-            : SDL_WaitAndAcquireGPUSwapchainTexture(commands, presenter->window, &swapchain, &swap_width, &swap_height)) &&
-        swapchain != nullptr && swap_width != 0u && swap_height != 0u) {
+            : SDL_WaitAndAcquireGPUSwapchainTexture(commands, presenter->window, &swapchain, &swap_width, &swap_height));
+    if (presenter->gpu_timing.enabled()) presenter->gpu_timing.add("acquire",presenter->present_count+1,
+        timing_scene,timing_begin,recomp_latency::now(),acquired && swapchain != nullptr);
+    if (acquired && swapchain != nullptr && swap_width != 0u && swap_height != 0u) {
         window_presented = true;
         // The window keeps the guest aspect; the rest of the swapchain is black.
         const float source_aspect = static_cast<float>(presentClientWidth(presenter, mainHeight(presenter))) /
@@ -3299,7 +3306,10 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
     if (!presenter->visual.enabled) recomp_display_phase_follow(presenter->window);
     if (!presenter->visual.enabled && presenter->command_buffer != nullptr &&
         recomp_display_phase_submit(presenter->device, presenter->command_buffer)) presenter->command_buffer = nullptr;
-    submitCommands(presenter);
+    if (presenter->gpu_timing.enabled() && presenter->command_buffer) {
+        presenter->gpu_timing.submit(presenter->device,presenter->command_buffer,presenter->present_count+1,timing_scene);
+        presenter->command_buffer=nullptr;
+    } else submitCommands(presenter);
     if (presenter->visual.replaying) {
         const auto &v = presenter->visual;
         recomp_latency::record("interpolated_submit", v.current.latency,
@@ -3380,6 +3390,7 @@ void releasePresenter(RecompD3dPresenter *presenter)
     flushSegment(presenter);
     submitCommands(presenter);
     SDL_WaitForGPUIdle(presenter->device);
+    presenter->gpu_timing.finish(presenter->device);
     recomp_display_phase_stop();
     recomp_overlay_sdl_gpu_shutdown();
     releaseVisualTargets(presenter);
@@ -3648,6 +3659,14 @@ RecompD3dPresenterError d3d_backend_create(const RecompD3dPresenterConfig *confi
                 }
             }
             created->visual.enabled = true;
+            // Diagnostic comparison only. Leave SDL's default unchanged unless
+            // explicitly requested; lower queue limits can miss display slots.
+            if (const char *limit = std::getenv("RECOMP_GPU_FRAMES_IN_FLIGHT")) {
+                if ((std::strcmp(limit,"1") == 0 || std::strcmp(limit,"2") == 0 || std::strcmp(limit,"3") == 0) &&
+                    SDL_SetGPUAllowedFramesInFlight(created->device, Uint32(limit[0]-'0'))) {
+                    std::fprintf(stderr,"GPU diagnostic: allowed frames in flight=%s\n",limit);
+                } else return fail("diagnostic GPU frames-in-flight limit");
+            }
             created->performance_counter = true;
             SDL_GPUTextureUsageFlags use = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
             auto &t = created->visual.targets;

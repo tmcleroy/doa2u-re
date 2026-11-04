@@ -894,3 +894,19 @@ slot. Matching, ambiguity resolution and retained-buffer selection reuse them;
 full topology, vertex correspondence and byte checks remain in place. The final
 small batch of original packet work completes before another older-snapshot
 replay is considered. No original draw, visibility query or readback is skipped.
+
+### Asynchronous GPU timing diagnostics
+
+`RECOMP_GPU_TIMING` enables bounded CPU acquire/submit records and asynchronous
+fence completion brackets on the SDL GPU renderer. Also enable
+`RECOMP_LATENCY_TRACE` for scene provenance. Diagnostic fences are queried only
+at existing renderer opportunities, never waited on; they are released before
+device destruction. Completion brackets include queueing and polling delay,
+not GPU execution duration or display scanout. Overflow/incomplete records are
+explicit. The recorder has overhead and is disabled by default.
+
+For controlled interpolation comparisons, `RECOMP_GPU_FRAMES_IN_FLIGHT=1|2|3`
+overrides SDL's queue allowance at startup. No override is applied by default.
+A smaller allowance can lose presentations; do not enable it based on fence
+latency alone. This setting does not change input, simulation, interpolation
+history, or original rendering/readback work.
