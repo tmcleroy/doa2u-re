@@ -381,26 +381,6 @@ uint32_t mainWidth(const RecompD3dPresenter *presenter)
         ? presenter->config.width : presentClientWidth(presenter, mainHeight(presenter));
 }
 
-/* Where the game's picture goes in a window of swap_width x swap_height: kept to the guest aspect, centred, the
-   rest black; or, with recomp_d3d_present_stretch, the whole window. */
-void picturePlace(const RecompD3dPresenter *presenter, uint32_t swap_width, uint32_t swap_height, int &x, int &y,
-    int &width, int &height)
-{
-    x = y = 0;
-    width = static_cast<int>(swap_width);
-    height = static_cast<int>(swap_height);
-    if (recomp_d3d_present_stretch) return;
-    const float source_aspect = static_cast<float>(presentClientWidth(presenter, mainHeight(presenter))) /
-        mainHeight(presenter);
-    if (static_cast<float>(swap_width) / swap_height > source_aspect) {
-        width = static_cast<int>(swap_height * source_aspect + 0.5f);
-        x = (static_cast<int>(swap_width) - width) / 2;
-    } else {
-        height = static_cast<int>(swap_width / source_aspect + 0.5f);
-        y = (static_cast<int>(swap_height) - height) / 2;
-    }
-}
-
 /* Offscreen scenes with their own depth (water reflections) scale too;
    depthless filter chains keep guest size, as in the D3D11 backend. */
 uint32_t scaledSize(const RecompD3dPresenter *presenter, uint32_t guest)
@@ -2997,8 +2977,17 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
     } shaded_shot{};
     if (SDL_WaitAndAcquireGPUSwapchainTexture(commands, presenter->window, &swapchain, &swap_width, &swap_height) &&
         swapchain != nullptr && swap_width != 0u && swap_height != 0u) {
-        int x = 0, y = 0, width = 0, height = 0;
-        picturePlace(presenter, swap_width, swap_height, x, y, width, height);
+        // The window keeps the guest aspect; the rest of the swapchain is black.
+        const float source_aspect = static_cast<float>(presentClientWidth(presenter, mainHeight(presenter))) /
+            mainHeight(presenter);
+        int x = 0, y = 0, width = static_cast<int>(swap_width), height = static_cast<int>(swap_height);
+        if (static_cast<float>(swap_width) / swap_height > source_aspect) {
+            width = static_cast<int>(swap_height * source_aspect + 0.5f);
+            x = (static_cast<int>(swap_width) - width) / 2;
+        } else {
+            height = static_cast<int>(swap_width / source_aspect + 0.5f);
+            y = (static_cast<int>(swap_height) - height) / 2;
+        }
         SDL_GPUBlitInfo blit{};
         blit.source.texture = shown;
         const float crop = recomp_d3d_present_crop;
@@ -3764,9 +3753,17 @@ RecompD3dPresenterError d3d_backend_show_image(RecompD3dPresenter *presenter,
     Uint32 swap_width = 0u, swap_height = 0u;
     if (SDL_WaitAndAcquireGPUSwapchainTexture(commands, presenter->window, &swapchain, &swap_width, &swap_height) &&
         swapchain != nullptr && swap_width != 0u && swap_height != 0u) {
-        // As submitPresent places the game's frames
-        int x = 0, y = 0, w = 0, h = 0;
-        picturePlace(presenter, swap_width, swap_height, x, y, w, h);
+        // As submitPresent places the game's frames: the guest aspect, black around it.
+        const float source_aspect = static_cast<float>(presentClientWidth(presenter, mainHeight(presenter))) /
+            mainHeight(presenter);
+        int x = 0, y = 0, w = static_cast<int>(swap_width), h = static_cast<int>(swap_height);
+        if (static_cast<float>(swap_width) / swap_height > source_aspect) {
+            w = static_cast<int>(swap_height * source_aspect + 0.5f);
+            x = (static_cast<int>(swap_width) - w) / 2;
+        } else {
+            h = static_cast<int>(swap_width / source_aspect + 0.5f);
+            y = (static_cast<int>(swap_height) - h) / 2;
+        }
         SDL_GPUBlitInfo blit{};
         blit.source.texture = presenter->image_texture;
         blit.source.w = width;
