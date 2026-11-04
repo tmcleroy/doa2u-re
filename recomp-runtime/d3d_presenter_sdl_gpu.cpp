@@ -12,6 +12,9 @@
 #include "d3d_draw_shader.h"
 #include "d3d_shader_chain.h"
 #include "d3d_shader_compiler.h"
+#include "d3d_warmup_catalog.h"
+#include "d3d_warmup_recipe.h"
+#include <functional>
 #include "d3d_shader_preset.h"
 #include "d3d_texture_model.h"
 #include "d3d_display_phase.h"
@@ -151,6 +154,7 @@ struct SamplerEntry {
 };
 
 struct ShaderPair {
+    uint64_t recipe = 0;
     SDL_GPUShader *vertex = nullptr;
     SDL_GPUShader *fragment = nullptr;
     RecompD3dVertexLayout layout{};
@@ -209,6 +213,9 @@ struct ShaderKeyEqual {
     bool operator()(const ShaderKey &a, const ShaderKey &b) const { return std::memcmp(&a, &b, sizeof a) == 0; }
 };
 
+using WarmShader = RecompWarmShader;
+struct WarmPipeline { uint64_t shader; PipelineKey key; };
+
 struct QueuedDraw {
     SDL_GPUGraphicsPipeline *pipeline = nullptr;
     uint32_t vertex_offset = 0u;
@@ -265,6 +272,10 @@ struct VisibilityQuery {
 } // namespace
 
 struct RecompD3dPresenter {
+    FILE *warm_shader_file = nullptr, *warm_pipeline_file = nullptr;
+    bool warming = false;
+    unsigned warm_shader_misses = 0, warm_pipeline_misses = 0;
+
     RecompD3dPresenterConfig config{};
     std::thread::id owner_thread;
     SDL_Window *window = nullptr;
@@ -1203,8 +1214,9 @@ SDL_GPUShader *createShader(RecompD3dPresenter *presenter, const std::string &hl
    that survives its discards, for occlusion counting. Failures are cached
    too, so a shader that cannot build is not retried every draw. */
 ShaderPair lookupShaders(RecompD3dPresenter *presenter, const RecompD3dDrawShaderKey &draw_key,
-    bool count_pass)
+    bool count_pass, bool *compile_only = nullptr)
 {
+    if (compile_only) *compile_only = false;
     ShaderKey key{};
     key.fvf = draw_key.fvf;
     key.program_count = draw_key.program_count;
@@ -1219,7 +1231,10 @@ ShaderPair lookupShaders(RecompD3dPresenter *presenter, const RecompD3dDrawShade
     {
         std::lock_guard<std::mutex> lock(presenter->shader_lock);
         const auto found = presenter->shaders.find(key);
-        if (found != presenter->shaders.end()) return found->second;
+        if (found != presenter->shaders.end()) {
+            if (compile_only) *compile_only = found->second.vertex && found->second.fragment;
+            return found->second;
+        }
     }
     const auto start = std::chrono::steady_clock::now();
     ShaderPair pair;
@@ -1234,6 +1249,14 @@ ShaderPair lookupShaders(RecompD3dPresenter *presenter, const RecompD3dDrawShade
         }
         std::vector<std::string> defines;
         if (draw_key.sample_depth_bias) defines.push_back("RECOMP_SAMPLE_COUNT=" + std::to_string(presenter->msaa_count));
+        if (compile_only) {
+            RecompCompiledShader compiled;
+            std::string error;
+            *compile_only=recomp_shader_compile(hlsl,"vs_main",true,presenter->shader_target,defines,compiled,error) &&
+                recomp_shader_compile(hlsl,"ps_main",false,presenter->shader_target,defines,compiled,error);
+            if (!*compile_only) std::fprintf(stderr,"Shader worker: %s\n",error.c_str());
+            return {}; // Workers never create GPU objects or mutate presenter maps.
+        }
         pair.vertex = createShader(presenter, hlsl, true, defines, 0u, 2u);
         pair.fragment = pair.vertex ? createShader(presenter, hlsl, false, defines, 4u,
             presenter->shader_target == RecompShaderTarget::Msl ? 2u : 1u) : nullptr;
@@ -1245,13 +1268,28 @@ ShaderPair lookupShaders(RecompD3dPresenter *presenter, const RecompD3dDrawShade
         std::fprintf(stderr, "recomp d3d presenter: vertex program untranslated fvf=%03x count=%u\n",
             draw_key.fvf, draw_key.program_count);
     }
+    if (compile_only) return {};
     std::fprintf(stderr, "recomp d3d presenter: draw shader fvf=0x%03X program=%u%s%s in %lld ms\n",
         draw_key.fvf, draw_key.program_count, count_pass ? " count" : "",
         pair.vertex != nullptr ? "" : " failed",
         static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start).count()));
     std::lock_guard<std::mutex> lock(presenter->shader_lock);
+    WarmShader recipe;
+    std::memset(&recipe,0,sizeof recipe);
+    recipe.fvf=draw_key.fvf; recipe.count=draw_key.program_count; recipe.samples=key.samples;
+    recipe.coverage=draw_key.coverage_only; recipe.scaled_bias=draw_key.scaled_depth_bias;
+    recipe.sample_bias=draw_key.sample_depth_bias; recipe.count_pass=count_pass;
+    if (recipe.count<=136 && recipe.count) std::memcpy(recipe.program,draw_key.program,recipe.count*16u);
+    if (draw_key.pixel) std::memcpy(&recipe.pixel,draw_key.pixel,offsetof(RecompD3dPixelProgram,constants));
+    pair.recipe=recomp_warmup::checksum(&recipe,sizeof recipe);
     const auto inserted = presenter->shaders.emplace(key, pair);
+    if (inserted.second && pair.vertex && presenter->warm_shader_file && !presenter->warming) {
+        recomp_warmup::append(presenter->warm_shader_file,recipe);
+        std::fflush(presenter->warm_shader_file);
+        ++presenter->warm_shader_misses;
+        std::fprintf(stderr,"Graphics preparation: new shader during play (%u)\n",presenter->warm_shader_misses);
+    }
     if (!inserted.second) {
         // The boot precompile finished the same key first; keep its pair.
         if (pair.vertex) SDL_ReleaseGPUShader(presenter->device, pair.vertex);
@@ -1407,7 +1445,7 @@ SDL_GPUGraphicsPipeline *lookupPipeline(RecompD3dPresenter *presenter, const Pip
     key.count_pass = state.count_pass;
     key.depth_test = draw.depth.depth_test_enable;
     key.depth_write = draw.depth.depth_write_enable && !state.count_pass;
-    key.depth_func = static_cast<uint8_t>(draw.depth.depth_func);
+    key.depth_func = draw.depth.depth_test_enable ? static_cast<uint8_t>(draw.depth.depth_func) : 0;
     key.stencil_enable = draw.depth.stencil_enable;
     if (key.stencil_enable) {
         key.stencil_read = static_cast<uint8_t>(draw.depth.stencil_read_mask);
@@ -1514,8 +1552,19 @@ SDL_GPUGraphicsPipeline *lookupPipeline(RecompD3dPresenter *presenter, const Pip
     }
     // Like the D3D11 backend, a failed state is not retried every draw.
     presenter->pipelines.emplace(key, pipeline);
+    if (pipeline && presenter->warm_pipeline_file && !presenter->warming) {
+        WarmPipeline recipe{}; recipe.shader=state.shaders.recipe; recipe.key=key;
+        recipe.key.vertex=nullptr; recipe.key.fragment=nullptr;
+        recomp_warmup::append(presenter->warm_pipeline_file,recipe);
+        std::fflush(presenter->warm_pipeline_file);
+        ++presenter->warm_pipeline_misses;
+        std::fprintf(stderr,"Graphics preparation: new pipeline during play (%u) present=%u\n",presenter->warm_pipeline_misses,presenter->present_count);
+    }
     return pipeline;
 }
+
+#include "d3d_offline_pipelines.inl"
+#include "d3d_graphics_warmup.inl"
 
 /* ---- Recording ------------------------------------------------------------ */
 
@@ -3127,6 +3176,12 @@ void logDraw(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand 
 
 void releasePresenter(RecompD3dPresenter *presenter)
 {
+    if (presenter->warm_shader_file || presenter->warm_pipeline_file) {
+        std::fprintf(stderr,"Graphics preparation: gameplay misses shaders=%u pipelines=%u\n",presenter->warm_shader_misses,presenter->warm_pipeline_misses);
+        if (presenter->warm_shader_file) std::fclose(presenter->warm_shader_file);
+        if (presenter->warm_pipeline_file) std::fclose(presenter->warm_pipeline_file);
+        presenter->warm_shader_file=presenter->warm_pipeline_file=nullptr;
+    }
     if (presenter->device == nullptr) return;
     flushSegment(presenter);
     submitCommands(presenter);
@@ -3374,12 +3429,13 @@ RecompD3dPresenterError d3d_backend_create(const RecompD3dPresenterConfig *confi
     std::fprintf(stderr, "recomp d3d presenter: %s target=%ux%u msaa=%u window=%ux%u\n",
         SDL_GetGPUDeviceDriver(created->device), main_width, main_height, created->msaa_count,
         window_width, window_height);
-    try {
+    if (!std::getenv("RECOMP_GRAPHICS_CATALOG")) try {
         created->precompile = std::thread(precompileDrawShaders, created);
     } catch (const std::system_error &) {
         // Shaders then compile on first use.
     }
     active_presenter = created;
+    if (!prepareGraphics(created)) return fail("graphics preparation cancelled or failed");
     *presenter = created;
     return RECOMP_D3D_PRESENTER_OK;
 }

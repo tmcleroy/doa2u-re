@@ -69,7 +69,7 @@ constexpr char kDrawShaderPrologue[] =
     "    row_major float4x4 reflection_transform2;\n"
     "    float4 reflection_stage2_flags;\n"
     "    float4 raster_bias;\n"
-    "    float4 pixel_constants[24];\n"
+    "    float4 pixel_constants[32];\n"
     "    float4 general_light[9];\n"
     "}\n"
     "Texture2D guest_texture : register(t0);\n"

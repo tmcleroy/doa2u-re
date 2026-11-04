@@ -343,6 +343,7 @@ else()
     add_library(recomp_d3d_presenter STATIC
         d3d_presenter_sdl_gpu.cpp d3d_presenter_inline.cpp d3d_shader_compiler.cpp d3d_shader_chain.cpp overlay_sdl_gpu.cpp
         d3d_display_phase.cpp ${RECOMP_PRESENTER_SHARED})
+    target_compile_definitions(recomp_d3d_presenter PUBLIC RECOMP_SDL_GPU_PRESENTER=1)
     if(ANDROID)
         target_sources(recomp_d3d_presenter PRIVATE host_call.cpp) # (host_call.h: SDL's Java calls off the fibers)
     endif()
@@ -579,4 +580,24 @@ if(RECOMP_PROGRAM_DIR)
         add_executable(recomp_launcher ../tools/launcher_sdl.cpp)
         recomp_use_sdl3(recomp_launcher)
     endif()
+endif()
+
+# CPU-only source checks need no game or GPU. --compile additionally validates
+# both shader stages on hosts with shaderc available.
+add_executable(recomp_d3d_texture_transform_test d3d_texture_transform_test.cpp
+    d3d_draw_shader.cpp d3d_pixel_program.cpp d3d_vertex_program.cpp
+    d3d_draw_model.c d3d_shader_compiler.cpp)
+recomp_use_shader_compiler(recomp_d3d_texture_transform_test)
+target_link_libraries(recomp_d3d_texture_transform_test PRIVATE ${CMAKE_DL_LIBS})
+add_test(NAME recomp-runtime-texture-transform COMMAND recomp_d3d_texture_transform_test)
+
+add_executable(recomp_warmup_catalog_test d3d_warmup_catalog_test.cpp)
+add_test(NAME recomp-runtime-warmup-catalog COMMAND recomp_warmup_catalog_test)
+if(RECOMP_WINDOWS_SDL_GPU OR NOT WIN32)
+    add_executable(recomp_graphics_inventory_test graphics_inventory_test.cpp xapi_clock.cpp d3d_card_model.c)
+    target_link_libraries(recomp_graphics_inventory_test PRIVATE recomp_d3d_presenter)
+    if(NOT WIN32)
+        target_sources(recomp_graphics_inventory_test PRIVATE win32_compat.c)
+    endif()
+    recomp_use_sdl3(recomp_graphics_inventory_test)
 endif()

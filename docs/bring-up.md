@@ -824,3 +824,37 @@ disconnected flags, including after the game's failed network startup.
 
 Record each observed frontier privately. A public model-test pass or a
 completed lift alone is not a gameplay result.
+
+
+## Graphics preparation catalogs
+
+For the SDL GPU presenter (not the separate Direct3D 11 backend),
+`RECOMP_SHADER_CACHE` reuses source-keyed compiled shaders. Setting
+`RECOMP_GRAPHICS_CATALOG` additionally records shader and pipeline recipes and
+prepares them before guest execution. `RECOMP_GRAPHICS_PREPARE=0` skips startup
+preparation while still learning recipes. Missing, incompatible or truncated
+catalog records are ignored; valid prefixes are rewritten before appending.
+Catalogs contain no persistent GPU handles; pipeline shader pointers are cleared.
+
+A title may supply `offline-shaders-v1.bin` before renderer creation and replace
+`d3d_offline_pipelines.inl` in its merged runtime to enumerate semantic pipeline
+states. The shared default learns pipelines without assuming a title's state
+families. Recipes reserve their extra mode byte at zero; interpolation is not
+part of this format's supported behavior. The GPU format and sample count select
+separate learned profiles. Preparing known recipes reduces compilation stalls;
+it does not cover asset I/O or prove every possible dynamic state is known.
+
+`recomp_graphics_inventory_test DIRECTORY` prepares the supplied inventory using
+the real SDL GPU backend without loading a game. `--cancel` checks responsive
+shutdown. `RECOMP_GRAPHICS_INVENTORY_STRICT=1` treats missing inventories or
+preparation failures as errors. `RECOMP_GRAPHICS_INVENTORY_AUDIT` optionally
+writes the prepared pipeline set locally. No generated catalogs belong in Git.
+
+Startup compilation automatically uses up to 16 workers, bounded by logical
+processor count. Each worker owns its shaderc compiler and options. Workers only
+fill source-keyed binaries; GPU resource creation, presenter maps and event
+handling remain on the renderer thread. Cache-key lock stripes serialize duplicate
+compiles. Cancellation joins all workers; partial thread creation uses the workers
+already available. A diagnostic `RECOMP_SHADER_WORKERS=1..16` override supports
+benchmarking, but is not a player-facing setting. Without a disk cache, preparation
+stays sequential to avoid compiling twice.

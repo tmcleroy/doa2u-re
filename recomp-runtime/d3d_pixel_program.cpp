@@ -11,6 +11,20 @@ namespace {
 const char *const kTextures[] = {"guest_texture", "alpha_mask", "bump_map"};
 const char *const kSamplers[] = {"guest_sampler", "mask_sampler", "bump_sampler"};
 
+/* COUNT2 is affine, so it commutes with perspective-correct interpolation.
+   Keep each stage separate: two stages may transform the same UV set
+   differently. Xbox's 2D input expands to (u,v,1,0). */
+std::string sampleCoordinates(const RecompD3dPixelProgram &program, uint32_t i)
+{
+    const auto &stage = program.stages[i];
+    const std::string uv = "coords[" + std::to_string(stage.texcoord) + "]";
+    if (!stage.transform_uv) return uv + ".xy";
+    const auto slot = RECOMP_D3D_PIXEL_CONSTANT_UV + i * 2u;
+    const std::string input = "float4(" + uv + ".xy, 1, 0)";
+    return "float2(dot(" + input + ", pixel_constants[" + std::to_string(slot) + "]), dot(" +
+        input + ", pixel_constants[" + std::to_string(slot + 1u) + "]))";
+}
+
 bool opSupported(uint32_t op)
 {
     return op >= RECOMP_D3DTOP_DISABLE && op <= RECOMP_D3DTOP_LERP && op != RECOMP_D3DTOP_PREMODULATE;
@@ -223,10 +237,10 @@ bool combinerSource(const RecompD3dPixelProgram &program, std::string &out)
         const uint32_t mode = (c.texture_modes >> (i * 5u)) & 31u;
         if (mode == 1u && program.stages[i].sampled) {
             std::snprintf(line, sizeof line,
-                "    %s = %s.Sample(%s, coords[%u].xy * pixel_constants[%u].xy);\n"
+                "    %s = %s.Sample(%s, %s * pixel_constants[%u].xy);\n"
                 "    if (pixel_constants[%u].z > 0.5f) %s.rgb = 1.0f;\n"
                 "    if (pixel_constants[%u].w > 0.5f) %s.a = 1.0f;\n",
-                names[i], kTextures[i], kSamplers[i], program.stages[i].texcoord,
+                names[i], kTextures[i], kSamplers[i], sampleCoordinates(program, i).c_str(),
                 RECOMP_D3D_PIXEL_CONSTANT_STAGE_SCALE + i, RECOMP_D3D_PIXEL_CONSTANT_STAGE_SCALE + i, names[i],
                 RECOMP_D3D_PIXEL_CONSTANT_STAGE_SCALE + i, names[i]);
             out += line;
@@ -327,7 +341,7 @@ bool recomp_d3d_pixel_program_source(const RecompD3dPixelProgram &program, std::
 {
     if (!recomp_d3d_pixel_program_supported(&program, nullptr)) return false;
     if (program.kind == RECOMP_D3D_PIXEL_COMBINERS) return combinerSource(program, source);
-    char line[256];
+    char line[512];
     source =
         "    float4 diffuse = input.color, specular = input.specular;\n"
         "    float4 tfactor = pixel_constants[4];\n"
@@ -337,8 +351,8 @@ bool recomp_d3d_pixel_program_source(const RecompD3dPixelProgram &program, std::
         const RecompD3dPixelStage &stage = program.stages[i];
         if (stage.sampled) {
             std::snprintf(line, sizeof line,
-                "    tex = %s.Sample(%s, coords[%u].xy * pixel_constants[%u].xy);\n",
-                kTextures[i], kSamplers[i], stage.texcoord, RECOMP_D3D_PIXEL_CONSTANT_STAGE_SCALE + i);
+                "    tex = %s.Sample(%s, %s * pixel_constants[%u].xy);\n",
+                kTextures[i], kSamplers[i], sampleCoordinates(program, i).c_str(), RECOMP_D3D_PIXEL_CONSTANT_STAGE_SCALE + i);
             source += line;
             /* NV2A A8 reads white RGB; DXGI A8 has alpha only. */
             std::snprintf(line, sizeof line, "    if (pixel_constants[%u].z > 0.5f) tex.rgb = 1.0f;\n"

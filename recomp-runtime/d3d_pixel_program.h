@@ -31,7 +31,8 @@ enum {
     RECOMP_D3D_PIXEL_COMBINERS = 2u,
     RECOMP_D3D_PIXEL_STAGES = 4u,
     /* Float4 constants the shader reads (pixel_constants in the draw buffer). */
-    RECOMP_D3D_PIXEL_CONSTANTS = 24u,
+    RECOMP_D3D_PIXEL_CONSTANTS = 32u,
+    RECOMP_D3D_PIXEL_CONSTANT_UV = 24u, /* two affine coordinate columns per stage */
     /* pixel_constants slots. */
     /* 4, one per stage: xy the texel scale of a linear texture (1 when
        swizzled), z 1 for an A8 texture (white RGB on NV2A), w 1 for an X8
@@ -76,6 +77,7 @@ typedef struct RecompD3dPixelStage {
     uint32_t texcoord;                 /* vertex texture coordinate set this stage reads */
     bool sampled;                      /* a texture is bound and some argument reads it */
     bool alpha_kill;                   /* discard where the texel's alpha is zero */
+    bool transform_uv;                 /* fixed-function COUNT2 over explicit 2D UVs */
 } RecompD3dPixelStage;
 
 /* NV2A register combiner state, as the Kelvin methods carry it. */
