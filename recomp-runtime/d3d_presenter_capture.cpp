@@ -14,6 +14,14 @@ constexpr const void *Draw::*pointer_fields[] = {
     &Draw::palette_bytes, &Draw::alpha_mask_bytes,
     &Draw::alpha_mask_palette, &Draw::reflection_bytes, &Draw::reflection_stage2_bytes,
 };
+const void *&draw_pointer(Draw &draw, size_t i) {
+    if (i < 8) return draw.*pointer_fields[i];
+    return (i & 1) ? draw.stage_textures[(i-8)/2].palette : draw.stage_textures[(i-8)/2].bytes;
+}
+const void *draw_pointer(const Draw &draw, size_t i) {
+    if (i < 8) return draw.*pointer_fields[i];
+    return (i & 1) ? draw.stage_textures[(i-8)/2].palette : draw.stage_textures[(i-8)/2].bytes;
+}
 // No readable guest span can exceed the runner's entire 64 MiB RAM region.
 constexpr uint64_t max_span_bytes = 64u * 1024u * 1024u;
 constexpr size_t null_offset = SIZE_MAX;
@@ -67,11 +75,11 @@ RecompD3dPresenterError D3dCapturePacket::add(
     const RecompD3dPresenterCommand &command)
 {
     if (sealed_ || static_cast<unsigned>(command.type) >
-        RECOMP_D3D_PRESENTER_COMMAND_COPY_MAIN_COLOR) {
+        RECOMP_D3D_PRESENTER_COMMAND_COPY_RECT) {
         return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
     }
 
-    uint64_t sizes[8]{};
+    uint64_t sizes[16]{};
     if (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW ||
         command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW_COVERAGE) {
         const auto &draw = command.data.draw;
@@ -85,6 +93,12 @@ RecompD3dPresenterError D3dCapturePacket::add(
             sizes[6] = draw.reflection_byte_count;
             sizes[7] = draw.reflection_stage2_byte_count;
         }
+        if (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW && draw.pixel_program.kind != RECOMP_D3D_PIXEL_NONE) {
+            for (unsigned i = 0; i < 4; ++i) {
+                sizes[8 + i*2] = draw.stage_textures[i].byte_count;
+                sizes[9 + i*2] = draw.stage_textures[i].palette_byte_count;
+            }
+        }
         for (uint64_t size : sizes) {
             if (size > max_span_bytes) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
         }
@@ -92,18 +106,21 @@ RecompD3dPresenterError D3dCapturePacket::add(
 
     const size_t old_payload_size = payload_.size();
     const size_t old_command_count = commands_.size();
-    uint64_t inserted_keys[8]{};
+    const size_t old_pose_count = scene_poses_.size();
+    uint64_t inserted_keys[16]{};
     size_t inserted_count = 0u;
     try {
         CapturedCommand &captured = commands_.emplace_back();
         copyCommand(captured.value, command);
+        if (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW && command.data.draw.scene_pose)
+            scene_poses_.push_back(static_cast<const Sc2SkinPose *>(command.data.draw.scene_pose)->shared_from_this());
         if (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW ||
             command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW_COVERAGE) {
-            for (size_t i = 0u; i < 8u; ++i) {
-                const void *source = command.data.draw.*pointer_fields[i];
-                captured.value.data.draw.*pointer_fields[i] = nullptr;
+            for (size_t i = 0u; i < 16u; ++i) {
+                const void *source = draw_pointer(command.data.draw, i);
+                draw_pointer(captured.value.data.draw, i) = nullptr;
                 captured.offsets[i] = null_offset;
-                if (source == nullptr || (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW_COVERAGE && i >= 2u)) continue;
+                if ((i >= 8 && sizes[i] == 0u) || source == nullptr || (command.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW_COVERAGE && i >= 2u)) continue;
 
                 const size_t size = static_cast<size_t>(sizes[i]);
                 const uint64_t key = spanKey(source, size);
@@ -145,6 +162,7 @@ RecompD3dPresenterError D3dCapturePacket::add(
         }
     }
     commands_.resize(old_command_count);
+    scene_poses_.resize(old_pose_count);
     payload_.resize(old_payload_size);
     return RECOMP_D3D_PRESENTER_OUT_OF_MEMORY;
 }
@@ -183,8 +201,8 @@ void D3dCapturePacket::seal()
     for (auto &captured : commands_) {
         if (captured.value.type != RECOMP_D3D_PRESENTER_COMMAND_DRAW &&
             captured.value.type != RECOMP_D3D_PRESENTER_COMMAND_DRAW_COVERAGE) continue;
-        for (size_t i = 0u; i < 8u; ++i) {
-            captured.value.data.draw.*pointer_fields[i] = captured.offsets[i] == null_offset
+        for (size_t i = 0u; i < 16u; ++i) {
+            draw_pointer(captured.value.data.draw, i) = captured.offsets[i] == null_offset
                 ? nullptr : payload_.data() + captured.offsets[i];
         }
     }
@@ -209,10 +227,12 @@ const RecompD3dPresenterCommand &D3dCapturePacket::command(size_t index) const
 
 void D3dCapturePacket::clear()
 {
+    latency = {};
     entries_.clear();
     commands_.clear();
     payload_.clear();
     spans_.clear();
+    scene_poses_.clear();
     sealed_ = false;
 }
 

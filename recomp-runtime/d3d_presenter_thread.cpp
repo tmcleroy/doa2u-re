@@ -12,12 +12,16 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <functional>
+#include <cmath>
 #include <mutex>
 #include <new>
 #include <system_error>
 #include <thread>
 #include <unordered_map>
 
+
+long long d3d_backend_visual_idle(long long deadline);
 
 namespace {
 
@@ -31,6 +35,9 @@ struct PresenterThread {
     unsigned open = 0;
     unsigned front = 0;
     unsigned pending = 0; // Includes the packet executing outside the mutex.
+    std::function<void()> host_request;
+    bool request_done = false;
+    RecompD3dPresenter *backend = nullptr;
     bool started = false;
     bool shutdown = false;
     RecompD3dPresenterError created = RECOMP_D3D_PRESENTER_OK;
@@ -102,8 +109,21 @@ void pump(PresenterThread &thread)
 void execute(PresenterThread &thread, RecompD3dPresenter *backend,
     const D3dCapturePacket &packet)
 {
+    recomp_latency::executing = packet.latency;
+    recomp_latency::record("dequeue", packet.latency);
     for (size_t i = 0; i < packet.count(); ++i) {
         if (status(thread) != RECOMP_D3D_PRESENTER_OK) break;
+#ifdef SC2_SDL_VISUAL
+        // Original rendering is incremental. Service display deadlines between
+        // small batches instead of waiting for an entire simulation packet.
+        // The backend refuses a replay inside an active visibility query and
+        // isolates its targets from the original frame's readbacks.
+        if (i != 0 && (i & 31u) == 0u) {
+            const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            d3d_backend_visual_idle(ns + 16666667);
+        }
+#endif
         const auto &record = packet.record(i);
         RecompD3dPresenterError error = RECOMP_D3D_PRESENTER_OK;
         bool draw = false;
@@ -197,6 +217,7 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
     }
     {
         std::lock_guard<std::mutex> lock(thread.mutex);
+        thread.backend = backend;
         thread.created = created;
         thread.status = created;
         thread.started = true;
@@ -207,6 +228,19 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
     bool querying = false;
     for (;;) {
         pump(thread);
+        std::function<void()> request;
+        {
+            std::lock_guard<std::mutex> lock(thread.mutex);
+            request = std::move(thread.host_request);
+        }
+        if (request) {
+            request();
+            {
+                std::lock_guard<std::mutex> lock(thread.mutex);
+                thread.request_done = true;
+            }
+            thread.changed.notify_all();
+        }
         D3dCapturePacket *packet = nullptr;
         {
             std::lock_guard<std::mutex> lock(thread.mutex);
@@ -216,8 +250,19 @@ void run(PresenterThread &thread, RecompD3dPresenterConfig config)
         if (packet == nullptr) {
             // Resolve queries off the GPU while idle, polling until none remain.
             if (querying) querying = resolveVisibility(thread, backend);
+            const auto now = std::chrono::steady_clock::now();
+            const long long ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+#ifdef SC2_SDL_VISUAL
+            const auto next = d3d_backend_visual_idle(ns + 16666667);
+#else
+            const long long next = 0;
+#endif
+            const auto end = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            DWORD wait_ms = querying ? 1u : INFINITE;
+            if (next) wait_ms = std::min<DWORD>(wait_ms, static_cast<DWORD>(std::max(0ll, next-end) / 1000000));
             if (MsgWaitForMultipleObjects(1, &thread.wake, FALSE,
-                    querying ? 1u : INFINITE, QS_ALLINPUT) == WAIT_FAILED) {
+                    wait_ms, QS_ALLINPUT) == WAIT_FAILED) {
                 fail(thread, RECOMP_D3D_PRESENTER_HOST_FAILURE);
             }
             continue;
@@ -283,6 +328,7 @@ RecompD3dPresenterError publish(PresenterThread &thread, bool destroying)
     });
     if (thread.pacing) notePacing(thread, wait_start_ms, clock_ms());
     if (!destroying && thread.status != RECOMP_D3D_PRESENTER_OK) return thread.status;
+    thread.packets[thread.open].latency = recomp_latency::publish();
     thread.packets[thread.open].seal();
     thread.open = (thread.open + 1) % 3;
     ++thread.pending;
@@ -422,20 +468,32 @@ RecompD3dPresenterError recomp_d3d_presenter_draw_coverage(
     return RECOMP_D3D_PRESENTER_OK;
 }
 
-/* ponytail: the worker's backend (D3D11) has no frame readback or image
-   present yet; a port's in-game menu is unavailable there. */
-RecompD3dPresenterError recomp_d3d_presenter_read_frame(RecompD3dPresenter *presenter,
-    uint32_t *, uint32_t, uint32_t *, uint32_t *)
+static void on_renderer(std::function<void()> action)
 {
-    const auto error = validate(presenter);
-    return error != RECOMP_D3D_PRESENTER_OK ? error : RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    auto &thread = *active_thread;
+    std::unique_lock<std::mutex> lock(thread.mutex);
+    thread.request_done = false;
+    thread.host_request = std::move(action);
+    lock.unlock();
+    SetEvent(thread.wake);
+    lock.lock();
+    thread.changed.wait(lock, [&] { return thread.request_done; });
 }
-
-RecompD3dPresenterError recomp_d3d_presenter_show_image(RecompD3dPresenter *presenter,
-    const uint32_t *, uint32_t, uint32_t)
+RecompD3dPresenterError recomp_d3d_presenter_read_frame(RecompD3dPresenter *presenter,
+    uint32_t *pixels, uint32_t capacity, uint32_t *width, uint32_t *height)
 {
-    const auto error = validate(presenter);
-    return error != RECOMP_D3D_PRESENTER_OK ? error : RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
+    auto error = recomp_d3d_presenter_flush(presenter, true);
+    if (error != RECOMP_D3D_PRESENTER_OK) return error;
+    on_renderer([&] { error = d3d_backend_read_frame(active_thread->backend, pixels, capacity, width, height); });
+    return error;
+}
+RecompD3dPresenterError recomp_d3d_presenter_show_image(RecompD3dPresenter *presenter,
+    const uint32_t *pixels, uint32_t width, uint32_t height)
+{
+    auto error = recomp_d3d_presenter_flush(presenter, true);
+    if (error != RECOMP_D3D_PRESENTER_OK) return error;
+    on_renderer([&] { error = d3d_backend_show_image(active_thread->backend, pixels, width, height); });
+    return error;
 }
 
 RecompD3dPresenterError recomp_d3d_presenter_visibility_result(
@@ -480,7 +538,8 @@ RecompD3dPresenterError recomp_d3d_presenter_destroy(RecompD3dPresenter **presen
 
 void recomp_d3d_presenter_set_immediate_present(bool enabled)
 {
-    d3d_backend_set_immediate_present(enabled);
+    if (active_thread) on_renderer([enabled] { d3d_backend_set_immediate_present(enabled); });
+    else d3d_backend_set_immediate_present(enabled);
 }
 
 void recomp_d3d_presenter_report_draw_textures()

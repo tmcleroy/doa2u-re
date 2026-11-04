@@ -320,6 +320,11 @@ typedef struct RecompD3dPresenterDrawCommand {
         bool white;
     } stage_textures[RECOMP_D3D_PIXEL_STAGES];
     RecompD3dPresenterTarget target;
+    /* Optional immutable Sc2SkinPose, owned by capture packets on submission. */
+    const void *scene_pose;
+    uint32_t scene_first_vertex;
+    /* Guest provenance for disambiguating byte-identical static instances. */
+    uint32_t visual_vertex_source, visual_transform_source;
 } RecompD3dPresenterDrawCommand;
 
 /* CopyRects from the main color target, or from the frame Present last showed

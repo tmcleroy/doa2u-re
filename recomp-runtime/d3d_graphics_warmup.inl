@@ -4,7 +4,7 @@
 bool prepareGraphics(RecompD3dPresenter *p) {
     const char *folder=std::getenv("RECOMP_GRAPHICS_CATALOG");
     if (!folder || !*folder) return true;
-    const std::string profile="-v2-"+std::to_string(p->msaa_count)+"-"+std::to_string(p->depth_format)+"-"+std::to_string(static_cast<int>(p->shader_target))+".bin";
+    const std::string profile="-v3-"+std::to_string(p->msaa_count)+"-"+std::to_string(p->depth_format)+"-"+std::to_string(static_cast<int>(p->shader_target))+".bin";
     const std::string shaders_path=std::string(folder)+"/shaders"+profile;
     const std::string pipelines_path=std::string(folder)+"/pipelines"+profile;
     const auto shaders=recomp_warmup::read<WarmShader>(shaders_path);
@@ -86,11 +86,11 @@ bool prepareGraphics(RecompD3dPresenter *p) {
                 const size_t i=next.fetch_add(1);
                 if (i>=all.size()) break;
                 const auto &r=all[i];
-                if (r.count<=136 && r.reserved==0 && r.coverage<=1 && r.scaled_bias<=1 && r.sample_bias<=1 && r.count_pass<=1) {
+                if (r.count<=136 && r.visual<=2 && r.coverage<=1 && r.scaled_bias<=1 && r.sample_bias<=1 && r.count_pass<=1) {
                     try {
                         RecompD3dDrawShaderKey key{r.fvf,r.count,r.program,r.coverage!=0,r.scaled_bias!=0,r.sample_bias!=0,r.pixel.kind?&r.pixel:nullptr};
                         bool ok=false;
-                        lookupShaders(p,key,r.count_pass!=0,&ok);
+                        lookupShaders(p,key,r.count_pass!=0,r.visual,&ok);
                         // Normal preparation retries failures and reports them.
                     } catch (...) { /* Renderer-thread retry remains available. */ }
                 }
@@ -115,10 +115,10 @@ bool prepareGraphics(RecompD3dPresenter *p) {
     for (const auto &r:all) {
         if (!progress()) { p->warming=false; return false; }
         ++done;
-        if (r.count>136 || r.reserved!=0 || r.coverage>1 || r.scaled_bias>1 || r.sample_bias>1 || r.count_pass>1) { ++failed; continue; }
+        if (r.count>136 || r.visual>2 || r.coverage>1 || r.scaled_bias>1 || r.sample_bias>1 || r.count_pass>1) { ++failed; continue; }
         RecompD3dDrawShaderKey key{r.fvf,r.count,r.program,r.coverage!=0,r.scaled_bias!=0,r.sample_bias!=0,
             r.pixel.kind?&r.pixel:nullptr};
-        const auto pair=lookupShaders(p,key,r.count_pass!=0);
+        const auto pair=lookupShaders(p,key,r.count_pass!=0,r.visual);
         if (!pair.vertex || !pair.fragment) ++failed;
         else {
             prepared.emplace(recomp_warmup::checksum(&r,sizeof r),pair);

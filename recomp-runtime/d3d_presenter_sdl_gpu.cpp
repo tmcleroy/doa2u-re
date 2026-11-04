@@ -8,6 +8,8 @@
    counts come from an additive pass. VRR and RECOMP_D3D_PRESENT_LOG are
    Direct3D 11 only. */
 #include "d3d_presenter_backend.h"
+#include "d3d_presenter_capture.h"
+#include "d3d_visual_interpolation.h"
 #include "d3d_draw_model.h"
 #include "d3d_draw_shader.h"
 #include "d3d_shader_chain.h"
@@ -154,10 +156,11 @@ struct SamplerEntry {
 };
 
 struct ShaderPair {
-    uint64_t recipe = 0;
     SDL_GPUShader *vertex = nullptr;
     SDL_GPUShader *fragment = nullptr;
     RecompD3dVertexLayout layout{};
+    uint8_t visual = 0; // 1: retained morph; 2: native skeletal pose
+    uint64_t recipe = 0;
 };
 
 /* Everything that selects one SDL graphics pipeline. Zero-filled before use,
@@ -203,6 +206,7 @@ struct ShaderKey {
     uint64_t pixel_hash;  // general pixel program, 0 for the recognised paths
     uint8_t coverage_only, scaled_depth_bias, sample_depth_bias, count_pass;
     uint32_t samples;
+    uint8_t visual;
 };
 
 struct ShaderKeyHash {
@@ -215,6 +219,7 @@ struct ShaderKeyEqual {
 
 using WarmShader = RecompWarmShader;
 struct WarmPipeline { uint64_t shader; PipelineKey key; };
+static_assert(sizeof(WarmShader)==3052 && offsetof(WarmShader,pixel)==2196, "offline inventory schema changed");
 
 struct QueuedDraw {
     SDL_GPUGraphicsPipeline *pipeline = nullptr;
@@ -230,6 +235,12 @@ struct QueuedDraw {
     uint8_t stencil_ref = 0u;
     SDL_GPUViewport viewport{};
     SDL_Rect scissor{};
+    SDL_GPUBuffer *retained_vertices = nullptr, *retained_indices = nullptr;
+    SDL_GPUBuffer *previous_vertices = nullptr;
+    uint32_t previous_offset = 0;
+    float alpha = 1;
+    SDL_GPUBuffer *skin_buffers[3]{};
+    uint32_t skin_first = 0;
 };
 
 /* Draws for one bound target, recorded as one render pass when the target
@@ -269,13 +280,73 @@ struct VisibilityQuery {
     SDL_GPUFence *fence = nullptr;
 };
 
+// All replay render targets are separate from those observed by guest readbacks.
+struct VisualTargets {
+    SDL_GPUTexture *color = nullptr, *resolve = nullptr, *depth = nullptr;
+    SDL_GPUTexture *back = nullptr, *previous = nullptr;
+    bool resolved = true, copy_mips = false, previous_mips = false;
+    uint64_t bytes = 0;
+    std::vector<RenderTargetEntry> colors;
+    std::vector<DepthTargetEntry> depths;
+};
+struct VisualAsset {
+    SDL_GPUDevice *device = nullptr;
+    SDL_GPUBuffer *vertices = nullptr, *indices = nullptr;
+    std::shared_ptr<uint64_t> budget;
+    uint64_t bytes = 0;
+    ~VisualAsset() {
+        if (vertices) SDL_ReleaseGPUBuffer(device, vertices);
+        if (indices) SDL_ReleaseGPUBuffer(device, indices);
+        if (budget) *budget -= bytes;
+    }
+};
+struct VisualGeometry {
+    uint32_t vertex = 0, index = 0, index_count = 0;
+    bool valid = false;
+    std::shared_ptr<VisualAsset> asset;
+    std::shared_ptr<VisualAsset> skin_mesh, skin_pose;
+    uint32_t skin_first = 0;
+};
+struct VisualGpuFrame {
+    SDL_GPUBuffer *vertices = nullptr, *indices = nullptr;
+    SDL_GPUTransferBuffer *vertex_transfer = nullptr, *index_transfer = nullptr;
+    uint32_t vertex_capacity = 0, index_capacity = 0;
+    std::vector<uint8_t> vertex_data, index_data;
+    std::vector<VisualGeometry> geometry;
+};
+struct VisualFrames {
+    double latency_alpha = 1;
+    bool latency_history = false;
+    D3dCapturePacket building, previous, current;
+    VisualTargets targets;
+    bool enabled = false, replaying = false, bad_capture = false, suspended = false;
+    unsigned epoch = 0;
+    double fps = 0;
+    long long arrived = 0, next = 0;
+    RecompD3dPresenterPresentCommand present{};
+    uint64_t draws = 0, blended = 0;
+    std::unordered_map<uint64_t, size_t> previous_draws;
+    std::unordered_map<uint64_t, unsigned> current_counts;
+    std::vector<size_t> matches;
+    VisualGpuFrame gpu_previous, gpu_current, gpu_spare;
+    bool gpu_enabled = true;
+    uint8_t gpu_blend = 0;
+    const VisualGeometry *active_geometry = nullptr, *prior_geometry = nullptr;
+    float alpha = 1;
+    uint64_t retained_draws = 0, upload_bytes = 0, missed_buffers = 0;
+    double replay_ms = 0, prepare_ms = 0;
+    FILE *trace = nullptr;
+    std::shared_ptr<uint64_t> asset_budget = std::make_shared<uint64_t>(0);
+    uint64_t static_draws = 0;
+    struct SkinAsset { std::shared_ptr<const Sc2SkinMesh> source; std::shared_ptr<VisualAsset> gpu; };
+    std::unordered_map<const Sc2SkinMesh *, SkinAsset> skin_assets;
+    uint64_t skin_draws = 0;
+};
+
 } // namespace
 
 struct RecompD3dPresenter {
-    FILE *warm_shader_file = nullptr, *warm_pipeline_file = nullptr;
-    bool warming = false;
-    unsigned warm_shader_misses = 0, warm_pipeline_misses = 0;
-
+    VisualFrames visual;
     RecompD3dPresenterConfig config{};
     std::thread::id owner_thread;
     SDL_Window *window = nullptr;
@@ -318,6 +389,9 @@ struct RecompD3dPresenter {
     SDL_GPUCommandBuffer *command_buffer = nullptr;
 
     std::mutex shader_lock;
+    FILE *warm_shader_file = nullptr, *warm_pipeline_file = nullptr;
+    bool warming = false;
+    unsigned warm_shader_misses = 0, warm_pipeline_misses = 0;
     std::unordered_map<ShaderKey, ShaderPair, ShaderKeyHash, ShaderKeyEqual> shaders;
     std::unordered_map<PipelineKey, SDL_GPUGraphicsPipeline *, PipelineKeyHash, PipelineKeyEqual> pipelines;
     std::thread precompile;
@@ -372,6 +446,9 @@ struct RecompD3dPresenter {
 namespace {
 
 RecompD3dPresenter *active_presenter;
+long long visualIdle(long long deadline);
+void finishVisualFrame(RecompD3dPresenter *presenter, const RecompD3dPresenterPresentCommand &present);
+void releaseVisualTargets(RecompD3dPresenter *presenter);
 bool immediate_present;
 
 uint32_t presentClientWidth(const RecompD3dPresenter *presenter, uint64_t height)
@@ -1184,7 +1261,7 @@ SDL_GPUTexture *lookupTexture(RecompD3dPresenter *presenter, const RecompD3dPres
 /* ---- Shaders and pipelines ------------------------------------------------ */
 
 SDL_GPUShader *createShader(RecompD3dPresenter *presenter, const std::string &hlsl, bool vertex,
-    const std::vector<std::string> &defines, uint32_t samplers, uint32_t uniform_buffers)
+    const std::vector<std::string> &defines, uint32_t samplers, uint32_t uniform_buffers, uint32_t storage_buffers = 0)
 {
     RecompCompiledShader compiled;
     std::string error;
@@ -1202,6 +1279,7 @@ SDL_GPUShader *createShader(RecompD3dPresenter *presenter, const std::string &hl
     info.stage = vertex ? SDL_GPU_SHADERSTAGE_VERTEX : SDL_GPU_SHADERSTAGE_FRAGMENT;
     info.num_samplers = samplers;
     info.num_uniform_buffers = uniform_buffers;
+    info.num_storage_buffers = storage_buffers;
     SDL_GPUShader *shader = SDL_CreateGPUShader(presenter->device, &info);
     if (shader == nullptr) {
         std::fprintf(stderr, "recomp d3d presenter: SDL rejected the %s shader: %s\n",
@@ -1214,9 +1292,9 @@ SDL_GPUShader *createShader(RecompD3dPresenter *presenter, const std::string &hl
    that survives its discards, for occlusion counting. Failures are cached
    too, so a shader that cannot build is not retried every draw. */
 ShaderPair lookupShaders(RecompD3dPresenter *presenter, const RecompD3dDrawShaderKey &draw_key,
-    bool count_pass, bool *compile_only = nullptr)
+    bool count_pass, uint8_t visual = 0, bool *compile_only = nullptr)
 {
-    if (compile_only) *compile_only = false;
+    if (compile_only) *compile_only=false;
     ShaderKey key{};
     key.fvf = draw_key.fvf;
     key.program_count = draw_key.program_count;
@@ -1228,11 +1306,12 @@ ShaderPair lookupShaders(RecompD3dPresenter *presenter, const RecompD3dDrawShade
     key.sample_depth_bias = draw_key.sample_depth_bias;
     key.count_pass = count_pass;
     key.samples = draw_key.sample_depth_bias ? presenter->msaa_count : 0u;
+    key.visual = visual;
     {
         std::lock_guard<std::mutex> lock(presenter->shader_lock);
         const auto found = presenter->shaders.find(key);
         if (found != presenter->shaders.end()) {
-            if (compile_only) *compile_only = found->second.vertex && found->second.fragment;
+            if (compile_only) *compile_only=found->second.vertex && found->second.fragment;
             return found->second;
         }
     }
@@ -1240,6 +1319,52 @@ ShaderPair lookupShaders(RecompD3dPresenter *presenter, const RecompD3dDrawShade
     ShaderPair pair;
     std::string hlsl;
     if (recomp_d3d_draw_shader_source(draw_key, pair.layout, hlsl)) {
+        pair.visual = visual;
+        if (visual == 2) {
+            const auto entry = hlsl.find("VSOut vs_main(VSIn input) {");
+            if (entry == std::string::npos) return {};
+            std::string skin = R"(
+    uint2 range = visual_mesh.Load2((vertex_id + (uint)visual_alpha.y)*8);
+    float3 skin_p = 0, skin_n = 0;
+    for (uint j=0; j<range.y; ++j) {
+        uint address = range.x + j*32;
+        float4 p = asfloat(visual_mesh.Load4(address));
+        float3 n = asfloat(visual_mesh.Load3(address+16));
+        uint bone = (visual_mesh.Load(address+28) & 255)*4;
+        float4 r0 = lerp(visual_previous[bone], visual_current[bone], visual_alpha.x);
+        float4 r1 = lerp(visual_previous[bone+1], visual_current[bone+1], visual_alpha.x);
+        float4 r2 = lerp(visual_previous[bone+2], visual_current[bone+2], visual_alpha.x);
+        float4 r3 = lerp(visual_previous[bone+3], visual_current[bone+3], visual_alpha.x);
+        skin_p += ((p.x*r0.xyz+p.y*r1.xyz)+p.z*r2.xyz)+p.w*r3.xyz;
+        skin_n += (n.x*r0.xyz+n.y*r1.xyz)+n.z*r2.xyz;
+    }
+    input.position = skin_p;
+)";
+            if (pair.layout.normal_offset != RECOMP_D3D_FVF_ABSENT)
+                skin += "    input.normal = dot(skin_n,skin_n)>1e-10 ? normalize(skin_n) : skin_n;\n";
+            hlsl.replace(entry, std::strlen("VSOut vs_main(VSIn input) {"),
+                "VSOut vs_main(VSIn input, uint vertex_id : SV_VertexID) {\n" + skin);
+            hlsl = "[[vk::binding(0, 0)]] ByteAddressBuffer visual_mesh : register(t4);\n"
+                "[[vk::binding(1, 0)]] StructuredBuffer<float4> visual_previous : register(t5);\n"
+                "[[vk::binding(2, 0)]] StructuredBuffer<float4> visual_current : register(t6);\n"
+                "[[vk::binding(2, RECOMP_UNIFORM_SET)]] cbuffer VisualConstants : register(b2) { float4 visual_alpha; };\n" + hlsl;
+        } else if (visual == 1) {
+            // Add a second immutable vertex stream. Only the interpolation factor
+            // changes between display frames; geometry stays resident on the GPU.
+            const auto input = hlsl.find("struct VSIn {");
+            const auto close = hlsl.find("};", input);
+            const auto entry = hlsl.find("VSOut vs_main(VSIn input) {");
+            if (input == std::string::npos || close == std::string::npos || entry == std::string::npos)
+                return {};
+            const bool normal = pair.layout.normal_offset != RECOMP_D3D_FVF_ABSENT;
+            std::string code = "\n    input.position = lerp(input.previous_position, input.position, visual_alpha.x);\n";
+            if (normal) code += "    float3 vn = lerp(input.previous_normal, input.normal, visual_alpha.x);\n"
+                "    input.normal = dot(vn,vn) > 1e-10 ? normalize(vn) : vn;\n";
+            hlsl.insert(entry + std::strlen("VSOut vs_main(VSIn input) {"), code);
+            hlsl.insert(close, "    float3 previous_position : TEXCOORD12;\n" +
+                std::string(normal ? "    float3 previous_normal : TEXCOORD13;\n" : ""));
+            hlsl = "[[vk::binding(2, RECOMP_UNIFORM_SET)]] cbuffer VisualConstants : register(b2) { float4 visual_alpha; };\n" + hlsl;
+        }
         hlsl = recomp_shader_draw_bindings(hlsl);
         if (presenter->shader_target == RecompShaderTarget::Msl) hlsl = recomp_shader_emulate_sampler_bias(hlsl);
         if (count_pass) {
@@ -1254,10 +1379,10 @@ ShaderPair lookupShaders(RecompD3dPresenter *presenter, const RecompD3dDrawShade
             std::string error;
             *compile_only=recomp_shader_compile(hlsl,"vs_main",true,presenter->shader_target,defines,compiled,error) &&
                 recomp_shader_compile(hlsl,"ps_main",false,presenter->shader_target,defines,compiled,error);
-            if (!*compile_only) std::fprintf(stderr,"Shader worker: %s\n",error.c_str());
+            if (!*compile_only) std::fprintf(stderr,"SC2 shader worker: %s\n",error.c_str());
             return {}; // Workers never create GPU objects or mutate presenter maps.
         }
-        pair.vertex = createShader(presenter, hlsl, true, defines, 0u, 2u);
+        pair.vertex = createShader(presenter, hlsl, true, defines, 0u, visual ? 3u : 2u, visual == 2 ? 3u : 0u);
         pair.fragment = pair.vertex ? createShader(presenter, hlsl, false, defines, 4u,
             presenter->shader_target == RecompShaderTarget::Msl ? 2u : 1u) : nullptr;
         if (pair.fragment == nullptr && pair.vertex != nullptr) {
@@ -1269,8 +1394,8 @@ ShaderPair lookupShaders(RecompD3dPresenter *presenter, const RecompD3dDrawShade
             draw_key.fvf, draw_key.program_count);
     }
     if (compile_only) return {};
-    std::fprintf(stderr, "recomp d3d presenter: draw shader fvf=0x%03X program=%u%s%s in %lld ms\n",
-        draw_key.fvf, draw_key.program_count, count_pass ? " count" : "",
+    std::fprintf(stderr, "recomp d3d presenter: draw shader fvf=0x%03X program=%u%s%s%s in %lld ms\n",
+        draw_key.fvf, draw_key.program_count, count_pass ? " count" : "", visual == 2 ? " GPU-skeletal" : visual ? " GPU-interpolated" : "",
         pair.vertex != nullptr ? "" : " failed",
         static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start).count()));
@@ -1279,7 +1404,7 @@ ShaderPair lookupShaders(RecompD3dPresenter *presenter, const RecompD3dDrawShade
     std::memset(&recipe,0,sizeof recipe);
     recipe.fvf=draw_key.fvf; recipe.count=draw_key.program_count; recipe.samples=key.samples;
     recipe.coverage=draw_key.coverage_only; recipe.scaled_bias=draw_key.scaled_depth_bias;
-    recipe.sample_bias=draw_key.sample_depth_bias; recipe.count_pass=count_pass;
+    recipe.sample_bias=draw_key.sample_depth_bias; recipe.count_pass=count_pass; recipe.visual=visual;
     if (recipe.count<=136 && recipe.count) std::memcpy(recipe.program,draw_key.program,recipe.count*16u);
     if (draw_key.pixel) std::memcpy(&recipe.pixel,draw_key.pixel,offsetof(RecompD3dPixelProgram,constants));
     pair.recipe=recomp_warmup::checksum(&recipe,sizeof recipe);
@@ -1288,7 +1413,7 @@ ShaderPair lookupShaders(RecompD3dPresenter *presenter, const RecompD3dDrawShade
         recomp_warmup::append(presenter->warm_shader_file,recipe);
         std::fflush(presenter->warm_shader_file);
         ++presenter->warm_shader_misses;
-        std::fprintf(stderr,"Graphics preparation: new shader during play (%u)\n",presenter->warm_shader_misses);
+        std::fprintf(stderr,"SC2 graphics preparation: new shader during play (%u)\n",presenter->warm_shader_misses);
     }
     if (!inserted.second) {
         // The boot precompile finished the same key first; keep its pair.
@@ -1385,7 +1510,7 @@ SDL_GPUStencilOp hostStencilOp(RecompD3dStencilOp op)
 /* Vertex inputs in the shader's VSIn order, which recomp_shader_draw_bindings
    numbers from zero. */
 uint32_t vertexAttributes(const RecompD3dVertexLayout &layout, bool coverage_only,
-    SDL_GPUVertexAttribute (&attributes)[8])
+    SDL_GPUVertexAttribute (&attributes)[10])
 {
     uint32_t count = 0u;
     const auto add = [&](SDL_GPUVertexElementFormat format, uint32_t offset) {
@@ -1445,7 +1570,8 @@ SDL_GPUGraphicsPipeline *lookupPipeline(RecompD3dPresenter *presenter, const Pip
     key.count_pass = state.count_pass;
     key.depth_test = draw.depth.depth_test_enable;
     key.depth_write = draw.depth.depth_write_enable && !state.count_pass;
-    key.depth_func = draw.depth.depth_test_enable ? static_cast<uint8_t>(draw.depth.depth_func) : 0;
+    // A disabled depth test cannot observe its comparison function.
+    key.depth_func = static_cast<uint8_t>(draw.depth.depth_test_enable ? draw.depth.depth_func : RECOMP_D3D_COMPARE_ALWAYS);
     key.stencil_enable = draw.depth.stencil_enable;
     if (key.stencil_enable) {
         key.stencil_read = static_cast<uint8_t>(draw.depth.stencil_read_mask);
@@ -1489,7 +1615,7 @@ SDL_GPUGraphicsPipeline *lookupPipeline(RecompD3dPresenter *presenter, const Pip
     }
     info.depth_stencil_state.enable_depth_test = key.depth_test;
     info.depth_stencil_state.enable_depth_write = key.depth_write;
-    info.depth_stencil_state.compare_op = hostCompareOp(draw.depth.depth_func);
+    info.depth_stencil_state.compare_op = hostCompareOp(static_cast<RecompD3dCompareFunc>(key.depth_func));
     info.depth_stencil_state.enable_stencil_test = key.stencil_enable;
     if (key.stencil_enable) {
         info.depth_stencil_state.compare_mask = key.stencil_read;
@@ -1527,16 +1653,27 @@ SDL_GPUGraphicsPipeline *lookupPipeline(RecompD3dPresenter *presenter, const Pip
     info.target_info.has_depth_stencil_target = state.depth_format != SDL_GPU_TEXTUREFORMAT_INVALID;
     info.target_info.depth_stencil_format = state.depth_format;
 
-    SDL_GPUVertexBufferDescription buffer{};
-    buffer.slot = 0u;
-    buffer.pitch = state.stride;
-    buffer.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
-    SDL_GPUVertexAttribute attributes[8]{};
-    info.vertex_input_state.vertex_buffer_descriptions = &buffer;
-    info.vertex_input_state.num_vertex_buffers = 1u;
+    SDL_GPUVertexBufferDescription buffers[2]{};
+    for (unsigned i = 0; i < 2; ++i) {
+        buffers[i].slot = i;
+        buffers[i].pitch = state.stride;
+        buffers[i].input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+    }
+    SDL_GPUVertexAttribute attributes[10]{};
+    info.vertex_input_state.vertex_buffer_descriptions = buffers;
+    info.vertex_input_state.num_vertex_buffers = state.shaders.visual == 1 ? 2u : 1u;
     info.vertex_input_state.vertex_attributes = attributes;
     info.vertex_input_state.num_vertex_attributes =
         vertexAttributes(state.shaders.layout, state.coverage_only, attributes);
+    if (state.shaders.visual == 1) {
+        auto &n = info.vertex_input_state.num_vertex_attributes;
+        attributes[n] = {n, 1u, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, state.shaders.layout.position_offset};
+        ++n;
+        if (state.shaders.layout.normal_offset != RECOMP_D3D_FVF_ABSENT) {
+            attributes[n] = {n, 1u, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, state.shaders.layout.normal_offset};
+            ++n;
+        }
+    }
 
     const auto start = std::chrono::steady_clock::now();
     SDL_GPUGraphicsPipeline *pipeline = SDL_CreateGPUGraphicsPipeline(presenter->device, &info);
@@ -1558,7 +1695,7 @@ SDL_GPUGraphicsPipeline *lookupPipeline(RecompD3dPresenter *presenter, const Pip
         recomp_warmup::append(presenter->warm_pipeline_file,recipe);
         std::fflush(presenter->warm_pipeline_file);
         ++presenter->warm_pipeline_misses;
-        std::fprintf(stderr,"Graphics preparation: new pipeline during play (%u) present=%u\n",presenter->warm_pipeline_misses,presenter->present_count);
+        std::fprintf(stderr,"SC2 graphics preparation: new pipeline during play (%u) present=%u\n",presenter->warm_pipeline_misses,presenter->present_count);
     }
     return pipeline;
 }
@@ -1603,6 +1740,7 @@ bool uploadRing(RecompD3dPresenter *presenter, SDL_GPUCopyPass *pass, SDL_GPUBuf
     uint32_t &base)
 {
     const uint32_t size = static_cast<uint32_t>(bytes.size());
+    if (!size) { base = 0; return true; }
     base = (used + 255u) & ~255u;
     const bool wrap = base + size > capacity;
     if (wrap) base = 0u;
@@ -1671,15 +1809,23 @@ void flushSegment(RecompD3dPresenter *presenter)
                 SDL_BindGPUGraphicsPipeline(pass, draw.pipeline);
                 pipeline = draw.pipeline;
             }
-            if (vertex_base + draw.vertex_offset != vertex_offset) {
-                vertex_offset = vertex_base + draw.vertex_offset;
-                const SDL_GPUBufferBinding binding{presenter->vertex_buffer, vertex_offset};
-                SDL_BindGPUVertexBuffers(pass, 0u, &binding, 1u);
+            // Rebind across retained/ring resources even when offsets coincide.
+            const SDL_GPUBufferBinding vb[2] = {
+                {draw.retained_vertices ? draw.retained_vertices : presenter->vertex_buffer,
+                    draw.retained_vertices ? draw.vertex_offset : vertex_base + draw.vertex_offset},
+                {draw.previous_vertices, draw.previous_offset}};
+            SDL_BindGPUVertexBuffers(pass, 0u, vb, draw.previous_vertices ? 2u : 1u);
+            const SDL_GPUBufferBinding ib{draw.retained_indices ? draw.retained_indices : presenter->index_buffer,
+                draw.retained_indices ? draw.index_offset : index_base + draw.index_offset};
+            SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+            if (draw.previous_vertices) {
+                const float visual[4]{draw.alpha, 0, 0, 0};
+                SDL_PushGPUVertexUniformData(commands, 2u, visual, sizeof visual);
             }
-            if (index_base + draw.index_offset != index_offset) {
-                index_offset = index_base + draw.index_offset;
-                const SDL_GPUBufferBinding binding{presenter->index_buffer, index_offset};
-                SDL_BindGPUIndexBuffer(pass, &binding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+            if (draw.skin_buffers[0]) {
+                SDL_BindGPUVertexStorageBuffers(pass, 0u, draw.skin_buffers, 3u);
+                const float visual[4]{draw.alpha, static_cast<float>(draw.skin_first), 0, 0};
+                SDL_PushGPUVertexUniformData(commands, 2u, visual, sizeof visual);
             }
             if (draw.uniform_offset != uniforms) {
                 uniforms = draw.uniform_offset;
@@ -1871,9 +2017,33 @@ void queueDraw(RecompD3dPresenter *presenter, SDL_GPUGraphicsPipeline *pipeline,
     Segment &segment = presenter->segment;
     QueuedDraw queued;
     queued.pipeline = pipeline;
-    queued.vertex_offset = appendAligned(segment.vertex_data, vertices, vertex_bytes);
-    queued.index_offset = appendAligned(segment.index_data, indices, index_count * sizeof(uint16_t));
-    queued.index_count = index_count;
+    auto &v = presenter->visual;
+    if (v.replaying && v.active_geometry) {
+        queued.retained_vertices = v.active_geometry->asset ? v.active_geometry->asset->vertices : v.gpu_current.vertices;
+        queued.retained_indices = v.active_geometry->asset ? v.active_geometry->asset->indices : v.gpu_current.indices;
+        queued.vertex_offset = v.active_geometry->vertex;
+        queued.index_offset = v.active_geometry->index;
+        queued.index_count = v.active_geometry->index_count;
+        if (v.gpu_blend == 1 && v.prior_geometry) {
+            queued.previous_vertices = v.prior_geometry->asset ? v.prior_geometry->asset->vertices : v.gpu_previous.vertices;
+            queued.previous_offset = v.prior_geometry->vertex;
+            queued.alpha = v.alpha;
+        }
+        if (v.gpu_blend == 2 && v.prior_geometry) {
+            queued.skin_buffers[0] = v.active_geometry->skin_mesh->vertices;
+            queued.skin_buffers[1] = v.prior_geometry->skin_pose->vertices;
+            queued.skin_buffers[2] = v.active_geometry->skin_pose->vertices;
+            queued.skin_first = v.active_geometry->skin_first;
+            queued.alpha = v.alpha;
+            ++v.skin_draws;
+        }
+        ++v.retained_draws;
+        if (v.active_geometry->asset) ++v.static_draws;
+    } else {
+        queued.vertex_offset = appendAligned(segment.vertex_data, vertices, vertex_bytes);
+        queued.index_offset = appendAligned(segment.index_data, indices, index_count * sizeof(uint16_t));
+        queued.index_count = index_count;
+    }
     /* The Transform buffer is the draw constants without vc[], which goes to
        the vertex stage's second buffer; consecutive draws often repeat both. */
     float transform[kTransformFloats];
@@ -2052,7 +2222,7 @@ RecompD3dPresenterError submitDraw(RecompD3dPresenter *presenter, const RecompD3
     const RecompD3dDrawShaderKey shader_key{shader_fvf, draw.program_count,
         draw.program_count ? draw.program : nullptr, false, scaled_bias,
         scaled_bias && presenter->msaa_count > 1u, general ? &draw.pixel_program : nullptr};
-    const ShaderPair shaders = lookupShaders(presenter, shader_key, false);
+    const ShaderPair shaders = lookupShaders(presenter, shader_key, false, presenter->visual.gpu_blend);
     if (shaders.vertex == nullptr) return unsupportedDraw(__LINE__);
 
     BoundTarget bound;
@@ -2945,6 +3115,7 @@ void reportPerformance(RecompD3dPresenter *presenter)
     if (elapsed_ms < 1000.0) return;
     const uint32_t frames = presenter->second_presents - 1u;
     const double fps = frames * 1000.0 / elapsed_ms;
+    if (presenter->visual.enabled) recomp_d3d_visual_fps_update(fps);
     char title[96];
     std::snprintf(title, sizeof title, "%s%s | %.1f FPS | %.1f ms/frame", windowTitle().c_str(),
         unpacedRun() ? " (unpaced)" : "", fps, elapsed_ms / frames);
@@ -2990,6 +3161,14 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
     if (presenter->close_requested) return RECOMP_D3D_PRESENTER_CLOSED;
     flushSegment(presenter);
     resolveMain(presenter);
+    if (presenter->visual.enabled && !presenter->visual.replaying) {
+        // Authoritative render still runs, so visibility and readback semantics stay intact.
+        if (presenter->previous_frame != nullptr)
+            copyGuestBuffer(presenter, presenter->previous_frame, presenter->previous_frame_mips);
+        submitCommands(presenter);
+        finishVisualFrame(presenter, present);
+        return RECOMP_D3D_PRESENTER_OK;
+    }
     updateShaderChain(presenter);
     SDL_GPUCommandBuffer *commands = commandBuffer(presenter);
     if (commands == nullptr) return RECOMP_D3D_PRESENTER_HOST_FAILURE;
@@ -3016,6 +3195,7 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
         }
     }
     SDL_GPUTexture *swapchain = nullptr;
+    bool window_presented = false;
     Uint32 swap_width = 0u, swap_height = 0u;
     // (RECOMP_SHADER_SHOT: the frame dump is the shaded picture, at the window's size)
     char burst_shot[1024];
@@ -3024,8 +3204,11 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
         uint32_t width, height;
         const char *path;
     } shaded_shot{};
-    if (SDL_WaitAndAcquireGPUSwapchainTexture(commands, presenter->window, &swapchain, &swap_width, &swap_height) &&
+    if ((presenter->visual.replaying
+            ? SDL_AcquireGPUSwapchainTexture(commands, presenter->window, &swapchain, &swap_width, &swap_height)
+            : SDL_WaitAndAcquireGPUSwapchainTexture(commands, presenter->window, &swapchain, &swap_width, &swap_height)) &&
         swapchain != nullptr && swap_width != 0u && swap_height != 0u) {
+        window_presented = true;
         // The window keeps the guest aspect; the rest of the swapchain is black.
         const float source_aspect = static_cast<float>(presentClientWidth(presenter, mainHeight(presenter))) /
             mainHeight(presenter);
@@ -3080,6 +3263,7 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
         recomp_overlay_sdl_gpu_draw(presenter->device, presenter->window, commands,
             swapchain, swap_width, swap_height, &overlay);
     }
+    if (presenter->visual.replaying && !window_presented) ++presenter->visual.missed_buffers;
     if (recomp_screenshot_take_request()) saveScreenshot(presenter, shown);
     // Capture what the window shows, at the main target size, as the D3D11 backend does.
     char burst[1024];
@@ -3108,13 +3292,20 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
     }
     /* Keep the presented guest frame for GetBackBuffer(-1) once a draw has used it. */
     // (mips only for a copy made with them: the one a draw's bind makes has one level)
-    if (presenter->previous_frame != nullptr)
+    if (!presenter->visual.replaying && presenter->previous_frame != nullptr)
         copyGuestBuffer(presenter, presenter->previous_frame, presenter->previous_frame_mips);
     // On a display at a multiple of 60 Hz, the frame's end steers the game's clock (d3d_display_phase).
-    recomp_display_phase_follow(presenter->window);
-    if (presenter->command_buffer != nullptr &&
+    if (!presenter->visual.enabled) recomp_display_phase_follow(presenter->window);
+    if (!presenter->visual.enabled && presenter->command_buffer != nullptr &&
         recomp_display_phase_submit(presenter->device, presenter->command_buffer)) presenter->command_buffer = nullptr;
     submitCommands(presenter);
+    if (presenter->visual.replaying) {
+        const auto &v = presenter->visual;
+        recomp_latency::record("interpolated_submit", v.current.latency,
+            v.latency_history ? v.previous.latency : recomp_latency::Stamp{}, v.latency_alpha, window_presented);
+    } else {
+        recomp_latency::record("original_submit", recomp_latency::executing, {}, 1, window_presented);
+    }
     ++presenter->present_count;
     /* RECOMP_D3D_DRAW_LOG_AT=N starts the log at present N too (headless runs). */
     static const char *log_at = std::getenv("RECOMP_D3D_DRAW_LOG_AT");
@@ -3125,9 +3316,11 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
         presenter->draw_log_index = 0u;
         std::fprintf(stderr, "recomp draw log: begin present=%u\n", presenter->present_count + 1u);
     }
-    if (presenter->performance_counter) reportPerformance(presenter);
+    if (window_presented && presenter->performance_counter) reportPerformance(presenter);
     return RECOMP_D3D_PRESENTER_OK;
 }
+
+#include "d3d_visual_present.inl"
 
 void logDraw(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand &d,
     RecompD3dPresenterError result, double us)
@@ -3177,7 +3370,7 @@ void logDraw(RecompD3dPresenter *presenter, const RecompD3dPresenterDrawCommand 
 void releasePresenter(RecompD3dPresenter *presenter)
 {
     if (presenter->warm_shader_file || presenter->warm_pipeline_file) {
-        std::fprintf(stderr,"Graphics preparation: gameplay misses shaders=%u pipelines=%u\n",presenter->warm_shader_misses,presenter->warm_pipeline_misses);
+        std::fprintf(stderr,"SC2 graphics preparation: gameplay misses shaders=%u pipelines=%u\n",presenter->warm_shader_misses,presenter->warm_pipeline_misses);
         if (presenter->warm_shader_file) std::fclose(presenter->warm_shader_file);
         if (presenter->warm_pipeline_file) std::fclose(presenter->warm_pipeline_file);
         presenter->warm_shader_file=presenter->warm_pipeline_file=nullptr;
@@ -3188,6 +3381,7 @@ void releasePresenter(RecompD3dPresenter *presenter)
     SDL_WaitForGPUIdle(presenter->device);
     recomp_display_phase_stop();
     recomp_overlay_sdl_gpu_shutdown();
+    releaseVisualTargets(presenter);
     releaseQuery(presenter, presenter->visibility_active);
     for (VisibilityQuery &query : presenter->visibility_pending) releaseQuery(presenter, query);
     for (VisibilityQuery &query : presenter->visibility_free) releaseQuery(presenter, query);
@@ -3435,7 +3629,41 @@ RecompD3dPresenterError d3d_backend_create(const RecompD3dPresenterConfig *confi
         // Shaders then compile on first use.
     }
     active_presenter = created;
-    if (!prepareGraphics(created)) return fail("graphics preparation cancelled or failed");
+    if (const char *rate = std::getenv("RECOMP_RENDER_FPS")) {
+        double fps = std::strtod(rate, nullptr);
+        if (std::strcmp(rate, "monitor") == 0) {
+            const SDL_DisplayMode *mode = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(created->window));
+            fps = mode ? mode->refresh_rate : 60.0;
+        }
+        if (std::isfinite(fps) && fps >= 30.0 && fps <= 1000.0) {
+            created->visual.fps = fps;
+            const char *gpu = std::getenv("RECOMP_VISUAL_GPU");
+            created->visual.gpu_enabled = !gpu || std::strcmp(gpu, "0") != 0;
+            if (const char *path = std::getenv("RECOMP_RENDER_TRACE")) {
+                created->visual.trace = std::fopen(path, "w");
+                if (created->visual.trace) {
+                    std::fputs("event,time_ns,cpu_ms,draws,blended,upload_bytes,unavailable_buffers\n", created->visual.trace);
+                    std::fflush(created->visual.trace);
+                }
+            }
+            created->visual.enabled = true;
+            created->performance_counter = true;
+            SDL_GPUTextureUsageFlags use = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+            auto &t = created->visual.targets;
+            t.color = createTexture(created, SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
+                use | (created->msaa_count == 1 ? SDL_GPU_TEXTUREUSAGE_SAMPLER : 0), main_width, main_height, 1, 1, created->msaa);
+            t.resolve = created->msaa_count == 1 ? t.color : createTexture(created, SDL_GPU_TEXTURETYPE_2D,
+                SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, use | SDL_GPU_TEXTUREUSAGE_SAMPLER, main_width, main_height);
+            t.depth = createTexture(created, SDL_GPU_TEXTURETYPE_2D, created->depth_format,
+                SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET, main_width, main_height, 1, 1, created->msaa);
+            if (!t.color || !t.resolve || !t.depth) return fail("interpolation targets");
+            const auto mode = SDL_WindowSupportsGPUPresentMode(created->device, created->window, SDL_GPU_PRESENTMODE_MAILBOX)
+                ? SDL_GPU_PRESENTMODE_MAILBOX : SDL_GPU_PRESENTMODE_IMMEDIATE;
+            SDL_SetGPUSwapchainParameters(created->device, created->window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, mode);
+            std::fprintf(stderr, "SC2 visual interpolation: target=%.3f Hz, gameplay=60 Hz (experimental)\n", fps);
+        }
+    }
+    if (!prepareGraphics(created)) return fail("graphics preparation cancelled");
     *presenter = created;
     return RECOMP_D3D_PRESENTER_OK;
 }
@@ -3447,6 +3675,20 @@ RecompD3dPresenterError d3d_backend_submit(RecompD3dPresenter *presenter, const 
     // Events are pumped at each present; a close reaches the guest there and stays.
     if (presenter->close_requested) return RECOMP_D3D_PRESENTER_CLOSED;
     if (command == nullptr) return RECOMP_D3D_PRESENTER_INVALID_ARGUMENT;
+    if (!presenter->visual.replaying && (command->type == RECOMP_D3D_PRESENTER_COMMAND_DRAW ||
+        command->type == RECOMP_D3D_PRESENTER_COMMAND_CLEAR)) presenter->visual.suspended = false;
+    if (presenter->visual.enabled && !presenter->visual.replaying &&
+        (command->type == RECOMP_D3D_PRESENTER_COMMAND_DRAW ||
+         command->type == RECOMP_D3D_PRESENTER_COMMAND_CLEAR ||
+         command->type == RECOMP_D3D_PRESENTER_COMMAND_COPY_MAIN_COLOR ||
+         command->type == RECOMP_D3D_PRESENTER_COMMAND_COPY_RECT)) {
+        auto &v = presenter->visual;
+        if (!v.bad_capture && (v.building.bytes() > 128ull * 1024 * 1024 ||
+            v.building.add(*command) != RECOMP_D3D_PRESENTER_OK)) {
+            v.bad_capture = true;
+            v.building.clear();
+        }
+    }
     switch (command->type) {
     case RECOMP_D3D_PRESENTER_COMMAND_GAMMA:
         return submitGamma(presenter, command->data.gamma);
@@ -3697,7 +3939,7 @@ void d3d_backend_set_immediate_present(bool enabled)
     immediate_present = enabled;
     RecompD3dPresenter *presenter = active_presenter;
     if (presenter == nullptr || presenter->window == nullptr) return;
-    const SDL_GPUPresentMode mode = preferMailbox(enabled) &&
+    const SDL_GPUPresentMode mode = preferMailbox(enabled || presenter->visual.enabled) &&
             SDL_WindowSupportsGPUPresentMode(presenter->device, presenter->window, SDL_GPU_PRESENTMODE_MAILBOX)
         ? SDL_GPU_PRESENTMODE_MAILBOX : SDL_GPU_PRESENTMODE_VSYNC;
     SDL_SetGPUSwapchainParameters(presenter->device, presenter->window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, mode);
@@ -3733,6 +3975,7 @@ RecompD3dPresenterError d3d_backend_read_frame(RecompD3dPresenter *presenter,
 {
     const RecompD3dPresenterError owner = checkOwner(presenter);
     if (owner != RECOMP_D3D_PRESENTER_OK) return owner;
+    presenter->visual.suspended = true;
     const uint32_t w = mainWidth(presenter), h = mainHeight(presenter);
     *width = w;
     *height = h;
@@ -3856,3 +4099,6 @@ void d3d_backend_report_draw_textures()
     std::fprintf(stderr, "recomp d3d presenter: draw texture untextured=%u cached=%u\n",
         draw_texture_tally.untextured, active_presenter != nullptr ? active_presenter->texture_count : 0u);
 }
+
+// Called only by the renderer's owning thread, including between guest frames.
+long long d3d_backend_visual_idle(long long deadline) { return visualIdle(deadline); }

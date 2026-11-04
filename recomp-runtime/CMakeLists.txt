@@ -340,10 +340,14 @@ if(RECOMP_D3D11_PRESENTER)
     target_link_libraries(recomp_d3d_presenter PUBLIC d3d11 d3dcompiler dxgi user32 shell32 ole32 uuid
         recomp_keyboard recomp_imgui)
 else()
+    set(RECOMP_SDL_FRONTEND d3d_presenter_inline.cpp)
+    if(WIN32)
+        set(RECOMP_SDL_FRONTEND d3d_presenter_thread.cpp)
+    endif()
     add_library(recomp_d3d_presenter STATIC
-        d3d_presenter_sdl_gpu.cpp d3d_presenter_inline.cpp d3d_shader_compiler.cpp d3d_shader_chain.cpp overlay_sdl_gpu.cpp
+        d3d_presenter_sdl_gpu.cpp d3d_presenter_capture.cpp ${RECOMP_SDL_FRONTEND} d3d_shader_compiler.cpp d3d_shader_chain.cpp overlay_sdl_gpu.cpp
         d3d_display_phase.cpp ${RECOMP_PRESENTER_SHARED})
-    target_compile_definitions(recomp_d3d_presenter PUBLIC RECOMP_SDL_GPU_PRESENTER=1)
+    target_compile_definitions(recomp_d3d_presenter PUBLIC RECOMP_SDL_GPU_PRESENTER=1 PRIVATE SC2_SDL_VISUAL)
     if(ANDROID)
         target_sources(recomp_d3d_presenter PRIVATE host_call.cpp) # (host_call.h: SDL's Java calls off the fibers)
     endif()

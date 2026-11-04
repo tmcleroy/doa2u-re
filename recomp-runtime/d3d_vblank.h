@@ -8,6 +8,10 @@
 extern "C" {
 #endif
 
+void recomp_d3d_visual_reset(void);
+double recomp_d3d_visual_fps(void);
+void recomp_d3d_visual_fps_update(double rate);
+unsigned recomp_d3d_visual_generation(void);
 void recomp_d3d_vblank_reset(void);
 void recomp_d3d_wait_vblank(void);
 void recomp_d3d_wait_present(void);

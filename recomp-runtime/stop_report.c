@@ -11,6 +11,8 @@ enum {
     MAX_PATH = 512,
 };
 
+void (*recomp_stop_cleanup)(void) = NULL;
+
 static char expected_stop[MAX_STOP_ID];
 static char configured_boundary[MAX_STOP_ID];
 static char milestone_path[MAX_PATH];
@@ -123,5 +125,12 @@ void recomp_stop(int fallback_code, const char *stop_id_format, ...)
         stop_id, have_expectation ? expected_stop : "-", result,
         kernel_calls, kind, fallback_code, code);
     fflush(stderr);
+    // Join renderer workers before the CRT starts running atexit handlers.
+    // Windows CRT teardown can hold locks those workers need to release SDL.
+    if (recomp_stop_cleanup != NULL) {
+        void (*cleanup)(void) = recomp_stop_cleanup;
+        recomp_stop_cleanup = NULL;
+        cleanup();
+    }
     exit(code);
 }

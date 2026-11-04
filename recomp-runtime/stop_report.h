@@ -30,6 +30,7 @@
 extern "C" {
 #endif
 
+extern void (*recomp_stop_cleanup)(void);
 void recomp_stop_configure(const char *expected, const char *milestone_log);
 void recomp_stop_configure_boundary(const char *stop_id);
 void recomp_stop_at_boundary(const char *stop_id);

@@ -2,6 +2,8 @@
 #define DOAXBV_RECOMP_D3D_PRESENTER_CAPTURE_H
 
 #include "d3d_presenter.h"
+#include "d3d_scene_snapshot.h"
+#include "d3d_latency_trace.h"
 
 #include <cstddef>
 #include <new>
@@ -11,6 +13,7 @@
 
 class D3dCapturePacket {
 public:
+    recomp_latency::Stamp latency;
     enum Kind : uint32_t { COMMAND, RELEASE, REPORT, INVALIDATE };
     struct Record { Kind kind; uint32_t base; uint32_t size; };
 
@@ -57,7 +60,7 @@ private:
     struct CapturedCommand {
         CapturedCommand() {} // Skip zeroing: add() writes every field it uses.
         alignas(8) RecompD3dPresenterCommand value;
-        size_t offsets[8];
+        size_t offsets[16];
     };
     struct Span { size_t size; size_t offset; };
 
@@ -71,6 +74,7 @@ private:
     // Keyed by source, size and sampled bytes; memcmp still confirms each reuse.
     std::unordered_multimap<uint64_t, Span> spans_;
     bool sealed_ = false;
+    std::vector<std::shared_ptr<const Sc2SkinPose>> scene_poses_;
 };
 
 #endif

@@ -839,8 +839,8 @@ Catalogs contain no persistent GPU handles; pipeline shader pointers are cleared
 A title may supply `offline-shaders-v1.bin` before renderer creation and replace
 `d3d_offline_pipelines.inl` in its merged runtime to enumerate semantic pipeline
 states. The shared default learns pipelines without assuming a title's state
-families. Recipes reserve their extra mode byte at zero; interpolation is not
-part of this format's supported behavior. The GPU format and sample count select
+families. Recipes use their extra mode byte for original, retained-geometry and native-skin
+variants (0, 1 and 2). Interpolation uses a separate v3 learned profile. The GPU format and sample count select
 separate learned profiles. Preparing known recipes reduces compilation stalls;
 it does not cover asset I/O or prove every possible dynamic state is known.
 
@@ -858,3 +858,22 @@ compiles. Cancellation joins all workers; partial thread creation uses the worke
 already available. A diagnostic `RECOMP_SHADER_WORKERS=1..16` override supports
 benchmarking, but is not a player-facing setting. Without a disk cache, preparation
 stays sequential to avoid compiling twice.
+
+
+## Optional render interpolation and timing diagnostics
+
+The Windows SDL GPU frontend can replay owned snapshots between 60 Hz guest
+frames. Capture ownership, native-pose validation and topology/attribute matching
+protect rendering from stale or ambiguous geometry. The guest's original render
+pass still executes for readbacks and visibility queries. Scene/history resets
+prevent blending across discontinuities. This is extra presentation work, with
+roughly one simulation tick of visual history; it is not a zero-latency feature.
+Other frontends have not been validated for independent high-rate presentation.
+
+`RECOMP_LATENCY_TRACE` records bounded host timing/provenance rows in memory and
+writes CSV on clean shutdown. Packet identities survive snapshots. Records cover
+input samples supplied by the title, publication, renderer dequeue, snapshot
+preparation and CPU presentation submissions. Unavailable swapchain images are
+marked, not counted as displayed frames. No GPU wait is introduced by tracing.
+The opt-in recorder itself has mutex/allocation overhead. These are software
+measurements; they do not establish input-to-photon or visible-response latency.

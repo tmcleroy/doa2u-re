@@ -185,3 +185,11 @@ void recomp_d3d_sleep_until(long long steady_ns)
 {
     sleepUntil(Clock::time_point(std::chrono::nanoseconds(steady_ns)), Clock::now);
 }
+
+static std::atomic<unsigned> visual_generation{0};
+void recomp_d3d_visual_reset(void) { visual_generation.fetch_add(1, std::memory_order_relaxed); }
+unsigned recomp_d3d_visual_generation(void) { return visual_generation.load(std::memory_order_relaxed); }
+
+static std::atomic<double> visual_rate{0.0};
+double recomp_d3d_visual_fps(void) { return visual_rate.load(std::memory_order_relaxed); }
+void recomp_d3d_visual_fps_update(double rate) { visual_rate.store(rate, std::memory_order_relaxed); }

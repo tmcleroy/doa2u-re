@@ -5,7 +5,7 @@
 #include <cstdint>
 struct RecompWarmShader {
     uint32_t fvf, count, samples;
-    uint8_t coverage, scaled_bias, sample_bias, count_pass, reserved;
+    uint8_t coverage, scaled_bias, sample_bias, count_pass, visual;
     uint32_t program[136][4];
     RecompD3dPixelProgram pixel;
 };
