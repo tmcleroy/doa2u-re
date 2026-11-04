@@ -580,3 +580,12 @@ if(RECOMP_PROGRAM_DIR)
         recomp_use_sdl3(recomp_launcher)
     endif()
 endif()
+
+# CPU-only source checks need no game or GPU. --compile additionally validates
+# both shader stages on hosts with shaderc available.
+add_executable(recomp_d3d_texture_transform_test d3d_texture_transform_test.cpp
+    d3d_draw_shader.cpp d3d_pixel_program.cpp d3d_vertex_program.cpp
+    d3d_draw_model.c d3d_shader_compiler.cpp)
+recomp_use_shader_compiler(recomp_d3d_texture_transform_test)
+target_link_libraries(recomp_d3d_texture_transform_test PRIVATE ${CMAKE_DL_LIBS})
+add_test(NAME recomp-runtime-texture-transform COMMAND recomp_d3d_texture_transform_test)
