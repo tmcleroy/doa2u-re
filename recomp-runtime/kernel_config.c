@@ -29,6 +29,17 @@ static uint32_t audio_flags(void)
     return surround != NULL && strcmp(surround, "0") != 0 ? 0x00010002u : 0u;
 }
 
+/* XC_LANGUAGE (1 English, 2 Japanese, 3 German, 4 French, 5 Spanish, 6 Italian, 7 Korean, 8 Chinese,
+   9 Portuguese): RECOMP_XBOX_LANGUAGE, the console's language a game shows its text in (0, the default, is
+   unset: XAPI's XGetLanguage then answers English). */
+static uint32_t language(void)
+{
+    const char *language = getenv("RECOMP_XBOX_LANGUAGE");
+    const long value = language != NULL ? strtol(language, NULL, 10) : 0;
+
+    return value >= 1 && value <= 9 ? (uint32_t)value : 0u;
+}
+
 uint32_t recomp_kernel_query_nonvolatile_setting(
     uint32_t value_index,
     uint32_t type,
@@ -36,7 +47,8 @@ uint32_t recomp_kernel_query_nonvolatile_setting(
     uint32_t value_length,
     uint32_t result_length)
 {
-    uint32_t dword_value = value_index == 0x08u ? video_flags()
+    uint32_t dword_value = value_index == 0x07u ? language()
+        : value_index == 0x08u ? video_flags()
         : value_index == 0x09u ? audio_flags() : 0u;
     int dword_backed = value_length == sizeof dword_value;
 
