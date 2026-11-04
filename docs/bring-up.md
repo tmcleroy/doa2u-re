@@ -849,3 +849,12 @@ the real SDL GPU backend without loading a game. `--cancel` checks responsive
 shutdown. `RECOMP_GRAPHICS_INVENTORY_STRICT=1` treats missing inventories or
 preparation failures as errors. `RECOMP_GRAPHICS_INVENTORY_AUDIT` optionally
 writes the prepared pipeline set locally. No generated catalogs belong in Git.
+
+Startup compilation automatically uses up to 16 workers, bounded by logical
+processor count. Each worker owns its shaderc compiler and options. Workers only
+fill source-keyed binaries; GPU resource creation, presenter maps and event
+handling remain on the renderer thread. Cache-key lock stripes serialize duplicate
+compiles. Cancellation joins all workers; partial thread creation uses the workers
+already available. A diagnostic `RECOMP_SHADER_WORKERS=1..16` override supports
+benchmarking, but is not a player-facing setting. Without a disk cache, preparation
+stays sequential to avoid compiling twice.

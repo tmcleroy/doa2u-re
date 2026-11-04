@@ -67,6 +67,51 @@ bool prepareGraphics(RecompD3dPresenter *p) {
     }
     std::vector<WarmShader> all=offline;
     all.insert(all.end(),shaders.begin(),shaders.end());
+    // Prefill source-keyed binaries concurrently, then construct GPU resources
+    // using the ordinary renderer path below. No guest work runs on workers.
+    unsigned workers=std::min(16u,std::max(1u,std::thread::hardware_concurrency()));
+    if (const char *setting=std::getenv("RECOMP_SHADER_WORKERS")) {
+        char *end=nullptr; const long value=std::strtol(setting,&end,10);
+        if (end!=setting && *end=='\0' && value>=1 && value<=16) workers=static_cast<unsigned>(value);
+    }
+    const char *cache=std::getenv("RECOMP_SHADER_CACHE");
+    if (workers>1 && cache && *cache && !all.empty()) {
+        std::atomic<size_t> next{0},completed{0};
+        std::atomic<bool> cancel{false};
+        phase="Compiling shaders";
+        std::vector<std::thread> pool;
+        pool.reserve(workers);
+        const auto job=[&]() {
+            while (!cancel.load()) {
+                const size_t i=next.fetch_add(1);
+                if (i>=all.size()) break;
+                const auto &r=all[i];
+                if (r.count<=136 && r.reserved==0 && r.coverage<=1 && r.scaled_bias<=1 && r.sample_bias<=1 && r.count_pass<=1) {
+                    try {
+                        RecompD3dDrawShaderKey key{r.fvf,r.count,r.program,r.coverage!=0,r.scaled_bias!=0,r.sample_bias!=0,r.pixel.kind?&r.pixel:nullptr};
+                        bool ok=false;
+                        lookupShaders(p,key,r.count_pass!=0,&ok);
+                        // Normal preparation retries failures and reports them.
+                    } catch (...) { /* Renderer-thread retry remains available. */ }
+                }
+                ++completed;
+            }
+        };
+        try { for (unsigned i=0;i<workers;++i) pool.emplace_back(job); }
+        catch (const std::system_error &) { /* Use the workers already created. */ }
+        if (!pool.empty()) {
+            while (completed.load()<all.size()) {
+                done=completed.load();
+                if (!progress()) { cancel=true; break; }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        }
+        for (auto &thread:pool) thread.join();
+        std::fprintf(stderr,"Graphics preparation: shader workers=%zu recipes=%zu\n",pool.size(),completed.load());
+        done=0;
+        phase="Preparing pipelines";
+        if (cancel) { p->warming=false; return false; }
+    }
     for (const auto &r:all) {
         if (!progress()) { p->warming=false; return false; }
         ++done;

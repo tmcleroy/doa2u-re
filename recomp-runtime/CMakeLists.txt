@@ -343,6 +343,7 @@ else()
     add_library(recomp_d3d_presenter STATIC
         d3d_presenter_sdl_gpu.cpp d3d_presenter_inline.cpp d3d_shader_compiler.cpp d3d_shader_chain.cpp overlay_sdl_gpu.cpp
         d3d_display_phase.cpp ${RECOMP_PRESENTER_SHARED})
+    target_compile_definitions(recomp_d3d_presenter PUBLIC RECOMP_SDL_GPU_PRESENTER=1)
     if(ANDROID)
         target_sources(recomp_d3d_presenter PRIVATE host_call.cpp) # (host_call.h: SDL's Java calls off the fibers)
     endif()

@@ -1214,8 +1214,9 @@ SDL_GPUShader *createShader(RecompD3dPresenter *presenter, const std::string &hl
    that survives its discards, for occlusion counting. Failures are cached
    too, so a shader that cannot build is not retried every draw. */
 ShaderPair lookupShaders(RecompD3dPresenter *presenter, const RecompD3dDrawShaderKey &draw_key,
-    bool count_pass)
+    bool count_pass, bool *compile_only = nullptr)
 {
+    if (compile_only) *compile_only = false;
     ShaderKey key{};
     key.fvf = draw_key.fvf;
     key.program_count = draw_key.program_count;
@@ -1230,7 +1231,10 @@ ShaderPair lookupShaders(RecompD3dPresenter *presenter, const RecompD3dDrawShade
     {
         std::lock_guard<std::mutex> lock(presenter->shader_lock);
         const auto found = presenter->shaders.find(key);
-        if (found != presenter->shaders.end()) return found->second;
+        if (found != presenter->shaders.end()) {
+            if (compile_only) *compile_only = found->second.vertex && found->second.fragment;
+            return found->second;
+        }
     }
     const auto start = std::chrono::steady_clock::now();
     ShaderPair pair;
@@ -1245,6 +1249,14 @@ ShaderPair lookupShaders(RecompD3dPresenter *presenter, const RecompD3dDrawShade
         }
         std::vector<std::string> defines;
         if (draw_key.sample_depth_bias) defines.push_back("RECOMP_SAMPLE_COUNT=" + std::to_string(presenter->msaa_count));
+        if (compile_only) {
+            RecompCompiledShader compiled;
+            std::string error;
+            *compile_only=recomp_shader_compile(hlsl,"vs_main",true,presenter->shader_target,defines,compiled,error) &&
+                recomp_shader_compile(hlsl,"ps_main",false,presenter->shader_target,defines,compiled,error);
+            if (!*compile_only) std::fprintf(stderr,"Shader worker: %s\n",error.c_str());
+            return {}; // Workers never create GPU objects or mutate presenter maps.
+        }
         pair.vertex = createShader(presenter, hlsl, true, defines, 0u, 2u);
         pair.fragment = pair.vertex ? createShader(presenter, hlsl, false, defines, 4u,
             presenter->shader_target == RecompShaderTarget::Msl ? 2u : 1u) : nullptr;
@@ -1256,6 +1268,7 @@ ShaderPair lookupShaders(RecompD3dPresenter *presenter, const RecompD3dDrawShade
         std::fprintf(stderr, "recomp d3d presenter: vertex program untranslated fvf=%03x count=%u\n",
             draw_key.fvf, draw_key.program_count);
     }
+    if (compile_only) return {};
     std::fprintf(stderr, "recomp d3d presenter: draw shader fvf=0x%03X program=%u%s%s in %lld ms\n",
         draw_key.fvf, draw_key.program_count, count_pass ? " count" : "",
         pair.vertex != nullptr ? "" : " failed",

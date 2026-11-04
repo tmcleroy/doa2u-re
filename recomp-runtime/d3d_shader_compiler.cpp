@@ -8,6 +8,8 @@
 #include <fstream>
 #include <iterator>
 #include <mutex>
+#include <array>
+#include <functional>
 #include <type_traits>
 
 #ifdef RECOMP_SHADERC_LINKED
@@ -33,6 +35,7 @@ enum { SourceGlsl = 0, SourceHlsl = 1, StageVertex = 0, StageFragment = 1, Statu
 
 struct Shaderc {
     Compiler (*compiler_initialize)();
+    void (*compiler_release)(Compiler);
     Options (*options_initialize)();
     void (*options_release)(Options);
     void (*set_source_language)(Options, int);
@@ -67,6 +70,7 @@ bool loadShaderc()
     shaderc_tried = true;
 #ifdef RECOMP_SHADERC_LINKED
     bind(shaderc.compiler_initialize, shaderc_compiler_initialize);
+    bind(shaderc.compiler_release, shaderc_compiler_release);
     bind(shaderc.options_initialize, shaderc_compile_options_initialize);
     bind(shaderc.options_release, shaderc_compile_options_release);
     bind(shaderc.set_source_language, shaderc_compile_options_set_source_language);
@@ -115,6 +119,7 @@ bool loadShaderc()
 #endif
 #ifndef RECOMP_SHADERC_LINKED
     if (!symbol(shaderc.compiler_initialize, "shaderc_compiler_initialize") ||
+        !symbol(shaderc.compiler_release, "shaderc_compiler_release") ||
         !symbol(shaderc.options_initialize, "shaderc_compile_options_initialize") ||
         !symbol(shaderc.options_release, "shaderc_compile_options_release") ||
         !symbol(shaderc.set_source_language, "shaderc_compile_options_set_source_language") ||
@@ -134,17 +139,24 @@ bool loadShaderc()
 #endif
     shaderc.compiler = shaderc.compiler_initialize();
     shaderc_ready = shaderc.compiler != nullptr;
+    if (shaderc.compiler) shaderc.compiler_release(shaderc.compiler);
+    shaderc.compiler=nullptr;
     return shaderc_ready;
 }
 
 bool compileSpirv(const std::string &hlsl, const char *entry_point, bool vertex,
     const std::vector<std::string> &defines, std::vector<uint8_t> &spirv, std::string &error, bool glsl = false)
 {
-    std::lock_guard<std::mutex> lock(shaderc_lock);
-    if (!loadShaderc()) {
-        error = "shaderc unavailable";
-        return false;
+    {
+        std::lock_guard<std::mutex> lock(shaderc_lock);
+        if (!loadShaderc()) { error="shaderc unavailable"; return false; }
     }
+    struct LocalCompiler {
+        Compiler value=shaderc.compiler_initialize();
+        ~LocalCompiler() { if (value) shaderc.compiler_release(value); }
+    };
+    thread_local LocalCompiler local;
+    if (!local.value) { error="shaderc compiler allocation"; return false; }
     Options options = shaderc.options_initialize();
     if (options == nullptr) {
         error = "shaderc options";
@@ -166,7 +178,7 @@ bool compileSpirv(const std::string &hlsl, const char *entry_point, bool vertex,
         const std::string value = equals == std::string::npos ? "1" : define.substr(equals + 1u);
         shaderc.add_macro_definition(options, name.data(), name.size(), value.data(), value.size());
     }
-    Result result = shaderc.compile_into_spv(shaderc.compiler, hlsl.data(), hlsl.size(),
+    Result result = shaderc.compile_into_spv(local.value, hlsl.data(), hlsl.size(),
         vertex ? StageVertex : StageFragment, glsl ? "preset.slang" : "presenter.hlsl", entry_point, options);
     shaderc.options_release(options);
     if (result == nullptr) {
@@ -452,6 +464,11 @@ bool recomp_shader_compile(const std::string &hlsl, const char *entry_point, boo
     RecompCompiledShader &out, std::string &error)
 {
     const std::string cached = cachePath(hlsl, entry_point, vertex, target, defines);
+    // Serialize only identical cache entries (or rare stripe collisions), not
+    // unrelated compiles. A reader never races a same-key writer.
+    static std::array<std::mutex,256> cache_locks;
+    std::unique_lock<std::mutex> cache_lock;
+    if (!cached.empty()) cache_lock=std::unique_lock<std::mutex>(cache_locks[std::hash<std::string>{}(cached)%cache_locks.size()]);
     if (!cached.empty() && readCache(cached, out)) return true;
     if (!compileUncached(hlsl, entry_point, vertex, target, defines, out, error)) return false;
     if (!cached.empty()) writeCache(cached, out);
