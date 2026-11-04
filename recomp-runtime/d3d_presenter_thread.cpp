@@ -109,6 +109,7 @@ void pump(PresenterThread &thread)
 void execute(PresenterThread &thread, RecompD3dPresenter *backend,
     const D3dCapturePacket &packet)
 {
+    recomp_visual::executing_produced_ns = packet.produced_ns;
     recomp_latency::executing = packet.latency;
     recomp_latency::record("dequeue", packet.latency);
     for (size_t i = 0; i < packet.count(); ++i) {
@@ -117,8 +118,9 @@ void execute(PresenterThread &thread, RecompD3dPresenter *backend,
         // Original rendering is incremental. Service display deadlines between
         // small batches instead of waiting for an entire simulation packet.
         // The backend refuses a replay inside an active visibility query and
-        // isolates its targets from the original frame's readbacks.
-        if (i != 0 && (i & 31u) == 0u) {
+        // isolates its targets from the original frame's readbacks. Finish the
+        // final small batch first so a due redraw can use the new snapshot.
+        if (i != 0 && (i & 31u) == 0u && packet.count() - i > 32u) {
             const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now().time_since_epoch()).count();
             d3d_backend_visual_idle(ns + 16666667);
@@ -320,6 +322,8 @@ void notePacing(PresenterThread &thread, double wait_start_ms, double wait_end_m
 
 RecompD3dPresenterError publish(PresenterThread &thread, bool destroying)
 {
+    // Timestamp before backpressure or renderer work can delay the packet.
+    thread.packets[thread.open].produced_ns = recomp_visual::now();
     const double wait_start_ms = thread.pacing ? clock_ms() : 0.0;
     std::unique_lock<std::mutex> lock(thread.mutex);
     thread.changed.wait(lock, [&] {

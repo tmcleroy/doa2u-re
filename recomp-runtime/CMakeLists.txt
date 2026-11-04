@@ -605,3 +605,6 @@ if(RECOMP_WINDOWS_SDL_GPU OR NOT WIN32)
     endif()
     recomp_use_sdl3(recomp_graphics_inventory_test)
 endif()
+
+add_executable(recomp_visual_timing_test d3d_visual_timing_test.cpp)
+add_test(NAME recomp-runtime-visual-timing COMMAND recomp_visual_timing_test)

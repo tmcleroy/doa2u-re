@@ -877,3 +877,20 @@ preparation and CPU presentation submissions. Unavailable swapchain images are
 marked, not counted as displayed frames. No GPU wait is introduced by tracing.
 The opt-in recorder itself has mutex/allocation overhead. These are software
 measurements; they do not establish input-to-photon or visible-response latency.
+
+
+### Production-clock interpolation
+
+Visual interpolation timestamps packets before renderer backpressure. The clock
+is independent of `RECOMP_LATENCY_TRACE`; disabling diagnostics does not change
+its behavior. The renderer samples one 60 Hz tick behind the monotonic production
+timeline, using the two actual packet times. Queue and snapshot preparation time
+advance that timeline instead of restarting another blend period. Missing or
+invalid history uses the current frame; fractions are clamped without prediction.
+This metadata never changes guest clocks, inputs or simulation state.
+
+Immutable snapshot signatures are computed once and carried with their packet
+slot. Matching, ambiguity resolution and retained-buffer selection reuse them;
+full topology, vertex correspondence and byte checks remain in place. The final
+small batch of original packet work completes before another older-snapshot
+replay is considered. No original draw, visibility query or readback is skipped.

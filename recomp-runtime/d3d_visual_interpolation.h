@@ -173,13 +173,14 @@ inline bool prepare(const RecompD3dPresenterDrawCommand &previous,
 // Repeated stage decorations can have the same topology/UVs but positions
 // baked into different places. Exact geometry resolves those collisions without
 // relying on draw order or guessing a nearest object as the camera moves.
-inline bool staticGeometryKey(const RecompD3dPresenterDrawCommand &d, uint64_t &hash) {
+inline bool staticGeometryKey(const RecompD3dPresenterDrawCommand &d, uint64_t &hash,
+                              const uint64_t *signature = nullptr) {
     RecompD3dVertexLayout layout{};
     if (!d.has_transform || d.program_count || !d.vertex_bytes || !d.vertex_count ||
         !recomp_d3d_fvf_layout(d.fvf, &layout) || layout.pretransformed ||
         layout.stride > d.vertex_stride || uint64_t(d.vertex_stride)*d.vertex_count > 64ull*1024*1024)
         return false;
-    hash = key(d);
+    hash = signature ? *signature : key(d);
     const auto *bytes = static_cast<const unsigned char *>(d.vertex_bytes);
     for (size_t i = 0; i < size_t(d.vertex_stride)*d.vertex_count; ++i)
         hash = (hash ^ bytes[i])*1099511628211ull;
@@ -195,19 +196,36 @@ template<class Packet>
 void matchSnapshots(const Packet &previous, const Packet &current,
                     std::vector<size_t> &matches,
                     std::unordered_map<uint64_t,size_t> &previous_draws,
-                    std::unordered_map<uint64_t,uint32_t> &current_counts) {
+                    std::unordered_map<uint64_t,uint32_t> &current_counts,
+                    std::vector<uint64_t> *current_cache = nullptr,
+                    const std::vector<uint64_t> *previous_cache = nullptr) {
+    std::vector<uint64_t> old_storage, new_storage;
+    const auto signatures = [](const Packet &packet, std::vector<uint64_t> &keys) {
+        keys.assign(packet.count(), 0);
+        for (size_t i = 0; i < packet.count(); ++i) {
+            const auto &c = packet.command(i);
+            if (c.type == RECOMP_D3D_PRESENTER_COMMAND_DRAW) keys[i] = key(c.data.draw);
+        }
+    };
+    if (!previous_cache || previous_cache->size() != previous.count()) {
+        signatures(previous, old_storage); previous_cache = &old_storage;
+    }
+    auto &new_keys = current_cache ? *current_cache : new_storage;
+    signatures(current, new_keys);
+    const auto &old_keys = *previous_cache;
     previous_draws.clear(); current_counts.clear();
+    previous_draws.reserve(previous.count()); current_counts.reserve(current.count());
     const auto insertUnique = [](auto &map, uint64_t hash, size_t index) {
         auto result = map.emplace(hash,index);
         if (!result.second) result.first->second = SIZE_MAX;
     };
     for (size_t i=0; i<previous.count(); ++i) {
         const auto &c=previous.command(i);
-        if (c.type==RECOMP_D3D_PRESENTER_COMMAND_DRAW) insertUnique(previous_draws,key(c.data.draw),i);
+        if (c.type==RECOMP_D3D_PRESENTER_COMMAND_DRAW) insertUnique(previous_draws,old_keys[i],i);
     }
     for (size_t i=0; i<current.count(); ++i) {
         const auto &c=current.command(i);
-        if (c.type==RECOMP_D3D_PRESENTER_COMMAND_DRAW) ++current_counts[key(c.data.draw)];
+        if (c.type==RECOMP_D3D_PRESENTER_COMMAND_DRAW) ++current_counts[new_keys[i]];
     }
     const auto ambiguous = [&](uint64_t hash) {
         const auto p=previous_draws.find(hash);
@@ -216,29 +234,30 @@ void matchSnapshots(const Packet &previous, const Packet &current,
             (p->second==SIZE_MAX || c->second>1);
     };
     std::unordered_map<uint64_t,size_t> old_geometry,new_geometry,old_sources,new_sources;
-    const auto indexGeometry = [&](const Packet &packet, auto &map, auto &sources) {
+    const auto indexGeometry = [&](const Packet &packet, const auto &keys, auto &map, auto &sources) {
         for (size_t i=0; i<packet.count(); ++i) {
             const auto &c=packet.command(i);
             uint64_t hash;
-            if (c.type==RECOMP_D3D_PRESENTER_COMMAND_DRAW && ambiguous(key(c.data.draw)) &&
-                staticGeometryKey(c.data.draw,hash)) {
+            if (c.type==RECOMP_D3D_PRESENTER_COMMAND_DRAW && ambiguous(keys[i]) &&
+                staticGeometryKey(c.data.draw,hash,&keys[i])) {
                 insertUnique(map,hash,i);
                 if (c.data.draw.visual_vertex_source) insertUnique(sources,provenanceKey(hash,c.data.draw),i);
             }
         }
     };
-    indexGeometry(previous,old_geometry,old_sources); indexGeometry(current,new_geometry,new_sources);
+    indexGeometry(previous,old_keys,old_geometry,old_sources);
+    indexGeometry(current,new_keys,new_geometry,new_sources);
     matches.assign(current.count(),SIZE_MAX);
     for (size_t i=0; i<current.count(); ++i) {
         const auto &c=current.command(i);
         if (c.type!=RECOMP_D3D_PRESENTER_COMMAND_DRAW) continue;
-        const auto hash=key(c.data.draw);
+        const auto hash=new_keys[i];
         const auto p=previous_draws.find(hash);
         if (p==previous_draws.end()) continue;
         size_t index=p->second;
         if (ambiguous(hash)) {
             uint64_t geometry;
-            if (!staticGeometryKey(c.data.draw,geometry)) continue;
+            if (!staticGeometryKey(c.data.draw,geometry,&new_keys[i])) continue;
             const auto old=old_geometry.find(geometry), now=new_geometry.find(geometry);
             if (old==old_geometry.end() || now==new_geometry.end()) continue;
             index=old->second;
@@ -254,7 +273,7 @@ void matchSnapshots(const Packet &previous, const Packet &current,
                     d.visual_transform_source!=c.data.draw.visual_transform_source) continue;
             }
             const auto &d=previous.command(index).data.draw;
-            if (key(d)!=hash || d.vertex_stride!=c.data.draw.vertex_stride ||
+            if (old_keys[index]!=hash || d.vertex_stride!=c.data.draw.vertex_stride ||
                 d.vertex_count!=c.data.draw.vertex_count ||
                 std::memcmp(d.vertex_bytes,c.data.draw.vertex_bytes,size_t(d.vertex_stride)*d.vertex_count)) continue;
         }

@@ -4,6 +4,7 @@
 #include "d3d_presenter.h"
 #include "d3d_scene_snapshot.h"
 #include "d3d_latency_trace.h"
+#include "d3d_visual_timing.h"
 
 #include <cstddef>
 #include <new>
@@ -14,6 +15,7 @@
 class D3dCapturePacket {
 public:
     recomp_latency::Stamp latency;
+    int64_t produced_ns = 0;
     enum Kind : uint32_t { COMMAND, RELEASE, REPORT, INVALIDATE };
     struct Record { Kind kind; uint32_t base; uint32_t size; };
 

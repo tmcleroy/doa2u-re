@@ -228,6 +228,7 @@ const RecompD3dPresenterCommand &D3dCapturePacket::command(size_t index) const
 void D3dCapturePacket::clear()
 {
     latency = {};
+    produced_ns = 0;
     entries_.clear();
     commands_.clear();
     payload_.clear();

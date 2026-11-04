@@ -121,7 +121,7 @@ bool prepareVisualGeometry(RecompD3dPresenter *p) {
         // Promote byte-identical geometry to immutable assets. Identity alone
         // never authorizes reuse: validate complete vertex/index contents, even
         // when the game reuses a memory address or a draw signature collides.
-        const auto key = sc2_visual::key(d);
+        const auto key = v.current_keys[i];
         const auto prior = v.previous_draws.find(key);
         const size_t prior_index = prior != v.previous_draws.end() && prior->second != SIZE_MAX &&
             v.current_counts[key] == 1 ? prior->second : v.matches[i];
@@ -230,7 +230,8 @@ long long visualIdle(long long deadline) {
     const auto draws_before = v.draws, blended_before = v.blended, misses_before = v.missed_buffers;
     if (!v.next) v.next = now;
     v.next += ((std::max(0ll, now - v.next) / period) + 1) * period;
-    const float alpha = std::clamp(float(now - v.arrived) / (1e9f / 60.0f), 0.0f, 1.0f);
+    const float alpha = recomp_visual::interpolationAlpha(
+        now, v.previous.produced_ns, v.current.produced_ns);
     // Both packets are sealed, owned snapshots. No guest pointers are consulted.
     const bool match = v.epoch == recomp_d3d_visual_generation() &&
         v.previous.count() != 0;
@@ -329,14 +330,18 @@ void finishVisualFrame(RecompD3dPresenter *p, const RecompD3dPresenterPresentCom
         submitPresent(p, present);
         return;
     }
+    v.building.produced_ns = recomp_visual::executing_produced_ns > 0
+        ? recomp_visual::executing_produced_ns : started;
     v.building.latency = recomp_latency::executing;
     recomp_latency::record("snapshot", v.building.latency);
     v.building.seal();
     std::swap(v.previous, v.current);
+    std::swap(v.previous_keys, v.current_keys);
     std::swap(v.current, v.building);
     v.building.clear(); // retain the oldest slot's allocation for the next tick
     if (v.epoch != recomp_d3d_visual_generation()) v.previous.clear();
-    sc2_visual::matchSnapshots(v.previous, v.current, v.matches, v.previous_draws, v.current_counts);
+    sc2_visual::matchSnapshots(v.previous, v.current, v.matches, v.previous_draws, v.current_counts,
+        &v.current_keys, &v.previous_keys);
     if (v.gpu_enabled && !prepareVisualGeometry(p)) {
         v.gpu_enabled = false;
         std::fputs("SC2 visual: retained geometry unavailable; using CPU interpolation\n", stderr);

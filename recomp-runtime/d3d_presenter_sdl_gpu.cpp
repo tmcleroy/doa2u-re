@@ -328,6 +328,7 @@ struct VisualFrames {
     std::unordered_map<uint64_t, size_t> previous_draws;
     std::unordered_map<uint64_t, unsigned> current_counts;
     std::vector<size_t> matches;
+    std::vector<uint64_t> previous_keys, current_keys;
     VisualGpuFrame gpu_previous, gpu_current, gpu_spare;
     bool gpu_enabled = true;
     uint8_t gpu_blend = 0;
