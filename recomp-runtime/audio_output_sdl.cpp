@@ -392,6 +392,15 @@ extern "C" void recomp_audio_output_test_reset(void)
     owner_thread = std::thread::id{};
 }
 
+/* Tests: the stream a voice plays through and the bytes still queued in it. */
+extern "C" void *recomp_audio_output_test_stream(uint32_t slot, int *queued)
+{
+    std::lock_guard<std::mutex> lock(audio_mutex);
+    if (slot >= kVoiceCount || voices[slot].stream == nullptr) { *queued = 0; return nullptr; }
+    *queued = SDL_GetAudioStreamQueued(voices[slot].stream);
+    return voices[slot].stream;
+}
+
 extern "C" void recomp_audio_output_reset_voice(uint32_t slot)
 {
     if (!recomp_audio_output_on_owner_thread()) return;
@@ -494,10 +503,30 @@ extern "C" void recomp_audio_output_submit(
     const uint32_t speakers = recomp_audio_output_speakers();
     bool wet_send = false;
     for (uint32_t i = 0; routed && i < channels * 2u; ++i) wet_send |= route.wet[i] != 0.0f;
-    if (voice.stream && (voice.sample_rate != sample_rate || voice.channels != channels ||
+    if (voice.stream && (voice.channels != channels ||
         voice.bits_per_sample != bits_per_sample || voice.routed != routed ||
         (voice.wet_stream != nullptr) != (wet_send && reverb_device != 0))) {
         destroyVoice(voice);
+    }
+    /* A new pitch is a new input rate for the same stream. A guest that sweeps a voice's frequency every frame
+       (Soulcalibur II's weapon swings) would otherwise lose the voice's queued audio each frame and hear only
+       the silence a new stream starts with. What is queued plays out at the rate it was put at. */
+    if (voice.stream && voice.sample_rate != sample_rate) {
+        SDL_AudioSpec dry_spec{};
+        if (!SDL_GetAudioStreamFormat(voice.stream, &dry_spec, nullptr)) {
+            destroyVoice(voice);
+        } else {
+            dry_spec.freq = static_cast<int>(sample_rate);
+            SDL_AudioSpec wet_spec{};
+            bool changed = SDL_SetAudioStreamFormat(voice.stream, &dry_spec, nullptr);
+            if (changed && voice.wet_stream != nullptr) {
+                changed = SDL_GetAudioStreamFormat(voice.wet_stream, &wet_spec, nullptr);
+                wet_spec.freq = static_cast<int>(sample_rate);
+                changed = changed && SDL_SetAudioStreamFormat(voice.wet_stream, &wet_spec, nullptr);
+            }
+            if (changed) voice.sample_rate = sample_rate;
+            else destroyVoice(voice);
+        }
     }
     if (!voice.stream) {
         /* 32-bit voices are IEEE float, 1.0 full scale (the HRTF mix). A

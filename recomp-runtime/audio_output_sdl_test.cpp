@@ -8,6 +8,7 @@
 #include <vector>
 
 extern "C" void recomp_audio_output_test_reset(void);
+extern "C" void *recomp_audio_output_test_stream(uint32_t slot, int *queued);
 
 static void check_fail(const char *expr, const char *file, int line)
 {
@@ -59,6 +60,19 @@ int main()
         2, reinterpret_cast<const uint8_t *>(pcm_float.data()),
         static_cast<uint32_t>(pcm_float.size() * sizeof(float)),
         48000, 2, 32, 0);
+
+    // A new pitch keeps the voice's stream and what it has queued: a frequency swept every frame (a weapon
+    // swing) must not start each frame over from a fresh stream's silence.
+    std::vector<int16_t> pcm_mono_16(368, 1000);
+    recomp_audio_output_submit(3, reinterpret_cast<const uint8_t *>(pcm_mono_16.data()),
+        static_cast<uint32_t>(pcm_mono_16.size() * sizeof(int16_t)), 22050, 1, 16, -1321);
+    int queued_before = 0, queued_after = 0;
+    void *stream = recomp_audio_output_test_stream(3, &queued_before);
+    CHECK(stream != nullptr && queued_before > 0);
+    recomp_audio_output_submit(3, reinterpret_cast<const uint8_t *>(pcm_mono_16.data()),
+        static_cast<uint32_t>(pcm_mono_16.size() * sizeof(int16_t)), 20126, 1, 16, -1321);
+    CHECK(recomp_audio_output_test_stream(3, &queued_after) == stream);
+    CHECK(queued_after > queued_before);
 
     // Test invalid submissions (should be safely dropped)
     recomp_audio_output_submit(999, pcm_mono_8.data(), 10, 44100, 1, 8, 0); // invalid slot

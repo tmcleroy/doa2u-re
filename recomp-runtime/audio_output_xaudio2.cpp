@@ -30,6 +30,8 @@ constexpr uint32_t kPrerollMs = 50;
    with it. A wall-clock producer would drain or flood the queue, so each voice
    trims its pitch (inaudibly, at most this much) to hold the cushion. */
 constexpr float kRateTrim = 0.01f;
+/* How far a voice's pitch may move from the rate its source voice was made at before it is made again. */
+constexpr uint32_t kMaxPitchRatio = 4u;
 
 struct PcmBuffer {
     uint8_t *data;
@@ -41,6 +43,7 @@ struct OutputVoice {
     bool sends_reverb;
     PcmBuffer buffers[kQueueSize];
     uint32_t sample_rate, channels, bits_per_sample;
+    uint32_t base_rate;   /* the rate the source voice was made at; sample_rate / base_rate rides on its ratio */
     uint32_t front, queued;
     uint64_t bytes_submitted;
     float level_ms;
@@ -484,8 +487,11 @@ extern "C" void recomp_audio_output_submit(
         dropBuffer(slot, "routing-channel-mismatch");
         return;
     }
-    if (voice.source && (voice.sample_rate != sample_rate ||
-        voice.channels != channels || voice.bits_per_sample != bits_per_sample)) {
+    /* A new pitch keeps the voice: the ratio carries it (below), as the Xbox applies a frequency change to the
+       voice already playing. A guest that sweeps a voice's frequency every frame (Soulcalibur II's weapon
+       swings) would otherwise lose the queued audio each frame and hear only a new voice's preroll silence. */
+    if (voice.source && (voice.channels != channels || voice.bits_per_sample != bits_per_sample ||
+        sample_rate > voice.base_rate * kMaxPitchRatio || sample_rate * kMaxPitchRatio < voice.base_rate)) {
         destroyVoice(voice);
     }
     if (!voice.source) {
@@ -497,13 +503,14 @@ extern "C" void recomp_audio_output_submit(
         format.nBlockAlign = static_cast<WORD>(block_align);
         format.wBitsPerSample = static_cast<WORD>(bits_per_sample);
         HRESULT error = engine->CreateSourceVoice(
-            &voice.source, &format, 0, 1.0f + kRateTrim);
+            &voice.source, &format, 0, kMaxPitchRatio * (1.0f + kRateTrim));
         if (FAILED(error)) {
             dropBuffer(slot, "create-voice");
             disableOutput("CreateSourceVoice", error);
             return;
         }
         voice.sample_rate = sample_rate;
+        voice.base_rate = sample_rate;
         voice.channels = channels;
         voice.bits_per_sample = bits_per_sample;
         voice.level_ms = kPrerollMs;
@@ -555,7 +562,9 @@ extern "C" void recomp_audio_output_submit(
     float ratio = 1.0f + (voice.level_ms - kPrerollMs) / 10000.0f;
     if (ratio < 1.0f - kRateTrim) ratio = 1.0f - kRateTrim;
     if (ratio > 1.0f + kRateTrim) ratio = 1.0f + kRateTrim;
-    error = voice.source->SetFrequencyRatio(ratio);
+    voice.sample_rate = sample_rate;
+    error = voice.source->SetFrequencyRatio(
+        ratio * static_cast<float>(sample_rate) / static_cast<float>(voice.base_rate));
     if (FAILED(error)) {
         dropBuffer(slot, "rate");
         disableOutput("SetFrequencyRatio", error);

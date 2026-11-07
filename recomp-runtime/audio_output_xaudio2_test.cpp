@@ -202,7 +202,7 @@ struct FakeEngine {
             format->nBlockAlign == format->nChannels * (format->wBitsPerSample / 8) &&
             format->nAvgBytesPerSec == format->nSamplesPerSec * format->nBlockAlign &&
             format->cbSize == 0 &&
-            flags == 0 && ratio == 1.01f);
+            flags == 0 && ratio == 4.0f * 1.01f);
         *out = new FakeSource;
         (*out)->format = *format;
         fake_sources.push_back(*out);
@@ -429,6 +429,12 @@ int main()
     for (int i = 0; i < 4; ++i)
         recomp_audio_output_submit(2, larger, sizeof larger, 8000, 1, 16, 0);
     check(source->ratio > 1.0f && source->ratio <= 1.0f + kRateTrim);
+    /* A new pitch keeps the voice; its ratio carries the change from the rate it was made at. */
+    recomp_audio_output_submit(2, larger, sizeof larger, 12000, 1, 16, 0);
+    check(!source->destroyed && voices[2].source == source && voices[2].sample_rate == 12000 &&
+        source->ratio > 1.5f * (1.0f - kRateTrim) && source->ratio <= 1.5f * (1.0f + kRateTrim));
+    recomp_audio_output_submit(2, larger, sizeof larger, 8000, 1, 16, 0);
+    check(!source->destroyed && source->ratio <= 1.0f + kRateTrim);
 
     /* A voice further ahead than kMaxQueueMs drops instead of growing latency. */
     const auto ahead_dropped = dropped_buffers;
