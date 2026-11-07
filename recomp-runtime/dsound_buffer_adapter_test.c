@@ -259,7 +259,8 @@ static void test_clock_and_loop(void)
     now = 61; CHECK(CALL(0x364882, handle, OUTPUT) == 0 && read32(OUTPUT) == 0 && output.bytes == 80);
     CHECK(CALL(0x364802, handle, 0, 0, 1) == 0);
     now = 200; uint32_t calls = output_calls; recomp_dsound_buffers_pump(); CHECK(output_calls == calls);
-    CHECK(CALL(0x36489e, handle, OUTPUT, 0) == 0 && read32(OUTPUT) == 38);
+    /* (139 ms unpumped is a host stall: the voice held where it was) */
+    CHECK(CALL(0x36489e, handle, OUTPUT, 0) == 0 && read32(OUTPUT) == 0);
     CHECK(CALL(0x36483e, handle, 0, 0, 0) == 0);
     muted = 1; CHECK(CALL(0x364802, handle, 0, 0, 3) == 0);
     now = 210; CHECK(CALL(0x36489e, handle, OUTPUT, 0) == 0 && read32(OUTPUT) == 20 && output_calls == calls);

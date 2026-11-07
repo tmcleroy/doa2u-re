@@ -51,7 +51,8 @@ int main(void)
         passed &= expect_u32("PCM wrapped cursor", output.cursor_bytes, 40u);
         passed &= expect_u32("PCM stalled output discarded",
             recomp_dsound_buffer_consume(&output, 500u, &offset), 0u);
-        passed &= expect_u32("PCM stalled clock caught up", output.cursor_bytes, 0u);
+        /* A stall holds the voice: the cursor stays where it was. */
+        passed &= expect_u32("PCM stalled cursor held", output.cursor_bytes, 40u);
         recomp_dsound_buffer_play(&output, 2u, 500u);
         recomp_dsound_buffer_consume(&output, 590u, &offset);
         passed &= expect_u32("PCM one-shot tail",
@@ -100,9 +101,20 @@ int main(void)
         recomp_dsound_buffer_configure(&output, 80u, 11025u, 2u, 0u);
         output.loop_start_bytes = 48u;
         recomp_dsound_buffer_play(&output, RECOMP_DSOUND_PLAY_LOOPING, 0u);
-        passed &= expect_u32("tail huge elapsed cursor",
-            recomp_dsound_buffer_cursor(&output, UINT64_MAX), 54u);
-        passed &= expect_u32("tail huge elapsed remainder", output.frame_remainder, 375u);
+        passed &= expect_u32("tail huge elapsed is a stall",
+            recomp_dsound_buffer_cursor(&output, UINT64_MAX), 0u);
+        passed &= expect_u32("tail huge elapsed remainder", output.frame_remainder, 0u);
+        /* After a stall the ring plays on from where it stopped, not from where the clock went. */
+        recomp_dsound_buffer_configure(&output, 400u, 1000u, 4u, 0u);
+        recomp_dsound_buffer_play(&output, RECOMP_DSOUND_PLAY_LOOPING, 0u);
+        passed &= expect_u32("ring before a stall",
+            recomp_dsound_buffer_consume(&output, 50u, &offset), 200u);
+        passed &= expect_u32("ring stall plays nothing",
+            recomp_dsound_buffer_consume(&output, 1050u, &offset), 0u);
+        passed &= expect_u32("ring stall holds the cursor", output.cursor_bytes, 200u);
+        passed &= expect_u32("ring after a stall bytes",
+            recomp_dsound_buffer_consume(&output, 1060u, &offset), 40u);
+        passed &= expect_u32("ring after a stall offset", offset, 200u);
     }
 
     {

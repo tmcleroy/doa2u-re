@@ -2,6 +2,9 @@
 
 #include <stddef.h>
 
+/* Longer than this between two looks at a voice is a host stall, not playing time. */
+#define RECOMP_DSOUND_STALL_MS 100u
+
 static int buffer_configured(const RecompDsoundBufferModel *model)
 {
     return model != NULL && model->size_bytes != 0u &&
@@ -48,6 +51,14 @@ uint32_t recomp_dsound_buffer_cursor(
         return model->cursor_bytes;
     }
     uint64_t elapsed = now_ms - model->last_ms;
+    /* A host stall (the game thread held past a frame: a compositor or overlay keeping the window's
+       picture, a slow disk) stops the voice where it is. On the Xbox the threads that refill a
+       streaming ring run on through such a time; here they cannot, so moving the cursor on would
+       play the ring's old contents (music repeating a phrase) until they catch up. */
+    if (elapsed > RECOMP_DSOUND_STALL_MS) {
+        model->last_ms = now_ms;
+        return model->cursor_bytes;
+    }
     uint64_t seconds = elapsed / 1000u;
     uint64_t fraction =
         (elapsed % 1000u) * model->sample_rate + model->frame_remainder;
@@ -92,9 +103,8 @@ uint32_t recomp_dsound_buffer_consume(
     uint32_t position = recomp_dsound_buffer_cursor(model, model->last_ms);
     uint32_t remainder = model->frame_remainder;
     recomp_dsound_buffer_cursor(model, now_ms);
-    /* shortcut: discard stalls over 100 ms instead of replaying stale ring data;
-       use a device-driven producer when continuous output across stalls matters. */
-    if (elapsed > 100u) {
+    /* (a stall: the cursor stayed where it was, so nothing was played) */
+    if (elapsed > RECOMP_DSOUND_STALL_MS) {
         return 0u;
     }
     uint64_t frames = (elapsed * model->sample_rate + remainder) / 1000u;
