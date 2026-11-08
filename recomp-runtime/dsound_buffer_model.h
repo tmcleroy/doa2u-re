@@ -23,6 +23,8 @@ typedef struct RecompDsoundBufferModel {
     uint32_t frame_remainder;
     uint32_t play_flags;
     uint32_t playing;
+    uint32_t stream_locks;
+    uint32_t stream_remaining_bytes;
     uint64_t last_ms;
 } RecompDsoundBufferModel;
 
@@ -35,6 +37,8 @@ uint32_t recomp_dsound_buffer_cursor(
    loop_start_bytes when looping. A span can cover multiple loop iterations. */
 uint32_t recomp_dsound_buffer_consume(
     RecompDsoundBufferModel *model, uint64_t now_ms, uint32_t *offset_bytes);
+void recomp_dsound_buffer_lock(
+    RecompDsoundBufferModel *model, uint32_t lock_bytes);
 uint32_t recomp_dsound_buffer_play(
     RecompDsoundBufferModel *model, uint32_t flags, uint64_t now_ms);
 void recomp_dsound_buffer_stop(

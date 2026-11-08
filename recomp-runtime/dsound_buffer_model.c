@@ -117,8 +117,48 @@ uint32_t recomp_dsound_buffer_consume(
     if (frames > UINT32_MAX / model->block_align) {
         return 0u;
     }
+    uint32_t consumed_bytes = (uint32_t)frames * model->block_align;
+    /* A full-buffer looping ring that is fed incrementally via partial Lock()
+       writes (like CRI RNA's 65,536-byte streaming ring buffer) must not wrap
+       around and replay stale PCM if the feeder underruns or is waiting to stop
+       the voice. Static looping sounds (never partially locked multiple times)
+       keep looping indefinitely. */
+    if ((model->play_flags & RECOMP_DSOUND_PLAY_LOOPING) &&
+        model->stream_locks >= 2u) {
+        if (consumed_bytes > model->stream_remaining_bytes) {
+            consumed_bytes = model->stream_remaining_bytes;
+            model->stream_remaining_bytes = 0u;
+        } else {
+            model->stream_remaining_bytes -= consumed_bytes;
+        }
+    }
     *offset_bytes = position;
-    return (uint32_t)frames * model->block_align;
+    return consumed_bytes;
+}
+
+void recomp_dsound_buffer_lock(
+    RecompDsoundBufferModel *model, uint32_t lock_bytes)
+{
+    if (!buffer_configured(model) || lock_bytes == 0u) {
+        return;
+    }
+    if (lock_bytes < model->size_bytes &&
+        model->loop_start_bytes == 0u &&
+        model->loop_end_bytes == model->size_bytes) {
+        if (model->stream_locks < 2u) {
+            ++model->stream_locks;
+        }
+        if (model->stream_locks == 1u) {
+            model->stream_remaining_bytes = model->size_bytes;
+        } else if (lock_bytes >= model->size_bytes - model->stream_remaining_bytes) {
+            model->stream_remaining_bytes = model->size_bytes;
+        } else {
+            model->stream_remaining_bytes += lock_bytes;
+        }
+    } else {
+        model->stream_locks = 0u;
+        model->stream_remaining_bytes = 0u;
+    }
 }
 
 uint32_t recomp_dsound_buffer_play(
@@ -129,6 +169,10 @@ uint32_t recomp_dsound_buffer_play(
         return RECOMP_DSOUND_INVALID_PARAM;
     }
     recomp_dsound_buffer_cursor(model, now_ms);
+    if (!model->playing || (flags & RECOMP_DSOUND_PLAY_FROMSTART)) {
+        model->stream_locks = 0u;
+        model->stream_remaining_bytes = 0u;
+    }
     if (flags & RECOMP_DSOUND_PLAY_FROMSTART) {
         model->cursor_bytes = 0u;
         model->frame_remainder = 0u;
@@ -151,6 +195,8 @@ void recomp_dsound_buffer_stop(
     if (model != NULL) {
         recomp_dsound_buffer_cursor(model, now_ms);
         model->playing = 0u;
+        model->stream_locks = 0u;
+        model->stream_remaining_bytes = 0u;
     }
 }
 
@@ -164,6 +210,8 @@ uint32_t recomp_dsound_buffer_set_position(
     recomp_dsound_buffer_cursor(model, now_ms);
     model->cursor_bytes = position_bytes;
     model->frame_remainder = 0u;
+    model->stream_locks = 0u;
+    model->stream_remaining_bytes = 0u;
     return RECOMP_DSOUND_OK;
 }
 

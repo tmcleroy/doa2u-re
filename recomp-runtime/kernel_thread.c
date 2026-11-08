@@ -401,12 +401,15 @@ static bool thread_ready(GuestThread *thread)
     return true;
 }
 
+static uint64_t next_slice;
+
 static void switch_thread(unsigned index)
 {
     GuestThread *outgoing = &threads[current_thread];
     GuestThread *target = &threads[index];
     if (target == outgoing) return;
     charge_slice(false);
+    next_slice = recomp_xapi_performance_counter() + UINT64_C(1000000);
     outgoing->registers = recomp_runtime.registers;
     recomp_fpu_context_save(&outgoing->fpu);
     recomp_guest_load(outgoing->fs, XBOX_PCR_BASE, sizeof outgoing->fs);
@@ -477,24 +480,35 @@ static void schedule(void)
             uint64_t due = armed_timers[i] ? *recomp_memory_u64(armed_timers[i] + TIMER_DUE_TIME) : 0u;
             if (due != 0u && due < earliest) earliest = due;
         }
-        for (unsigned step = 1u; step <= MAX_THREADS; ++step) {
-            unsigned index = (current_thread + step) % MAX_THREADS;
-            GuestThread *target = &threads[index];
-            if (thread_ready(target)) {
-                if (drain_active && ++drain_turns > kDrainTurns && end_drain()) return;
-                if (target == outgoing) return;
-                switch_thread(index);
-                return;
+        for (int32_t best_prio = INT32_MAX;;) {
+            int32_t next_prio = INT32_MIN;
+            for (unsigned i = 0u; i < MAX_THREADS; ++i) {
+                GuestThread *t = &threads[i];
+                if (t->handle == 0u || t->exited || t->suspend_count != 0u || t->draining) continue;
+                if (t->priority < best_prio && t->priority > next_prio) next_prio = t->priority;
             }
-            if (target->waiting && !target->exited && target->suspend_count == 0u) {
-                if (target->deadline < earliest) earliest = target->deadline;
-                for (uint32_t i = 0u; i < target->object_count; ++i) {
-                    uint32_t object = target->objects[i];
-                    if (find_thread(object) != NULL) continue;
-                    uint32_t type = (uint8_t)*recomp_memory_i8(object);
-                    if (type == 8u || type == 9u) {
-                        uint64_t due = *recomp_memory_u64(object + TIMER_DUE_TIME);
-                        if (due != 0u && due < earliest) earliest = due;
+            if (next_prio == INT32_MIN) break;
+            best_prio = next_prio;
+            for (unsigned step = 1u; step <= MAX_THREADS; ++step) {
+                unsigned index = (current_thread + step) % MAX_THREADS;
+                GuestThread *target = &threads[index];
+                if (target->priority != best_prio) continue;
+                if (thread_ready(target)) {
+                    if (drain_active && ++drain_turns > kDrainTurns && end_drain()) return;
+                    if (target == outgoing) return;
+                    switch_thread(index);
+                    return;
+                }
+                if (target->waiting && !target->exited && target->suspend_count == 0u) {
+                    if (target->deadline < earliest) earliest = target->deadline;
+                    for (uint32_t i = 0u; i < target->object_count; ++i) {
+                        uint32_t object = target->objects[i];
+                        if (find_thread(object) != NULL) continue;
+                        uint32_t type = (uint8_t)*recomp_memory_i8(object);
+                        if (type == 8u || type == 9u) {
+                            uint64_t due = *recomp_memory_u64(object + TIMER_DUE_TIME);
+                            if (due != 0u && due < earliest) earliest = due;
+                        }
                     }
                 }
             }
@@ -569,7 +583,6 @@ bool recomp_kernel_no_time_slices;
 
 void recomp_kernel_poll(void)
 {
-    static uint64_t next_slice;
     if (!scheduler_started || drain_active) return; /* (a drain switches only at waits) */
     if (recomp_kernel_no_time_slices) {
         /* (a thread spinning on the clock 100 ms since the others last ran is waiting
@@ -583,12 +596,48 @@ void recomp_kernel_poll(void)
     if (now < next_slice) return;
     next_slice = now + UINT64_C(1000000);
     unsigned selected = current_thread;
-    for (unsigned step = 1u; step < MAX_THREADS; ++step) {
-        unsigned index = (current_thread + step) % MAX_THREADS;
-        if (threads[index].priority >= threads[current_thread].priority &&
-            (selected == current_thread || threads[index].priority > threads[selected].priority) &&
-            thread_ready(&threads[index])) {
-            selected = index;
+    for (int32_t best_prio = INT32_MAX;;) {
+        int32_t next_prio = INT32_MIN;
+        for (unsigned step = 1u; step < MAX_THREADS; ++step) {
+            unsigned index = (current_thread + step) % MAX_THREADS;
+            GuestThread *t = &threads[index];
+            if (t->handle == 0u || t->exited || t->suspend_count != 0u || t->draining) continue;
+            if (t->priority < threads[current_thread].priority) continue;
+            if (t->priority < best_prio && t->priority > next_prio) next_prio = t->priority;
+        }
+        if (next_prio == INT32_MIN) break;
+        best_prio = next_prio;
+        for (unsigned step = 1u; step < MAX_THREADS; ++step) {
+            unsigned index = (current_thread + step) % MAX_THREADS;
+            if (threads[index].priority == best_prio && thread_ready(&threads[index])) {
+                selected = index;
+                break;
+            }
+        }
+        if (selected != current_thread) break;
+    }
+    /* A normal-priority thread (e.g. main thread at 8 spinning in a loader loop)
+       still shares slices with ready non-idle worker threads (priority > 1, such
+       as CRI RNA's priority-6 DirectSound feeder waiting on a 4 ms timeout). */
+    if (selected == current_thread && threads[current_thread].priority <= 8) {
+        for (int32_t best_prio = threads[current_thread].priority;;) {
+            int32_t next_prio = 1;
+            for (unsigned step = 1u; step < MAX_THREADS; ++step) {
+                unsigned index = (current_thread + step) % MAX_THREADS;
+                GuestThread *t = &threads[index];
+                if (t->handle == 0u || t->exited || t->suspend_count != 0u || t->draining) continue;
+                if (t->priority < best_prio && t->priority > next_prio) next_prio = t->priority;
+            }
+            if (next_prio <= 1) break;
+            best_prio = next_prio;
+            for (unsigned step = 1u; step < MAX_THREADS; ++step) {
+                unsigned index = (current_thread + step) % MAX_THREADS;
+                if (threads[index].priority == best_prio && thread_ready(&threads[index])) {
+                    selected = index;
+                    break;
+                }
+            }
+            if (selected != current_thread) break;
         }
     }
     if (selected != current_thread) switch_thread(selected);
@@ -887,6 +936,7 @@ static void bridge_ke_query_performance_counter(void)
         return_u64(t / 10000000ull * freq + t % 10000000ull * freq / 10000000ull);
         return;
     }
+    recomp_kernel_poll();
     return_u64(recomp_xapi_performance_counter());
 }
 
@@ -902,6 +952,7 @@ static void bridge_ke_query_interrupt_time(void)
         return_u64(recomp_kernel_virtual_time);
         return;
     }
+    recomp_kernel_poll();
     const uint64_t count = recomp_xapi_performance_counter();
     const uint64_t freq = recomp_xapi_performance_frequency();
 

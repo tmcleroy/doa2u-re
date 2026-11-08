@@ -158,6 +158,28 @@ int main(void)
         passed &= expect_u32("seek", recomp_dsound_buffer_set_position(
             &clock, 50u, 55u), RECOMP_DSOUND_OK);
         passed &= expect_u32("seek wrapped", recomp_dsound_buffer_cursor(&clock, 60u), 20u);
+
+        /* Streaming ring buffer (looping full-buffer voice fed via multiple
+           partial Lock() writes) stops consuming on underrun instead of
+           replaying stale audio, and resumes as soon as Lock() refills it. */
+        RecompDsoundBufferModel stream = {0};
+        passed &= expect_u32("stream configure", recomp_dsound_buffer_configure(
+            &stream, 100u, 1000u, 2u, 0u), RECOMP_DSOUND_OK);
+        recomp_dsound_buffer_lock(&stream, 40u);
+        recomp_dsound_buffer_lock(&stream, 40u);
+        passed &= expect_u32("stream play", recomp_dsound_buffer_play(
+            &stream, RECOMP_DSOUND_PLAY_LOOPING, 0u), RECOMP_DSOUND_OK);
+        recomp_dsound_buffer_lock(&stream, 20u);
+        recomp_dsound_buffer_lock(&stream, 20u);
+        passed &= expect_u32("stream consume 1", recomp_dsound_buffer_consume(
+            &stream, 40u, &offset), 80u);
+        passed &= expect_u32("stream underrun clamp", recomp_dsound_buffer_consume(
+            &stream, 80u, &offset), 20u);
+        passed &= expect_u32("stream underrun silence", recomp_dsound_buffer_consume(
+            &stream, 100u, &offset), 0u);
+        recomp_dsound_buffer_lock(&stream, 40u);
+        passed &= expect_u32("stream refill", recomp_dsound_buffer_consume(
+            &stream, 115u, &offset), 30u);
     }
     if (passed) puts("PASS DirectSound buffer clocks, loops, consume, seek, frequency and validation");
     return passed ? 0 : 1;

@@ -161,6 +161,7 @@ static void do_work(void)
         recomp_dsound_buffers_pump();
     }
     recomp_runtime.registers.esp += 4u;
+    recomp_kernel_poll();
 }
 
 /* The return address names which unbound API the caller reached. */

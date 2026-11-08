@@ -50,6 +50,7 @@ uint32_t recomp_audio_output_speakers(void) { return speakers; }
 void recomp_audio_output_shutdown(void) { ++shutdown_count; ready = 0; }
 void recomp_dsound_buffers_pump(void) { ++pump_count; }
 void recomp_dsound_buffers_reset(void) { ++reset_count; }
+void recomp_kernel_poll(void) {}
 RecompFunction recomp_dsound_buffer_lookup_manual(uint32_t address) { (void)address; return NULL; }
 RecompFunction recomp_dsound_effects_lookup_manual(uint32_t address) { (void)address; return NULL; }
 void recomp_dsound_effects_reset(void) {}

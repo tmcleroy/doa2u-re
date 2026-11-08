@@ -532,6 +532,7 @@ static void buffer_call(enum Operation operation, uint32_t arguments)
             value % buffer->align || bytes % buffer->align) { result = RECOMP_DSOUND_INVALID_PARAM; break; }
         uint32_t first = bytes < size - value ? bytes : size - value;
         if (bytes > first && !p2) { result = RECOMP_DSOUND_INVALID_PARAM; break; }
+        recomp_dsound_buffer_lock(&buffer->model, decoded_bytes(buffer, bytes));
         write32(p1, buffer->data + value); write32(n1, first);
         if (p2) { write32(p2, bytes > first ? buffer->data : 0u); write32(n2, bytes - first); }
         break;
@@ -585,6 +586,8 @@ static void buffer_call(enum Operation operation, uint32_t arguments)
         pump(buffer, now);
         buffer->model.loop_start_bytes = decoded_bytes(buffer, value);
         buffer->model.loop_end_bytes = decoded_bytes(buffer, value + length);
+        buffer->model.stream_locks = 0u;
+        buffer->model.stream_remaining_bytes = 0u;
         reset_output(buffer); break;
     }
     case FREQUENCY:

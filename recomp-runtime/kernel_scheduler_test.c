@@ -6,8 +6,9 @@
 #include <stdio.h>
 #include <string.h>
 
-enum { WORKER = 0x123400u, APC = 0x123410u, STATE = 0x2000u, MAIN_ESP = 0x8000u };
+enum { WORKER = 0x123400u, APC = 0x123410u, IDLE_WORKER = 0x123420u, AUDIO_WORKER = 0x123430u, STATE = 0x2000u, MAIN_ESP = 0x8000u };
 static uint32_t events[2], handles[2], turns[2], apcs[2];
+static uint32_t idle_stop, audio_turns;
 static int passed = 1;
 
 static void check(const char *name, uint64_t actual, uint64_t expected)
@@ -80,10 +81,34 @@ static void worker(void)
     kernel_return(2u, 0u);
 }
 
+static void idle_worker(void)
+{
+    uint32_t self = *recomp_memory_u32(XBOX_PCR_BASE + 0x28u);
+    (void)KERNEL(143u, self, (uint32_t)-16);
+    while (!idle_stop) {
+        (void)call(238u, 0u, NULL);
+    }
+    kernel_return(2u, 0u);
+}
+
+static void audio_worker(void)
+{
+    uint32_t self = *recomp_memory_u32(XBOX_PCR_BASE + 0x28u);
+    (void)KERNEL(143u, self, (uint32_t)-2);
+    while (audio_turns < 3u) {
+        ++audio_turns;
+        (void)call(238u, 0u, NULL);
+    }
+    idle_stop = 1u;
+    kernel_return(2u, 0u);
+}
+
 static RecompFunction lookup(uint32_t address)
 {
     if (address == WORKER) return worker;
     if (address == APC) return apc;
+    if (address == IDLE_WORKER) return idle_worker;
+    if (address == AUDIO_WORKER) return audio_worker;
     return recomp_lookup_kernel(address);
 }
 
@@ -122,6 +147,21 @@ int main(void)
     recomp_kernel_run_threads();
     check("worker zero", turns[0], 3u);
     check("worker one", turns[1], 3u);
+
+    /* A below-normal worker (priority 6, like CRI RNA's DirectSound feeder)
+       must still receive slices from recomp_kernel_poll() on the priority-8
+       main thread even when an always-runnable idle worker (priority 1) exists. */
+    check("create idle thread", KERNEL(255u, STATE, 0u, 0x4000u, 0x40u, 0u,
+        IDLE_WORKER, 0u, 0u, 0u, 0u), 0u);
+    check("create audio thread", KERNEL(255u, STATE, 0u, 0x4000u, 0x40u, 0u,
+        AUDIO_WORKER, 0u, 0u, 0u, 0u), 0u);
+    const uint64_t audio_limit = recomp_xapi_performance_counter() + UINT64_C(2000000000);
+    while (audio_turns < 3u && recomp_xapi_performance_counter() < audio_limit) {
+        recomp_kernel_poll();
+    }
+    check("below-normal audio worker progress", audio_turns, 3u);
+    recomp_kernel_run_threads();
+
     check("main stack", recomp_runtime.registers.esp, MAIN_ESP);
     check("main PCR thread restored", *recomp_memory_u32(XBOX_PCR_BASE + 0x28u), XBOX_STARTUP_THREAD_OBJECT);
     check("main TLS restored", *recomp_memory_u32(XBOX_PCR_BASE + 4u), XBOX_STARTUP_THREAD_STACK_SLOT + 0x44u);
