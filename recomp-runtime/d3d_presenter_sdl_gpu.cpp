@@ -3132,8 +3132,23 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
         presenter->draw_log_active = false;
         unlink(presenter->draw_log_trigger);
     }
-    /* Keep the presented guest frame for GetBackBuffer(-1) once a draw has used it. */
+    /* Keep the presented guest frame, for GetBackBuffer(-1) and for a later Swap that leaves the front buffer
+       alone: SC2 holds its last frame on screen that way while it loads, fading it out with the gamma ramp, from
+       the first screen on, before any draw has read the frame back (without it the window showed the next scene's
+       half-drawn first frame fading instead, the title's "PRESS START" on black). */
     // (mips only for a copy made with them: the one a draw's bind makes has one level)
+    if (presenter->previous_frame == nullptr && !kept) {
+        // (made as a draw's read makes it: an upscaled copy keeps mips for the depth-of-field downsample)
+        uint32_t levels = 1u;
+        if (presenter->copy_mips) {
+            while ((std::max(mainWidth(presenter), mainHeight(presenter)) >> levels) != 0u) ++levels;
+        }
+        presenter->previous_frame = createTexture(presenter, SDL_GPU_TEXTURETYPE_2D,
+            SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
+            SDL_GPU_TEXTUREUSAGE_SAMPLER | (levels > 1u ? SDL_GPU_TEXTUREUSAGE_COLOR_TARGET : 0u),
+            mainWidth(presenter), mainHeight(presenter), 1u, levels);
+        presenter->previous_frame_mips = levels > 1u;
+    }
     if (presenter->previous_frame != nullptr && !kept)
         copyGuestBuffer(presenter, presenter->previous_frame, presenter->previous_frame_mips);
     // On a display at a multiple of 60 Hz, the frame's end steers the game's clock (d3d_display_phase).
