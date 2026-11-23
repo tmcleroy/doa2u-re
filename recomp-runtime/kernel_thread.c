@@ -60,8 +60,10 @@ typedef struct GuestThread {
     uint32_t object_count;
     uint64_t deadline;
     uint32_t wait_result;
-    UserApc apcs[MAX_EVENTS];
-    unsigned apc_count;
+    /* Its queued I/O APCs: a list without a limit, as the Xbox kernel's (a
+       thread may issue many reads before its next alertable wait) */
+    UserApc *apcs;
+    unsigned apc_count, apc_capacity;
     /* recomp_kernel_drain_others: not run again until no other thread can */
     bool draining;
     /* The guest memory it owns: its object, stack and TLS (save states leave
@@ -144,8 +146,15 @@ void recomp_kernel_queue_user_apc(
     uint32_t routine, uint32_t context, uint32_t io_status_block)
 {
     GuestThread *thread = &threads[current_thread];
-    if (thread->apc_count == MAX_EVENTS) {
-        recomp_stop(2, "kernel:user-apc-queue-full");
+    if (thread->apc_count == thread->apc_capacity) {
+        unsigned capacity = thread->apc_capacity != 0u ? thread->apc_capacity * 2u : 64u;
+        UserApc *apcs = realloc(thread->apcs, capacity * sizeof(UserApc));
+        if (apcs == NULL) recomp_stop(2, "kernel:user-apc-queue-full");
+        if (thread->apc_capacity != 0u)
+            fprintf(stderr, "recomp thread: 0x%08x has %u I/O APCs queued (routine 0x%08x)\n",
+                    thread->handle, thread->apc_count, routine);
+        thread->apcs = apcs;
+        thread->apc_capacity = capacity;
     }
     thread->apcs[thread->apc_count++] =
         (UserApc){routine, context, io_status_block};

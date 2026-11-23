@@ -63,6 +63,10 @@ static int test_user_apc(uint8_t *memory)
     int passed = 1;
 
     recomp_runtime_set_lookup(apc_lookup);
+    /* More than the old fixed queue (64) wait for one alertable wait, and run
+       in the order they were queued: the last one's arguments are seen last. */
+    for (uint32_t i = 0u; i < 200u; ++i)
+        recomp_kernel_queue_user_apc(TEST_APC_ROUTINE, i, 0x1000u + i);
     recomp_kernel_queue_user_apc(TEST_APC_ROUTINE, 0x11u, 0x22u);
     for (int round = 0; round < 2; ++round) {
         stack[0] = 0x0010abcdu;
@@ -76,7 +80,7 @@ static int test_user_apc(uint8_t *memory)
         passed &= expect_u32("delay status", recomp_runtime.registers.eax,
                              round == 0 ? 0xc0u : 0u);
     }
-    passed &= expect_u32("apc calls", apc_calls, 1u);
+    passed &= expect_u32("apc calls", apc_calls, 201u);
     passed &= expect_u32("apc context", apc_seen[0], 0x11u);
     passed &= expect_u32("apc status block", apc_seen[1], 0x22u);
     recomp_runtime_set_lookup(NULL);
