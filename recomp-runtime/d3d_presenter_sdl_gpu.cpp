@@ -274,6 +274,9 @@ struct RecompD3dPresenter {
     SDL_GPUShaderFormat shader_format = SDL_GPU_SHADERFORMAT_SPIRV;
     SDL_GPUTextureFormat depth_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT;
     bool close_requested = false;
+    /* The mouse cursor: hidden while the mouse is still (pumpEvents) */
+    uint64_t mouse_moved_at = 0u;
+    bool cursor_hidden = false;
     bool widescreen = false;
     float scale = 1.0f;
     SDL_GPUSampleCount msaa = SDL_GPU_SAMPLECOUNT_1;
@@ -2619,6 +2622,12 @@ void pumpEvents(RecompD3dPresenter *presenter)
                     (SDL_GetWindowFlags(presenter->window) & SDL_WINDOW_FULLSCREEN) == 0);
         } else if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
             recomp_input_keyboard_reset();
+        } else if (event.type == SDL_EVENT_MOUSE_MOTION && event.motion.which != SDL_TOUCH_MOUSEID) {
+            presenter->mouse_moved_at = SDL_GetTicks();
+            if (presenter->cursor_hidden) {
+                SDL_ShowCursor();
+                presenter->cursor_hidden = false;
+            }
         } else if (event.type == SDL_EVENT_QUIT) {
             presenter->close_requested = true;
         } else if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
@@ -2626,6 +2635,14 @@ void pumpEvents(RecompD3dPresenter *presenter)
             presenter->close_requested = true;
         }
     }
+#ifndef __ANDROID__
+    // The mouse cursor goes away over the game's window once the mouse has been still a moment, and comes back when
+    // it moves (the in-game menu's mouse among it).
+    if (!presenter->cursor_hidden && SDL_GetTicks() - presenter->mouse_moved_at > 2000u) {
+        SDL_HideCursor();
+        presenter->cursor_hidden = true;
+    }
+#endif
 }
 
 /* Writes BGRA rows, top row first, as a bottom-up 24-bit BMP. */
