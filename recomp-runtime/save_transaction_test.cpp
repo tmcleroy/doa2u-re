@@ -55,7 +55,8 @@ static void append_times(std::string &image, char kind, uint64_t base)
 }
 
 /* A root directory and one file. Only v2 records attributes. */
-static std::string undo_image(bool v2, uint64_t file_times, uint64_t file_attributes)
+static std::string undo_image(bool v2, uint64_t file_times, uint64_t file_attributes,
+                              bool embedded_nul = false)
 {
     std::string image(v2 ? "rsundo02" : "rsundo01", 8u);
     append_u64(image, 0u);
@@ -64,7 +65,11 @@ static std::string undo_image(bool v2, uint64_t file_times, uint64_t file_attrib
     append_u64(image, 0u);
     append_times(image, 'F', file_times);
     if (v2) append_u64(image, file_attributes);
-    const auto name = fs::path("legacy").native();
+    auto name = fs::path("legacy").native();
+    if (embedded_nul) {
+        name.push_back(fs::path::value_type{});
+        name += fs::path("suffix").native();
+    }
     append_u64(image, name.size() * sizeof name[0]);
     image.append(reinterpret_cast<const char *>(name.data()), name.size() * sizeof name[0]);
     append_u64(image, 11u);
@@ -248,6 +253,16 @@ int main()
     assert(get(payload) == "newer than the image");
     assert(fs::exists(journal / "undo"));
     fs::remove(journal / "undo");
+
+    /* A native path containing NUL must not alias its truncated name. */
+    for (bool v2 : {false, true}) {
+        const auto bad = undo_image(v2, 0u, 0u, true);
+        put(journal / "undo", bad);
+        assert(!recomp_save_initialize(root_name.c_str()));
+        assert(get(payload) == "newer than the image");
+        assert(get(journal / "undo") == bad);
+        fs::remove(journal / "undo");
+    }
 
     /* A directory record from the previous journal format fails closed. */
     fs::create_directory(journal / "pending");

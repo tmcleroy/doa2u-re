@@ -401,6 +401,8 @@ void restore(std::string_view image)
         require(name.size() % sizeof(fs::path::value_type) == 0);
         fs::path::string_type native(name.size() / sizeof(fs::path::value_type), 0);
         std::memcpy(native.data(), name.data(), name.size());
+        // Native filesystem calls terminate paths at NUL; reject before restoring.
+        require(native.find(fs::path::value_type{}) == fs::path::string_type::npos);
         const fs::path relative(native);
         require(nodes.empty() ? relative.empty() && node.directory
                               : !relative.empty() && !relative.has_root_path());
