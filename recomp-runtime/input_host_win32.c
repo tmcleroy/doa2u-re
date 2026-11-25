@@ -26,7 +26,12 @@ enum {
     RUMBLE_DURATION_MS = 1000u,
 };
 
+/* The open gamepads, each in the seat it took (see update_pads_here), and
+   each port's gamepad: the seat's own, or as the game's assign chose. */
 static SDL_Gamepad *pads[RECOMP_INPUT_PORT_COUNT];
+static SDL_Gamepad *port_pads[RECOMP_INPUT_PORT_COUNT];
+static RecompInputHostAssign assign;
+static bool assign_due = true;
 static uint8_t keyboard[RECOMP_INPUT_KEY_COUNT];
 static bool layout_set;
 static RecompInputHostLayout layout;
@@ -82,8 +87,9 @@ static bool trace_enabled(void)
 }
 
 /* SDL starts lazily on the guest thread that polls it. There is no SDL event
-   loop; SDL_UpdateGamepads pumps it. A new gamepad takes the lowest free port
-   and keeps it until it disconnects. */
+   loop; SDL_UpdateGamepads pumps it. A new gamepad takes the lowest free seat
+   and keeps it until it disconnects; the ports are given out again from the
+   seats whenever one comes or goes. */
 static void update_pads_here(void *unused);
 static void update_pads(void)
 {
@@ -113,6 +119,7 @@ static void update_pads_here(void *unused)
         if (pads[port] != NULL && !SDL_GamepadConnected(pads[port])) {
             SDL_CloseGamepad(pads[port]);
             pads[port] = NULL;
+            assign_due = true;
         }
     }
     int count = 0;
@@ -130,12 +137,34 @@ static void update_pads_here(void *unused)
         if (!open && free_port < RECOMP_INPUT_PORT_COUNT) {
             pads[free_port] = SDL_OpenGamepad(ids[i]);
             if (pads[free_port] != NULL) {
-                fprintf(stderr, "recomp input: gamepad '%s' on port=%u\n",
+                fprintf(stderr, "recomp input: gamepad '%s' in seat=%u\n",
                     SDL_GetGamepadName(pads[free_port]), (unsigned)free_port);
+                assign_due = true;
             }
         }
     }
     SDL_free(ids);
+    if (assign_due) {
+        assign_due = false;
+        memset(port_pads, 0, sizeof port_pads);
+        if (assign != NULL) {
+            assign(pads, RECOMP_INPUT_PORT_COUNT, port_pads);
+        } else {
+            memcpy(port_pads, pads, sizeof port_pads);
+        }
+        for (uint32_t port = 0u; port < RECOMP_INPUT_PORT_COUNT; ++port) {
+            if (port_pads[port] != NULL) {
+                fprintf(stderr, "recomp input: gamepad '%s' plays port=%u\n",
+                    SDL_GetGamepadName(port_pads[port]), (unsigned)port);
+            }
+        }
+    }
+}
+
+void recomp_input_host_set_assign(RecompInputHostAssign chosen)
+{
+    assign = chosen;
+    assign_due = true;
 }
 
 /* (the same fields as recomp_input_host_set_vibration's call) */
@@ -153,11 +182,11 @@ void recomp_input_host_set_vibration(
     static uint32_t traced[RECOMP_INPUT_PORT_COUNT];
     uint32_t motors = (uint32_t)left_motor << 16 | right_motor;
 
-    if (port >= RECOMP_INPUT_PORT_COUNT || pads[port] == NULL) {
+    if (port >= RECOMP_INPUT_PORT_COUNT || port_pads[port] == NULL) {
         return;
     }
     /* SDL sends only changed values and keeps a held value alive. */
-    struct { SDL_Gamepad *pad; uint16_t left, right; bool sent; } rumble = {pads[port], left_motor, right_motor, false};
+    struct { SDL_Gamepad *pad; uint16_t left, right; bool sent; } rumble = {port_pads[port], left_motor, right_motor, false};
     recomp_host_call(rumble_here, &rumble);
     bool sent = rumble.sent;
     if (trace_enabled() && traced[port] != motors) {
@@ -280,7 +309,7 @@ uint64_t recomp_input_host_pad_buttons(void)
     update_pads();
     uint64_t held = 0u;
     for (uint32_t port = 0u; port < RECOMP_INPUT_PORT_COUNT; ++port) {
-        SDL_Gamepad *host = pads[port];
+        SDL_Gamepad *host = port_pads[port];
         if (host == NULL) continue;
         for (int button = 0; button < SDL_GAMEPAD_BUTTON_COUNT && button < 64; ++button) {
             if (SDL_GetGamepadButton(host, (SDL_GamepadButton)button)) held |= 1ull << button;
@@ -308,7 +337,7 @@ static bool sample_layout(uint32_t port, RecompInputGamepad *gamepad)
         XBOX_DPAD_UP, XBOX_DPAD_DOWN, XBOX_DPAD_LEFT, XBOX_DPAD_RIGHT,
         XBOX_START, XBOX_BACK, XBOX_LEFT_THUMB, XBOX_RIGHT_THUMB,
     };
-    SDL_Gamepad *host = pads[port];
+    SDL_Gamepad *host = port_pads[port];
     const bool is_focused = focused();
     if (port == 0u) {
         /* One sample of the keys a frame, shared by every port. */
@@ -365,7 +394,7 @@ static bool sample(uint32_t port, RecompInputGamepad *gamepad)
     memset(gamepad, 0, sizeof *gamepad);
     update_pads();
     if (layout_set) return sample_layout(port, gamepad);
-    SDL_Gamepad *host = pads[port];
+    SDL_Gamepad *host = port_pads[port];
     if (host != NULL) {
         read_pad(host, gamepad);
     }

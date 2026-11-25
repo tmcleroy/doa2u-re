@@ -30,6 +30,12 @@ static SDL_Joystick *attach(uintptr_t index, SDL_JoystickID *id)
     return *id != 0 ? SDL_OpenJoystick(*id) : NULL;
 }
 
+static void second_plays_first(SDL_Gamepad *const *seats, uint32_t count, SDL_Gamepad **ports)
+{
+    (void)count;
+    ports[0] = seats[1];
+}
+
 int main(void)
 {
     uint8_t keys[RECOMP_INPUT_KEY_COUNT];
@@ -127,6 +133,18 @@ int main(void)
     CHECK(rumbled[1] == 0x12345678u && rumbled[0] == 0u);
     recomp_input_host_stop_vibration();
     CHECK(rumbled[1] == 0u);
+
+    /* A chosen assignment: the second pad plays port 0, the first nobody;
+       the vibration follows. Without one each seat plays its own port again. */
+    recomp_input_host_set_assign(second_plays_first);
+    CHECK(recomp_input_host_sample(0u, &pad) && pad.buttons == 0x00a0u);
+    CHECK(!recomp_input_host_sample(1u, &pad));
+    recomp_input_host_set_vibration(0u, 0x0102u, 0x0304u);
+    CHECK(rumbled[1] == 0x01020304u && rumbled[0] == 0u);
+    recomp_input_host_stop_vibration();
+    recomp_input_host_set_assign(NULL);
+    CHECK(recomp_input_host_sample(1u, &pad) && pad.buttons == 0x00a0u);
+    CHECK(recomp_input_host_sample(0u, &pad) && pad.buttons == 0x0014u);
 
     /* Removing port 0's pad leaves port 1 in place. */
     SDL_CloseJoystick(first);

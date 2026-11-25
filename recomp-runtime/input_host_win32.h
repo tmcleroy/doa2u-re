@@ -87,9 +87,21 @@ typedef struct RecompInputHostLayout {
 /* Copies the layout. */
 void recomp_input_host_set_layout(const RecompInputHostLayout *layout);
 
+/* Which gamepad plays each port (a launcher's choice of players). A gamepad
+   takes the lowest free seat when it connects and keeps it until it goes;
+   whenever one comes or goes the runtime calls this with the seats (count of
+   them, NULL for an empty one) and it fills each port's gamepad (NULL: none,
+   also for a gamepad that plays nobody). It runs where the gamepads are
+   updated, so it may ask SDL about them. NULL (the default) plays each seat's
+   gamepad on its own port. */
+struct SDL_Gamepad;
+typedef void (*RecompInputHostAssign)(
+    struct SDL_Gamepad *const *seats, uint32_t count, struct SDL_Gamepad **ports);
+void recomp_input_host_set_assign(RecompInputHostAssign assign);
+
 /* A port's own use of the gamepads (an in-game menu): the buttons held on
-   every connected gamepad, a bit for each SDL_GamepadButton, and the left
-   stick held past half way as the d-pad's bits. Updates the gamepads. */
+   every gamepad that plays a port, a bit for each SDL_GamepadButton, and the
+   left stick held past half way as the d-pad's bits. Updates the gamepads. */
 uint64_t recomp_input_host_pad_buttons(void);
 
 void recomp_input_host_set_vibration(
