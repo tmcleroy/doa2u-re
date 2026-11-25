@@ -84,6 +84,7 @@ static void ensure_symbolic_links_initialized(void)
 const char *recomp_disc_root_path = NULL;
 const char *recomp_storage_root_path = NULL;
 void (*recomp_kernel_read_hook)(const char *host_path, uint64_t offset);
+uint64_t (*recomp_kernel_read_source_hook)(const char *host_path, uint64_t offset, uint32_t length);
 
 static struct {
     char disc_path[MAX_PATH_LEN];
@@ -2307,7 +2308,9 @@ static void bridge_nt_read_file(void)
             break;
         }
         LARGE_INTEGER distance;
-        distance.QuadPart = (LONGLONG)read_offset;
+        distance.QuadPart = (LONGLONG)(recomp_kernel_read_source_hook != NULL
+            ? recomp_kernel_read_source_hook(file_handles[i].host_path, read_offset, length)
+            : read_offset);
         if (!SetFilePointerEx(
                 file_handles[i].host_handle, distance, NULL, FILE_BEGIN)) {
             status = RECOMP_STATUS_UNSUCCESSFUL;
