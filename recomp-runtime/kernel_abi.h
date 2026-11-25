@@ -106,6 +106,10 @@ uint32_t recomp_kernel_open_readonly(const wchar_t *path, RecompReadFilter filte
 /* Optional host hook after each guest read that returned bytes; offset is
    the file offset of the first byte read. */
 extern void (*recomp_kernel_read_hook)(const char *host_path, uint64_t offset);
+/* Optional host hook before each guest read of a host file: the file offset
+   to read the bytes from instead of `offset` (return `offset` to keep it).
+   The guest's file position still moves on from `offset`. */
+extern uint64_t (*recomp_kernel_read_source_hook)(const char *host_path, uint64_t offset, uint32_t length);
 
 /* Plain configuration model used by its import adapter. */
 uint32_t recomp_kernel_query_nonvolatile_setting(
