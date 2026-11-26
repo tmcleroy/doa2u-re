@@ -887,8 +887,10 @@ SDL_GPUTexture *lookupBackBufferTexture(RecompD3dPresenter *presenter,
         if (presenter->copy_mips) {
             while ((std::max(mainWidth(presenter), mainHeight(presenter)) >> levels) != 0u) ++levels;
         }
+        /* (made as the resolved frame is, a color target too: Adreno drivers lay a sampler-only texture out
+           otherwise, and a copy from the frame into it came out as garbage, the held frame's stripes and specks) */
         copy = createTexture(presenter, SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
-            SDL_GPU_TEXTUREUSAGE_SAMPLER | (levels > 1u ? SDL_GPU_TEXTUREUSAGE_COLOR_TARGET : 0u),
+            SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
             mainWidth(presenter), mainHeight(presenter), 1u, levels);
         if (copy == nullptr) return nullptr;
         if (previous_frame) presenter->previous_frame_mips = levels > 1u;
@@ -3160,9 +3162,9 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
         if (presenter->copy_mips) {
             while ((std::max(mainWidth(presenter), mainHeight(presenter)) >> levels) != 0u) ++levels;
         }
+        // (a color target too, as the resolved frame it copies is: lookupBackBufferTexture)
         presenter->previous_frame = createTexture(presenter, SDL_GPU_TEXTURETYPE_2D,
-            SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
-            SDL_GPU_TEXTUREUSAGE_SAMPLER | (levels > 1u ? SDL_GPU_TEXTUREUSAGE_COLOR_TARGET : 0u),
+            SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
             mainWidth(presenter), mainHeight(presenter), 1u, levels);
         presenter->previous_frame_mips = levels > 1u;
     }
