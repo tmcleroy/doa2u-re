@@ -375,6 +375,16 @@ uint32_t presentClientWidth(const RecompD3dPresenter *presenter, uint64_t height
         : (height * 4u + 1u) / 3u);
 }
 
+uint32_t mainHeight(const RecompD3dPresenter *presenter);
+
+// The aspect the game's frame is shown at in the window: the guest's, or 4:3 for a frame the game asks to show
+// narrow (recomp_d3d_present_narrow).
+float shownAspect(const RecompD3dPresenter *presenter)
+{
+    if (presenter->widescreen && recomp_d3d_present_narrow) return 4.0f / 3.0f;
+    return static_cast<float>(presentClientWidth(presenter, mainHeight(presenter))) / mainHeight(presenter);
+}
+
 uint32_t mainHeight(const RecompD3dPresenter *presenter)
 {
     return static_cast<uint32_t>(presenter->config.height * presenter->scale + 0.5f);
@@ -3072,8 +3082,7 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
     if (SDL_WaitAndAcquireGPUSwapchainTexture(commands, presenter->window, &swapchain, &swap_width, &swap_height) &&
         swapchain != nullptr && swap_width != 0u && swap_height != 0u) {
         // The window keeps the guest aspect; the rest of the swapchain is black.
-        const float source_aspect = static_cast<float>(presentClientWidth(presenter, mainHeight(presenter))) /
-            mainHeight(presenter);
+        const float source_aspect = shownAspect(presenter);
         int x = 0, y = 0, width = static_cast<int>(swap_width), height = static_cast<int>(swap_height);
         if (static_cast<float>(swap_width) / swap_height > source_aspect) {
             width = static_cast<int>(swap_height * source_aspect + 0.5f);
@@ -3863,8 +3872,7 @@ RecompD3dPresenterError d3d_backend_show_image(RecompD3dPresenter *presenter,
     if (SDL_WaitAndAcquireGPUSwapchainTexture(commands, presenter->window, &swapchain, &swap_width, &swap_height) &&
         swapchain != nullptr && swap_width != 0u && swap_height != 0u) {
         // As submitPresent places the game's frames: the guest aspect, black around it.
-        const float source_aspect = static_cast<float>(presentClientWidth(presenter, mainHeight(presenter))) /
-            mainHeight(presenter);
+        const float source_aspect = shownAspect(presenter);
         int x = 0, y = 0, w = static_cast<int>(swap_width), h = static_cast<int>(swap_height);
         if (static_cast<float>(swap_width) / swap_height > source_aspect) {
             w = static_cast<int>(swap_height * source_aspect + 0.5f);
