@@ -25,6 +25,10 @@ extern double recomp_d3d_submit_mb;
 // screenshot), and of its width at each side, so what is left fills the window as the whole did: a game's own
 // letterbox taken away (0: the whole picture). Set by the game's side between frames.
 extern float recomp_d3d_present_crop;
+// The share of the picture's height left off at the top and at the bottom alone, the rest stretched to the whole
+// height as the window shows it (its width kept): a game's letterbox of its own taken away the way another console
+// showed the same picture (0: none). Set by the game's side between frames, as recomp_d3d_present_crop.
+extern float recomp_d3d_present_fill;
 // A widescreen presenter shows this frame 4:3, black at the sides: the game's 4:3 picture, drawn across the 16:9 one,
 // squeezed back to its shape (a game's menus kept 4:3 while its fights are 16:9). Set by the game's side between
 // frames, as recomp_d3d_present_crop.

@@ -2724,7 +2724,8 @@ void saveScreenshot(RecompD3dPresenter *presenter, SDL_GPUTexture *frame)
 {
     const uint32_t width = mainWidth(presenter), height = mainHeight(presenter);
     const float crop = recomp_d3d_present_crop;
-    const uint32_t left = static_cast<uint32_t>(width * crop), top = static_cast<uint32_t>(height * crop);
+    const uint32_t left = static_cast<uint32_t>(width * crop),
+                   top = static_cast<uint32_t>(height * (crop + recomp_d3d_present_fill));
     SDL_GPUTransferBufferCreateInfo info{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, width * height * 4u, 0};
     SDL_GPUTransferBuffer *download = SDL_CreateGPUTransferBuffer(presenter->device, &info);
     bool saved = false;
@@ -3094,7 +3095,7 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
         blit.source.texture = shown;
         const float crop = recomp_d3d_present_crop;
         blit.source.x = static_cast<Uint32>(mainWidth(presenter) * crop);
-        blit.source.y = static_cast<Uint32>(mainHeight(presenter) * crop);
+        blit.source.y = static_cast<Uint32>(mainHeight(presenter) * (crop + recomp_d3d_present_fill));
         blit.source.w = mainWidth(presenter) - 2u * blit.source.x;
         blit.source.h = mainHeight(presenter) - 2u * blit.source.y;
         blit.destination.texture = swapchain;
@@ -3110,7 +3111,7 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
             const uint32_t original_width = presenter->config.width - 2u *
                 static_cast<uint32_t>(presenter->config.width * crop);
             const uint32_t original_height = presenter->config.height - 2u *
-                static_cast<uint32_t>(presenter->config.height * crop);
+                static_cast<uint32_t>(presenter->config.height * (crop + recomp_d3d_present_fill));
             uint32_t drawn_width = 0u, drawn_height = 0u;
             if (SDL_GPUTexture *shaded = recomp_shader_chain_draw(presenter->shader_chain, commands, blit.source,
                     original_width, original_height, static_cast<uint32_t>(width), static_cast<uint32_t>(height),
