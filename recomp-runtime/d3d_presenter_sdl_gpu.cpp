@@ -897,8 +897,7 @@ SDL_GPUTexture *lookupBackBufferTexture(RecompD3dPresenter *presenter,
         if (presenter->copy_mips) {
             while ((std::max(mainWidth(presenter), mainHeight(presenter)) >> levels) != 0u) ++levels;
         }
-        /* (made as the resolved frame is, a color target too: Adreno drivers lay a sampler-only texture out
-           otherwise, and a copy from the frame into it came out as garbage, the held frame's stripes and specks) */
+        /* (made as the resolved frame is, a color target too) */
         copy = createTexture(presenter, SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
             SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
             mainWidth(presenter), mainHeight(presenter), 1u, levels);
@@ -3165,7 +3164,15 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
        the first screen on, before any draw has read the frame back (without it the window showed the next scene's
        half-drawn first frame fading instead, the title's "PRESS START" on black). */
     // (mips only for a copy made with them: the one a draw's bind makes has one level)
-    if (presenter->previous_frame == nullptr && !kept) {
+    /* Not on Android: there the Adreno driver of a Retroid Flip 2 showed this copy as stripes and specks, held
+       on screen through every load. As before 0.6, the copy is made there only once a draw reads it (issue #132
+       of soulcalibur2-recomp). */
+#ifdef __ANDROID__
+    constexpr bool keep_first_frame = false;
+#else
+    constexpr bool keep_first_frame = true;
+#endif
+    if (keep_first_frame && presenter->previous_frame == nullptr && !kept) {
         // (made as a draw's read makes it: an upscaled copy keeps mips for the depth-of-field downsample)
         uint32_t levels = 1u;
         if (presenter->copy_mips) {
