@@ -3165,7 +3165,7 @@ RecompD3dPresenterError submitPresent(RecompD3dPresenter *presenter, const Recom
        the first screen on, before any draw has read the frame back (without it the window showed the next scene's
        half-drawn first frame fading instead, the title's "PRESS START" on black). */
     // (mips only for a copy made with them: the one a draw's bind makes has one level)
-    if (presenter->previous_frame == nullptr && !kept) {
+    if (false && presenter->previous_frame == nullptr && !kept) {   // (test: made only on a draw's read, as before 0.6)
         // (made as a draw's read makes it: an upscaled copy keeps mips for the depth-of-field downsample)
         uint32_t levels = 1u;
         if (presenter->copy_mips) {
