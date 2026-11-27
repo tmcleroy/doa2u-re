@@ -789,10 +789,34 @@ bool uploadTexture(RecompD3dPresenter *presenter, SDL_GPUTexture *texture, const
     return pass != nullptr;
 }
 
-/* Copies the guest back buffer (resolving it) into a snapshot texture. */
+bool ensureGammaPass(RecompD3dPresenter *presenter);
+
+/* Copies the guest back buffer (resolving it) into a snapshot texture. The kept frames (the held one and the
+   back-buffer copy) are drawn there, through the gamma pass with an even ramp, not copied: on Adreno a texture copy
+   from the frame into them came out as stripes and specks (issue soulcalibur2-recomp#132). */
 void copyGuestBuffer(RecompD3dPresenter *presenter, SDL_GPUTexture *target, bool mips = true)
 {
     resolveMain(presenter);
+    if ((target == presenter->previous_frame || target == presenter->back_buffer_copy) && ensureGammaPass(presenter)) {
+        static float even[256][4];
+        if (even[255][0] == 0.0f) {
+            for (int i = 0; i < 256; ++i) even[i][0] = even[i][1] = even[i][2] = even[i][3] = float(i) / 255.0f;
+        }
+        SDL_GPUColorTargetInfo color{};
+        color.texture = target;
+        color.load_op = SDL_GPU_LOADOP_DONT_CARE;
+        color.store_op = SDL_GPU_STOREOP_STORE;
+        if (SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(commandBuffer(presenter), &color, 1, nullptr)) {
+            SDL_BindGPUGraphicsPipeline(pass, presenter->gamma_pipeline);
+            const SDL_GPUTextureSamplerBinding pixels{presenter->main_resolve, presenter->point_sampler};
+            SDL_BindGPUFragmentSamplers(pass, 0u, &pixels, 1u);
+            SDL_PushGPUFragmentUniformData(commandBuffer(presenter), 0u, even, sizeof even);
+            SDL_DrawGPUPrimitives(pass, 3u, 1u, 0u, 0u);
+            SDL_EndGPURenderPass(pass);
+        }
+        if (mips && presenter->copy_mips) SDL_GenerateMipmapsForGPUTexture(commandBuffer(presenter), target);
+        return;
+    }
     if (SDL_GPUCopyPass *pass = SDL_BeginGPUCopyPass(commandBuffer(presenter))) {
         SDL_GPUTextureLocation source{presenter->main_resolve, 0u, 0u, 0u, 0u, 0u};
         SDL_GPUTextureLocation destination{target, 0u, 0u, 0u, 0u, 0u};
